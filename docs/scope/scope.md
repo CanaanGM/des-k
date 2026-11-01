@@ -30,6 +30,8 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 10 | Restore layout after reboot | Slice 4 | in-progress |
 | 11 | Jump and send by number | Slice 2 | done |
 | 12 | Keys work over admin windows | Slice 4 | in-progress |
+| 13 | Touchpad gestures | Slice 6 | in-progress |
+| 14 | Settings page | Slice 7 | in-progress |
 
 ## Already built
 
@@ -168,11 +170,38 @@ spec [0010](../specs/0010-workspace-overview/index.md) · code in `src/overview.
   - [ ] Drag and drop across screens (AC-7)
   - [ ] Live setting and animations, then tried on your screens and installed (AC-10, AC-11, all ACs)
 
+## Slice 6: Touchpad
+
+### 13. Touchpad gestures · in-progress
+pdesk reads three and four finger swipes and taps itself through Raw Input and runs the action your `settings.toml` map names, over every window (the Windows shortcut route dies over Task Manager). A welcome screen turns Windows' own gestures off; Quit gives them back.
+**Done when:** with Task Manager focused, a four finger swipe switches pdesk's workspace, every gesture in the map runs its action, and Quit gives Windows its gestures back.
+spec [0011](../specs/0011-touchpad-gestures/index.md) · code in `src/touchpad.rs`, `src/gestures.rs`, `src/settings.rs`, `src/setup.rs`, `src/main.rs`, `src/tray.rs`, `src/welcome.rs`
+- [x] Design it (spec): `/architect native touchpad gestures`
+- [ ] Build it: `/develop touchpad gestures`
+  - [x] Check step on your touchpad, then the thin thread: four finger left and right over Task Manager (AC-1, AC-11, AC-13)
+  - [x] The map: `[touchpad]`, `[[gesture]]` rules, twice, every action (AC-2 to AC-7)
+  - [x] Setup logic: registry gate, save, write back on Quit and same sign in rewrite, tray item (AC-6, AC-8, AC-9, AC-10)
+  - [ ] Welcome screen to the approved H2 design: Q1 check first, then the window, four rows, give back results; plus the 2026-11-01 change (what pdesk is, the map in each row, Use these gestures or Choose my own) (AC-8, AC-9, AC-11)
+  - [ ] Hot plug, README, installed and tried on your screens (AC-12, all ACs)
+
+## Slice 7: Settings page
+
+### 14. Settings page · in-progress
+A pdesk window where you change every setting by clicking, instead of editing `settings.toml` by hand: workspaces, shortcuts, the indicator, restore, the overview and touchpad gestures. It opens from the tray and from the welcome screen's "Choose my own".
+**Done when:** every setting in `settings.toml` can be changed from the page, the tray opens it, "Choose my own" opens it at the gestures, and the page says when each change takes effect.
+spec [0012](../specs/0012-settings-page/index.md) · code in `src/settings_page.rs`, `src/settings.rs`, `src/main.rs`, `src/tray.rs`
+- [x] Design it (spec): `/architect settings page`
+- [ ] Build it: `/develop settings page`
+  - [ ] Live settings core and a one toggle tracer page, tray opens it (AC-1, AC-3, AC-4, AC-5, AC-14, AC-15, AC-17)
+  - [x] Design pass approved (`pdesk-design/settings/`, r4, 2026-11-01)
+  - [ ] Every plain setting, screen pictures, live workspace resize, banner and touchpad status, keyboard and themes (AC-2, AC-4, AC-6, AC-10, AC-11, AC-14, AC-16, AC-18 to AC-21)
+  - [ ] Shortcut recorder, chips and clash prompt (AC-7, AC-8, AC-9)
+  - [ ] Gesture rows and Choose my own opens the page (AC-12, AC-13)
+
 ## Deferred
 Out of scope for the current build pass, kept so the plan stays honest.
 - **Indicator redesign**: a nicer popup look, asked for later · needs a decision
 - **Dynamic workspaces**: GNOME style, always one empty at the end (you chose a fixed count for now) · needs a decision
-- **Native touchpad gestures**: read the touchpad through Raw Input instead of Settings shortcuts, only if the shortcut route ever falls short · needs a decision
 - **Per app follow exclusions**: a `settings.toml` list of apps that never trigger follow activation, only if one keeps stealing focus (from spec 0002) · needs a decision
 - **Dimmed wallpaper behind the overview**: draw your wallpaper instead of solid dark (from spec 0010) · needs a decision
 - **Mouse wheel in the window finder**: scroll the finder's list with the wheel, only if the keys feel slow with many windows (from spec 0007) · needs a decision

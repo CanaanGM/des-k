@@ -1,4 +1,4 @@
-// Tray icon near the clock: shows pdesk is running, with Open settings, Open log and Quit.
+// Tray icon near the clock: shows pdesk is running, with Touchpad setup, Settings, Open log and Quit.
 // Lives on the main thread (its messages come through main's loop) and adds itself again
 // whenever explorer restarts.
 use std::cell::Cell;
@@ -28,6 +28,7 @@ const WM_TRAY: u32 = WM_APP + 3;
 const ID_SETTINGS: usize = 1;
 const ID_LOG: usize = 2;
 const ID_QUIT: usize = 3;
+const ID_TOUCHPAD: usize = 4;
 
 thread_local! {
     static WND: Cell<Option<HWND>> = const { Cell::new(None) };
@@ -145,12 +146,12 @@ fn draw_icon() -> Option<HICON> {
 }
 
 fn menu(hwnd: HWND) {
-    let settings = crate::settings::path();
     let log = crate::ws::data_dir().join("pdesk.log");
     let flag = |ok: bool| if ok { MF_STRING } else { MF_GRAYED };
     unsafe {
         let Ok(m) = CreatePopupMenu() else { return };
-        let _ = AppendMenuW(m, MF_STRING, ID_SETTINGS, w!("Open settings"));
+        let _ = AppendMenuW(m, MF_STRING, ID_TOUCHPAD, w!("Touchpad setup"));
+        let _ = AppendMenuW(m, MF_STRING, ID_SETTINGS, w!("Settings"));
         // Debug builds with a console log there instead of to the file.
         let _ = AppendMenuW(m, flag(log.exists()), ID_LOG, w!("Open log"));
         let _ = AppendMenuW(m, MF_SEPARATOR, 0, PCWSTR::null());
@@ -162,7 +163,8 @@ fn menu(hwnd: HWND) {
         let cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, None, hwnd, None);
         let _ = DestroyMenu(m);
         match cmd.0 as usize {
-            ID_SETTINGS => open(&settings),
+            ID_TOUCHPAD => crate::welcome::show(false),
+            ID_SETTINGS => crate::settings_page::open(),
             ID_LOG => open(&log),
             // Main's loop breaks on WM_CLOSE, the same path as `pdesk --quit`.
             ID_QUIT => { let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)); }
@@ -172,8 +174,9 @@ fn menu(hwnd: HWND) {
 }
 
 /// Opened by explorer, so the editor runs as you even when pdesk runs as admin (spec 0008).
-/// Any failure falls back to opening it from pdesk, with pdesk's rights.
-fn open(path: &Path) {
+/// Any failure falls back to opening it from pdesk, with pdesk's rights. Also takes a
+/// settings page like `ms-settings:devices-touchpad`.
+pub fn open(path: &Path) {
     if let Err(e) = unsafe { open_by_explorer(path) } {
         eprintln!("tray: explorer did not open {} ({e}), opening it from pdesk", path.display());
         open_here(path);

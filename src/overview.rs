@@ -569,6 +569,11 @@ fn cursor() -> POINT {
     pt
 }
 
+/// A touchpad gesture asks (spec 0011).
+pub fn is_open() -> bool {
+    SESSION.with_borrow(Option::is_some)
+}
+
 /// Win+Tab: open on every screen, or close if open.
 pub fn toggle() {
     if SESSION.with_borrow(Option::is_some) {

@@ -2,11 +2,12 @@
 
 **Date**: 2026-10-22
 **Updated**: 2026-10-28, settings moved to `%LOCALAPPDATA%\pdesk` by [spec 0008](../0008-run-pdesk-as-admin/index.md)
+**Updated**: 2026-11-01, [spec 0012](../0012-settings-page/index.md) makes settings live: pdesk reads the file again whenever it changes, and the settings page edits values in place. AC-2 and "read once at start" no longer hold.
 **Status**: Accepted
 
 ## Summary
 
-pdesk gets one `settings.toml` file in `%LOCALAPPDATA%\pdesk`, the same folder as its log and layout. It holds the workspace count, the switch shortcuts, the indicator timing, and an on/off switch for the Copilot key remap. pdesk reads it once at start, so you restart pdesk after an edit. A broken value only resets that one setting (the log says which), a broken file resets everything, and pdesk always starts.
+pdesk gets one `settings.toml` file in `%LOCALAPPDATA%\pdesk`, the same folder as its log and layout. It holds the workspace count, the switch shortcuts, the indicator timing, and an on/off switch for the Copilot key remap. pdesk reads it once at start, so you restart pdesk after an edit (since spec 0012, pdesk reads it again whenever it changes, and a change applies within two seconds). A broken value only resets that one setting (the log says which), a broken file resets everything, and pdesk always starts.
 
 ## Requirements
 
@@ -16,7 +17,7 @@ pdesk gets one `settings.toml` file in `%LOCALAPPDATA%\pdesk`, the same folder a
 
 **Acceptance criteria**:
 - **AC-1**: If `settings.toml` does not exist in `%LOCALAPPDATA%\pdesk`, pdesk writes the commented default file there on start, and behaves exactly as it does today.
-- **AC-2**: pdesk never overwrites or rewrites an existing `settings.toml`.
+- **AC-2**: pdesk never overwrites or rewrites an existing `settings.toml`. (Changed by spec 0012: the settings page writes one value at a time, keeping every other line and comment.)
 - **AC-3**: With `workspaces = N` (2 to 9), after a restart every screen has N workspaces, the indicator shows N dots, and switching stops at workspace N.
 - **AC-4**: After you lower the count, windows that `state.txt` lists on a workspace that no longer exists are shown on the next start; none stay cloaked.
 - **AC-5**: Every shortcut in `[shortcuts] previous` and `next` switches the screen under the mouse. A combo matches only when exactly its modifiers are held. A combo that is not listed is no longer swallowed and reaches Windows normally.
@@ -33,7 +34,7 @@ pdesk gets one `settings.toml` file in `%LOCALAPPDATA%\pdesk`, the same folder a
 
 **Chosen option**: Option 1: TOML, parsed into a table and read key by key.
 
-pdesk reads `settings.toml` from `%LOCALAPPDATA%\pdesk` once at start into an immutable `Settings`. Bad values fall back one setting at a time; bad TOML falls back to all defaults; problems go to the log.
+pdesk reads `settings.toml` from `%LOCALAPPDATA%\pdesk` once at start into an immutable `Settings` (since spec 0012, again on every change, swapped whole for every reader). Bad values fall back one setting at a time; bad TOML falls back to all defaults; problems go to the log.
 
 **Implementation skills**: `rust-serde` (`rewrite-rs/skills`, `.claude/skills/rust-serde/`) · `rust-best-practices` (`apollographql/skills`, `.claude/skills/rust-best-practices/`)
 
@@ -75,7 +76,7 @@ fade_ms = 200               # 0 to 2000
 
 `ws.rs` `Monitor.hidden` changes from `[Vec<isize>; WORKSPACES]` to `Vec<Vec<isize>>` of length `settings::get().workspaces`; the `WORKSPACES` constant goes away. The `state.txt` format is unchanged.
 
-**State transitions**: none. Settings are read once and never change while pdesk runs.
+**State transitions**: none. Settings are read once and never change while pdesk runs. (Since spec 0012, a reload replaces them whole; a file that won't parse keeps the ones in effect.)
 
 **API surface** (module functions; no network or CLI surface):
 
@@ -154,5 +155,5 @@ Tracer Bullet: first one setting all the way from file to behavior, then the oth
 ## Follow-up
 
 - [ ] For `/sync`: AGENTS.md needs `src/settings.rs`, the settings path, `cargo test` (tests now exist), and a `rust-serde` bullet under `## Agent skills` noting that this spec deliberately departs from its fail whole read advice.
-- [ ] Feature 8 (tray icon): its "Open settings" item opens this file.
+- [ ] Feature 8 (tray icon): its "Open settings" item opens this file (since spec 0012, the tray's Settings opens the settings page, which has an Open settings.toml button).
 - [ ] Features 4, 5 and 6 add their own lists under `[shortcuts]` with the same combo syntax and the same clash rule across all actions.

@@ -290,6 +290,11 @@ pub fn used(hwnd: HWND) {
     RECENT.with_borrow_mut(|r| r.insert(root.0 as isize, Instant::now()));
 }
 
+/// A touchpad gesture asks (spec 0011).
+pub fn is_open() -> bool {
+    SESSION.with_borrow(Option::is_some)
+}
+
 /// Win+F: open on the screen under the mouse, or close if open.
 pub fn toggle() {
     if SESSION.with_borrow(Option::is_some) {

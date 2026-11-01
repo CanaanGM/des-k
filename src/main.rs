@@ -4,6 +4,7 @@
 // Win+Ctrl(+Shift/Alt)+1..9 does the same straight to workspace N.
 // Win+F opens the window finder: search every window on every screen and workspace.
 // Win+Tab opens the workspace overview on every screen: every workspace and its windows.
+// Three and four finger touchpad gestures run what settings.toml maps them to, read by pdesk itself (spec 0011).
 // The Copilot key acts as Right Ctrl. `pdesk --quit` (or Ctrl+C in a console) shows
 // every hidden window again and exits. Release builds have no console and log to
 // %LOCALAPPDATA%\pdesk\pdesk.log.
@@ -11,12 +12,17 @@
 
 mod cloak;
 mod finder;
+mod gestures;
 mod indicator;
 mod keys;
 mod overview;
 mod restore;
 mod settings;
+mod settings_page;
+mod setup;
+mod touchpad;
 mod tray;
+mod welcome;
 mod ws;
 
 use std::os::windows::io::IntoRawHandle;
@@ -25,7 +31,7 @@ use windows::Win32::{
     Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation},
     System::{
         Com::{COINIT_MULTITHREADED, CoInitializeEx},
-        Console::{GetConsoleWindow, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE, SetConsoleCtrlHandler, SetStdHandle},
+        Console::{CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT, GetConsoleWindow, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE, SetConsoleCtrlHandler, SetStdHandle},
         Threading::{GetCurrentProcess, GetCurrentThreadId, OpenProcessToken},
     },
     UI::{
@@ -50,10 +56,14 @@ unsafe extern "system" fn on_foreground(_: HWINEVENTHOOK, _: u32, hwnd: HWND, ob
     }
 }
 
-unsafe extern "system" fn on_console_close(_: u32) -> BOOL {
+unsafe extern "system" fn on_console_close(event: u32) -> BOOL {
     // Runs on a fresh thread: needs its own COM.
     unsafe { let _ = CoInitializeEx(None, COINIT_MULTITHREADED); }
     ws::restore_all();
+    // pdesk starts again at sign in, so a sign out or shutdown must not give Windows its gestures back.
+    if !matches!(event, CTRL_LOGOFF_EVENT | CTRL_SHUTDOWN_EVENT) {
+        setup::write_back();
+    }
     std::process::exit(0);
 }
 
@@ -126,12 +136,18 @@ fn main() -> windows::core::Result<()> {
     let default_panic = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         ws::restore_all();
+        setup::write_back();
         default_panic(info);
     }));
     unsafe { let _ = SetConsoleCtrlHandler(Some(on_console_close), true); }
 
     keys::spawn(unsafe { GetCurrentThreadId() });
+    let first_start = setup::start(); // before the touchpad thread reads Windows' gestures
+    touchpad::spawn(unsafe { GetCurrentThreadId() });
     tray::init();
+    if first_start {
+        welcome::show(true);
+    }
     println!("pdesk running: the shortcuts switch the monitor under the mouse ({} workspaces each).", settings::get().workspaces);
 
     // Only now, with every exit path in place, may restore hide anything. The first tick
@@ -143,6 +159,11 @@ fn main() -> windows::core::Result<()> {
             unsafe { let _ = KillTimer(None, restore_timer); }
             restore_timer = 0;
         }
+    }
+    // Hand edits to settings.toml apply live (spec 0012 AC-5). Never killed: dies with the process.
+    let watch_timer = unsafe { SetTimer(None, 0, 1000, None) };
+    if watch_timer == 0 {
+        eprintln!("settings: no file watch, hand edits apply at the next start");
     }
 
     let mut msg = MSG::default();
@@ -174,6 +195,8 @@ fn main() -> windows::core::Result<()> {
                 finder::close(true);
                 overview::toggle();
             }
+            touchpad::WM_GESTURE => gestures::run(msg.wParam.0),
+            touchpad::WM_TOUCHPADS_CHANGED => welcome::refresh(),
             // Indicator timers carry its window and go to DispatchMessageW below.
             WM_TIMER if msg.hwnd.is_invalid() && restore_timer != 0 && msg.wParam.0 == restore_timer => {
                 if !ws::restore_tick() {
@@ -181,10 +204,13 @@ fn main() -> windows::core::Result<()> {
                     restore_timer = 0;
                 }
             }
+            WM_TIMER if msg.hwnd.is_invalid() && watch_timer != 0 && msg.wParam.0 == watch_timer => settings::watch(),
             WM_CLOSE => break, // posted by `pdesk --quit` and the tray's Quit
-            // Indicator, tray, finder and overview messages. TranslateMessage makes the finder's
-            // typed characters and IME input; the finder and the overview take their own keys before that.
-            _ if finder::key(&msg) || overview::key(&msg) => {}
+            // Indicator, tray, finder, overview, welcome screen and settings page messages.
+            // TranslateMessage makes the finder's typed characters and IME input; the finder and the
+            // overview take their own keys before that, and the welcome screen's and the settings
+            // page's go through IsDialogMessageW (Tab, Enter, Esc).
+            _ if welcome::key(&msg) || settings_page::key(&msg) || finder::key(&msg) || overview::key(&msg) => {}
             _ => unsafe {
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
@@ -192,6 +218,7 @@ fn main() -> windows::core::Result<()> {
         }
     }
     ws::restore_all();
+    setup::write_back(); // Quit and --quit
     tray::remove();
     println!("pdesk stopped, all windows shown");
     Ok(())

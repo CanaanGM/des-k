@@ -37,11 +37,12 @@ struct Monitor {
     hidden: Vec<Vec<isize>>, // one per workspace: the windows it hid, top of z-order first
     last_follow: Option<Instant>,
     last_switch: Option<(Instant, usize)>, // when, and the workspace it left
+    desktop: Vec<isize>, // what show_desktop minimized, top first; any switch or send here clears it
 }
 
 impl Monitor {
     fn new() -> Self {
-        Monitor { active: 0, hidden: vec![Vec::new(); settings::get().workspaces], last_follow: None, last_switch: None }
+        Monitor { active: 0, hidden: vec![Vec::new(); settings::get().workspaces], last_follow: None, last_switch: None, desktop: Vec::new() }
     }
 }
 
@@ -348,6 +349,8 @@ fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize, focus: Opt
     }
     m.last_switch = Some((Instant::now(), m.active));
     m.active = target;
+    // Those windows now belong to the workspace just left; show_desktop must not bring them back here.
+    m.desktop.clear();
 
     match focus {
         // Normally it already has focus: it is what came to the front.
@@ -464,6 +467,7 @@ pub fn send(to: To, follow: bool) {
         m.hidden[from].retain(|&w| w != raw);
         m.hidden[target].insert(0, raw);
     }
+    m.desktop.clear();
     s.sent = Some((raw, Instant::now()));
     indicator::show(mon, active, count, (target != active).then_some(target));
     println!("{}", line("stay"));
@@ -569,6 +573,69 @@ fn focus(h: HWND) {
             let _ = ShowWindow(h, SW_RESTORE);
         }
     }
+}
+
+/// Win+D for the screen under the mouse only (spec 0011, a touchpad gesture). It minimizes the
+/// shown workspace's windows and keeps them; the next time it brings back the ones still
+/// minimized, so a window you minimized yourself is never restored by it.
+pub fn show_desktop() {
+    let (mon, name) = under_mouse();
+    let mut s = state();
+    let m = s.monitors.entry(name.clone()).or_insert_with(Monitor::new);
+    if !m.desktop.is_empty() {
+        let back: Vec<HWND> = std::mem::take(&mut m.desktop)
+            .into_iter()
+            .map(|raw| HWND(raw as *mut _))
+            .filter(|&h| unsafe { IsWindow(Some(h)).as_bool() && IsIconic(h).as_bool() })
+            .collect();
+        // Bottom first, so the old top one ends on top, with focus.
+        for &h in back.iter().rev() {
+            focus(h);
+        }
+        return println!("show desktop: {name}, {} window(s) back", back.len());
+    }
+    let list: Vec<HWND> = app_windows_on(mon).into_iter().filter(|&h| !unsafe { IsIconic(h) }.as_bool()).collect();
+    let fg = unsafe { GetForegroundWindow() };
+    for &h in &list {
+        unsafe { let _ = ShowWindow(h, SW_SHOWMINNOACTIVE); }
+    }
+    // Don't leave keyboard focus in a window we just minimized.
+    if list.contains(&fg) {
+        unsafe { let _ = SetForegroundWindow(GetShellWindow()); }
+    }
+    m.desktop = list.iter().map(|h| h.0 as isize).collect();
+    println!("show desktop: {name}, {} window(s) minimized", list.len());
+}
+
+/// What app_next and app_previous rotate: the shown workspace's windows on the screen under
+/// the mouse, not minimized, top first.
+fn stack() -> (String, Vec<HWND>) {
+    let (mon, name) = under_mouse();
+    (name, app_windows_on(mon).into_iter().filter(|&h| !unsafe { IsIconic(h) }.as_bool()).collect())
+}
+
+/// The bottom window comes to the top, with focus; repeated, it visits every window (spec 0011).
+pub fn app_next() {
+    let (name, stack) = stack();
+    let Some(&h) = stack.last() else {
+        return println!("app_next: no window on {name}");
+    };
+    focus(h);
+    println!("app_next: \"{}\" on {name}", title(h));
+}
+
+/// The top window goes to the bottom and the new top one gets focus (spec 0011).
+pub fn app_previous() {
+    let (name, stack) = stack();
+    let Some(&top) = stack.first() else {
+        return println!("app_previous: no window on {name}");
+    };
+    let next = stack.get(1).copied().unwrap_or(top);
+    if next != top {
+        unsafe { let _ = SetWindowPos(top, Some(HWND_BOTTOM), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE); }
+    }
+    focus(next);
+    println!("app_previous: \"{}\" on {name}", title(next));
 }
 
 fn hidden_on(s: &State, raw: isize) -> Option<(String, usize)> {

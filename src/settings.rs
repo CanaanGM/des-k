@@ -1,10 +1,14 @@
-// settings.toml in %LOCALAPPDATA%\pdesk, read once at start (docs/specs/0001-settings-file/index.md).
+// settings.toml in %LOCALAPPDATA%\pdesk (docs/specs/0001-settings-file/index.md), read at start
+// and again whenever the settings page saves it or its write time changes (spec 0012).
 // Not next to the exe: the installed exe lives in Program Files, where you cannot write (spec 0008).
-// Hand edited and only reported through the log, so a bad value resets just that setting
-// and a file that is not TOML resets all of them. pdesk always starts.
+// A bad value resets just that setting. A file that is not TOML resets all of them at start,
+// but keeps the settings in effect on a live reload. pdesk always starts.
+use std::cell::Cell;
 use std::fmt;
 use std::io::Write;
-use std::sync::{LazyLock, OnceLock};
+use std::sync::LazyLock;
+use std::sync::atomic::{AtomicPtr, Ordering};
+use std::time::SystemTime;
 use toml::{Table, Value};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
@@ -39,6 +43,100 @@ pub enum Animation {
 
 const ANIMATIONS: &[(&str, Animation)] = &[("off", Animation::Off), ("fade", Animation::Fade)];
 
+/// What three or four fingers did on the touchpad (spec 0011).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Motion {
+    Left,
+    Right,
+    Up,
+    Down,
+    Tap,
+}
+
+const SWIPES: &[(&str, Motion)] = &[("left", Motion::Left), ("right", Motion::Right), ("up", Motion::Up), ("down", Motion::Down)];
+
+impl Motion {
+    pub fn word(self) -> &'static str {
+        SWIPES.iter().find(|(_, m)| *m == self).map_or("tap", |(w, _)| w)
+    }
+}
+
+/// What a gesture rule does (0011-gesture-map).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Action {
+    Switch(isize),       // -1 previous, +1 next
+    Send(isize, bool),   // step, and follow
+    Jump(usize),         // 0 based
+    SendTo(usize, bool), // 0 based, and follow
+    Finder,
+    Overview,
+    ShowDesktop,
+    AppNext,
+    AppPrevious,
+    Keys(&'static [u16]), // typed as pdesk's own input, straight to Windows
+    MiddleClick,
+    Nothing,
+    Combo(Combo), // typed as if you pressed it, so pdesk's own shortcuts see it
+}
+
+const ACTIONS: &[(&str, Action)] = &[
+    ("previous", Action::Switch(-1)),
+    ("next", Action::Switch(1)),
+    ("send_previous", Action::Send(-1, true)),
+    ("send_next", Action::Send(1, true)),
+    ("send_previous_stay", Action::Send(-1, false)),
+    ("send_next_stay", Action::Send(1, false)),
+    ("finder", Action::Finder),
+    ("overview", Action::Overview),
+    ("show_desktop", Action::ShowDesktop),
+    ("app_next", Action::AppNext),
+    ("app_previous", Action::AppPrevious),
+    ("search", Action::Keys(&[VK_LWIN.0, b'S' as u16])),
+    ("notifications", Action::Keys(&[VK_LWIN.0, b'N' as u16])),
+    ("middle_click", Action::MiddleClick),
+    ("play_pause", Action::Keys(&[VK_MEDIA_PLAY_PAUSE.0])),
+    ("next_track", Action::Keys(&[VK_MEDIA_NEXT_TRACK.0])),
+    ("previous_track", Action::Keys(&[VK_MEDIA_PREV_TRACK.0])),
+    ("volume_up", Action::Keys(&[VK_VOLUME_UP.0])),
+    ("volume_down", Action::Keys(&[VK_VOLUME_DOWN.0])),
+    ("mute", Action::Keys(&[VK_VOLUME_MUTE.0])),
+    ("none", Action::Nothing),
+];
+
+/// What the welcome screen says each ACTIONS name does (0011-first-run-setup).
+const ACTION_LABELS: &[(&str, &str)] = &[
+    ("previous", "previous workspace"),
+    ("next", "next workspace"),
+    ("send_previous", "send window to previous"),
+    ("send_next", "send window to next"),
+    ("send_previous_stay", "send window to previous, stay"),
+    ("send_next_stay", "send window to next, stay"),
+    ("finder", "finder"),
+    ("overview", "overview"),
+    ("show_desktop", "show desktop"),
+    ("app_next", "next app"),
+    ("app_previous", "previous app"),
+    ("search", "search"),
+    ("notifications", "notifications"),
+    ("middle_click", "middle click"),
+    ("play_pause", "play or pause"),
+    ("next_track", "next track"),
+    ("previous_track", "previous track"),
+    ("volume_up", "volume up"),
+    ("volume_down", "volume down"),
+    ("mute", "mute"),
+    ("none", "nothing"),
+];
+
+/// One `[[gesture]]` rule: this many fingers, this motion, done `times` in a row, runs `action`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Gesture {
+    pub fingers: u8,
+    pub motion: Motion,
+    pub times: u8,
+    pub action: Action,
+}
+
 #[derive(PartialEq, Debug)]
 pub struct Settings {
     pub workspaces: usize,
@@ -64,6 +162,30 @@ pub struct Settings {
     pub overview_animation: Animation,
     pub overview_labels: Labels,
     pub overview_live: bool, // false: the list is taken once, at open
+    // Spec 0011. Safe on by default: a gesture acts only while Windows' own gestures read off.
+    pub touchpad_enabled: bool,
+    pub swipe_mm: u32,
+    pub twice_ms: u32,
+    pub gestures: Vec<Gesture>,
+}
+
+/// The map used when settings.toml has no [[gesture]] rule (spec 0011 AC-2).
+fn default_gestures() -> Vec<Gesture> {
+    use Motion::*;
+    [
+        (4, Left, "next"),
+        (4, Right, "previous"),
+        (4, Up, "overview"),
+        (4, Down, "show_desktop"),
+        (3, Left, "app_next"),
+        (3, Right, "app_previous"),
+        (3, Up, "overview"),
+        (3, Down, "show_desktop"),
+        (3, Tap, "search"),
+        (4, Tap, "notifications"),
+    ]
+    .map(|(fingers, motion, name)| Gesture { fingers, motion, times: 1, action: action(name).expect("a known action name") })
+    .into()
 }
 
 impl Default for Settings {
@@ -91,12 +213,16 @@ impl Default for Settings {
             overview_animation: Animation::Off,
             overview_labels: Labels::Hover,
             overview_live: true,
+            touchpad_enabled: true,
+            swipe_mm: 15,
+            twice_ms: 300,
+            gestures: default_gestures(),
         }
     }
 }
 
 /// Written verbatim when the file is missing. Must parse to `Settings::default()` (tested).
-const DEFAULT_FILE: &str = r#"# pdesk settings. Restart pdesk after editing.
+const DEFAULT_FILE: &str = r#"# pdesk settings. A saved change applies within two seconds; [restore] acts at the next start.
 
 workspaces = 4              # 2 to 9, every screen
 copilot_as_right_ctrl = true
@@ -133,20 +259,133 @@ minutes = 3                 # how long after start to keep matching (1 to 30)
 animation = "off"           # "off" or "fade"
 labels = "hover"            # "hover", "always" or "none"
 live = true                 # false: the list is taken when the overview opens
+
+[touchpad]
+# pdesk reads three and four finger gestures itself, so they work over admin windows too.
+# It acts only while Windows' own three and four finger gestures are all set to Nothing, so one
+# gesture never does two things. The tray's Touchpad setup helps you set them.
+enabled = true
+swipe_mm = 15               # how far the fingers travel before a swipe counts, in mm (5 to 50)
+twice_ms = 300              # how long a gesture with a "times = 2" rule waits for its second go (100 to 1000)
+
+# One block per gesture. fingers = 3 or 4; swipe = "left", "right", "up" or "down", or tap = true;
+# times = 1 or 2 (optional); do = an action below, or a key combo like "Ctrl+Shift+T".
+# Actions: previous, next, send_previous, send_next, send_previous_stay, send_next_stay,
+# jump_1 to jump_9, send_to_1 to send_to_9, send_to_stay_1 to send_to_stay_9, finder, overview,
+# show_desktop, app_next, app_previous, search, notifications, middle_click, play_pause,
+# next_track, previous_track, volume_up, volume_down, mute, none.
+# Writing any [[gesture]] block replaces this whole list.
+[[gesture]]
+fingers = 4
+swipe = "left"
+do = "next"
+
+[[gesture]]
+fingers = 4
+swipe = "right"
+do = "previous"
+
+[[gesture]]
+fingers = 4
+swipe = "up"
+do = "overview"
+
+[[gesture]]
+fingers = 4
+swipe = "down"
+do = "show_desktop"
+
+[[gesture]]
+fingers = 3
+swipe = "left"
+do = "app_next"
+
+[[gesture]]
+fingers = 3
+swipe = "right"
+do = "app_previous"
+
+[[gesture]]
+fingers = 3
+swipe = "up"
+do = "overview"
+
+[[gesture]]
+fingers = 3
+swipe = "down"
+do = "show_desktop"
+
+[[gesture]]
+fingers = 3
+tap = true
+do = "search"
+
+[[gesture]]
+fingers = 4
+tap = true
+do = "notifications"
 "#;
 
-const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activation", "shortcuts", "indicator", "restore", "overview"];
+const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activation", "shortcuts", "indicator", "restore", "overview", "touchpad", "gesture"];
 const SHORTCUT_KEYS: &[&str] = &["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "jump", "send_to", "send_to_stay", "finder", "overview"];
 const INDICATOR_KEYS: &[&str] = &["enabled", "hold_ms", "fade_ms"];
 const RESTORE_KEYS: &[&str] = &["enabled", "minutes"];
 const OVERVIEW_KEYS: &[&str] = &["animation", "labels", "live"];
+const TOUCHPAD_KEYS: &[&str] = &["enabled", "swipe_mm", "twice_ms"];
+const GESTURE_KEYS: &[&str] = &["fingers", "swipe", "tap", "times", "do"];
 
-static SETTINGS: OnceLock<Settings> = OnceLock::new();
-// Kept apart from SETTINGS so an early get() can never block load() from filling it.
+/// One problem found in the file, in the log's words. `key` is like "indicator.hold_ms", or
+/// empty when the problem names no single setting.
+#[derive(PartialEq, Debug)]
+pub struct Problem {
+    pub key: String,
+    pub message: String,
+}
+
+impl Problem {
+    fn new(message: String) -> Self {
+        let key = message.split_once(": ").map_or("", |(k, _)| k);
+        let key = if key.contains(' ') { "" } else { key };
+        Problem { key: key.to_string(), message }
+    }
+}
+
+struct Loaded {
+    settings: Settings,
+    problems: Vec<Problem>,
+}
+
+// Swapped whole on each reload. The old one is leaked, never freed, so every `&'static` a
+// reader on any thread still holds stays valid (a few KB per save). Null until load().
+static CURRENT: AtomicPtr<Loaded> = AtomicPtr::new(std::ptr::null_mut());
+// What get() gives before load(), kept apart so an early get() never waits on load().
 static DEFAULTS: LazyLock<Settings> = LazyLock::new(Settings::default);
 
+thread_local! {
+    // The file's write time when pdesk last read it. Main thread only (spec 0012, file watch).
+    static SEEN: Cell<Option<SystemTime>> = const { Cell::new(None) };
+}
+
+fn current() -> Option<&'static Loaded> {
+    // SAFETY: CURRENT is null or a leaked Box that is never freed.
+    unsafe { CURRENT.load(Ordering::Acquire).as_ref() }
+}
+
 pub fn get() -> &'static Settings {
-    SETTINGS.get().unwrap_or(&DEFAULTS)
+    current().map_or(&DEFAULTS, |l| &l.settings)
+}
+
+/// What is wrong in the file right now, for the settings page.
+pub fn problems() -> &'static [Problem] {
+    current().map_or(&[], |l| &l.problems)
+}
+
+fn store(settings: Settings, problems: Vec<Problem>) {
+    CURRENT.store(Box::into_raw(Box::new(Loaded { settings, problems })), Ordering::Release);
+}
+
+fn modified(path: &std::path::Path) -> Option<SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 /// settings.toml in the data folder, shared by the installed and the dev copy.
@@ -154,16 +393,17 @@ pub fn path() -> std::path::PathBuf {
     crate::ws::data_dir().join("settings.toml")
 }
 
-/// Read the file (writing the default one if missing) and log every problem. Main thread, once.
+/// Read the file (writing the default one if missing) and log every problem. Main thread, at start.
 pub fn load() {
     let path = path();
-    let settings = match std::fs::read_to_string(&path) {
+    SEEN.set(modified(&path));
+    let (settings, problems) = match std::fs::read_to_string(&path) {
         Ok(text) => {
             let (settings, warnings) = parse(&text);
-            for w in warnings {
+            for w in &warnings {
                 eprintln!("settings: {w}");
             }
-            settings
+            (settings, warnings.into_iter().map(Problem::new).collect())
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // create_new: never overwrite a file that appeared meanwhile.
@@ -172,15 +412,152 @@ pub fn load() {
                 Ok(()) => println!("settings: wrote defaults to {}", path.display()),
                 Err(e) => eprintln!("settings: cannot write {} ({e}), using all defaults", path.display()),
             }
-            Settings::default()
+            SEEN.set(modified(&path));
+            (Settings::default(), Vec::new())
         }
         Err(e) => {
             eprintln!("settings: cannot read {} ({e}), using all defaults", path.display());
-            Settings::default()
+            (Settings::default(), Vec::new())
         }
     };
     println!("settings: {}: {settings}", path.display());
-    let _ = SETTINGS.set(settings);
+    store(settings, problems);
+}
+
+/// Who changed the file, for the log (spec 0012 AC-15).
+#[derive(Clone, Copy)]
+pub enum Source {
+    Page,
+    File,
+}
+
+/// Main loop, every second: reload when the file's write time changed (AC-5). A missing
+/// file is skipped, and read again once it is back.
+pub fn watch() {
+    if let Some(t) = modified(&path())
+        && SEEN.get() != Some(t)
+    {
+        let _ = reload(Source::File);
+    }
+}
+
+/// Read the file again and put it in effect for every reader at once. A file that is not
+/// TOML keeps the settings in effect: a typo mid edit must not remap every shortcut (AC-14).
+/// Returns the names of the settings that changed. Main thread.
+pub fn reload(source: Source) -> Result<Vec<&'static str>, String> {
+    let path = path();
+    SEEN.set(modified(&path)); // before reading, so a save during the read is seen next tick
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {} ({e})", path.display()));
+    let (mut settings, mut warnings) = match text.and_then(|t| reparse(&t)) {
+        Ok(got) => got,
+        Err(why) => {
+            eprintln!("settings: {why}, keeping the settings in effect");
+            return Err(why);
+        }
+    };
+    let old = get();
+    // Until step 4 of the settings page build resizes every screen live (AC-6), ws state stays
+    // sized for the count pdesk started with, so a new count waits for the next start.
+    if settings.workspaces != old.workspaces {
+        warnings.push(format!("workspaces: {} applies from pdesk's next start, using {} until then", settings.workspaces, old.workspaces));
+        settings.workspaces = old.workspaces;
+    }
+    // Only new problems are logged, so one bad value is not logged again on every save.
+    let before = problems();
+    for w in warnings.iter().filter(|w| !before.iter().any(|p| &p.message == *w)) {
+        eprintln!("settings: {w}");
+    }
+    let problems: Vec<Problem> = warnings.into_iter().map(Problem::new).collect();
+    let changed = apply(old, &settings, source);
+    if !changed.is_empty() || problems != before {
+        store(settings, problems);
+    }
+    crate::settings_page::refresh();
+    Ok(changed)
+}
+
+/// Logs one line per changed setting (AC-15) and returns their names. Every reader calls
+/// get() each time it acts, so none needs telling yet.
+fn apply(old: &Settings, new: &Settings, source: Source) -> Vec<&'static str> {
+    let from = match source {
+        Source::Page => "page",
+        Source::File => "file",
+    };
+    let mut changed = Vec::new();
+    for ((key, was), (_, now)) in old.fields().into_iter().zip(new.fields()) {
+        if was != now {
+            println!("settings: {key} {was} -> {now} ({from})");
+            changed.push(key);
+        }
+    }
+    changed
+}
+
+/// A change the settings page makes to the file (spec 0012).
+pub enum Edit {
+    /// A key like "indicator.enabled" or "workspaces", and its new value.
+    Value(&'static str, toml_edit::Value),
+}
+
+/// Changes one value in the file and keeps every other byte, then reloads (AC-3). The new
+/// file is swapped in whole by one rename, so a crash never leaves half of it (AC-17).
+pub fn write(edit: Edit) -> Result<(), String> {
+    let path = path();
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DEFAULT_FILE.to_string(),
+        Err(e) => return Err(format!("cannot read {} ({e})", path.display())),
+    };
+    let new = edit_text(&text, &edit)?;
+    let tmp = path.with_extension("toml.tmp");
+    if let Err(e) = std::fs::write(&tmp, new).and_then(|()| std::fs::rename(&tmp, &path)) {
+        let why = format!("cannot save {} ({e})", path.display());
+        eprintln!("settings: {why}");
+        return Err(why);
+    }
+    reload(Source::Page).map(|_| ())
+}
+
+/// Pure, so the tests can run it: the file's text with the edit made and nothing else changed.
+fn edit_text(text: &str, edit: &Edit) -> Result<String, String> {
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e: toml_edit::TomlError| not_toml(&e.to_string(), e.message()))?;
+    let Edit::Value(name, value) = edit;
+    let (section, key) = match name.split_once('.') {
+        Some((section, key)) => (Some(section), key),
+        None => (None, *name),
+    };
+    let table = match section {
+        None => doc.as_table_mut(),
+        Some(section) => doc.entry(section).or_insert(toml_edit::table()).as_table_mut().ok_or_else(|| format!("{section}: expected a [{section}] section"))?,
+    };
+    let mut value = value.clone();
+    match table.get_mut(key) {
+        // get_mut, not insert, which would reformat the key. The old value's decor holds the
+        // spacing and the comment after it.
+        Some(item) => {
+            if let Some(old) = item.as_value() {
+                *value.decor_mut() = old.decor().clone();
+            }
+            *item = toml_edit::Item::Value(value);
+        }
+        None => {
+            table.insert(key, toml_edit::Item::Value(value));
+        }
+    }
+    Ok(doc.to_string())
+}
+
+/// Like parse(), but a file that is not TOML is an error instead of all defaults.
+fn reparse(text: &str) -> Result<(Settings, Vec<String>), String> {
+    match text.parse::<Table>() {
+        Ok(_) => Ok(parse(text)),
+        Err(e) => Err(not_toml(&e.to_string(), e.message())),
+    }
+}
+
+/// The first line of a parser's error carries the line and column; its message says what.
+fn not_toml(full: &str, message: &str) -> String {
+    format!("not valid TOML ({}: {message})", full.lines().next().unwrap_or(""))
 }
 
 /// Pure, so the tests can run it: the settings plus one message per problem found.
@@ -190,10 +567,7 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
     let top: Table = match text.parse() {
         Ok(t) => t,
         Err(e) => {
-            // First line of the error carries the line and column; the message says what.
-            let full = e.to_string();
-            let at = full.lines().next().unwrap_or("");
-            warn.push(format!("not valid TOML ({at}: {}), using all defaults", e.message()));
+            warn.push(format!("{}, using all defaults", not_toml(&e.to_string(), e.message())));
             return (s, warn);
         }
     };
@@ -279,7 +653,119 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
         s.overview_labels = choice(t, "labels", "overview.labels", LABELS, s.overview_labels, &mut warn);
         s.overview_live = boolean(t, "live", "overview.live", s.overview_live, &mut warn);
     }
+
+    if let Some(t) = section(&top, "touchpad", &mut warn) {
+        unknown_keys(t, "touchpad.", TOUCHPAD_KEYS, &mut warn);
+        s.touchpad_enabled = boolean(t, "enabled", "touchpad.enabled", s.touchpad_enabled, &mut warn);
+        s.swipe_mm = int(t, "swipe_mm", "touchpad.swipe_mm", 5, 50, s.swipe_mm as i64, &mut warn) as u32;
+        s.twice_ms = int(t, "twice_ms", "touchpad.twice_ms", 100, 1000, s.twice_ms as i64, &mut warn) as u32;
+    }
+
+    if let Some(v) = top.get("gesture")
+        && let Some(list) = gestures(v, &mut warn)
+    {
+        s.gestures = list;
+    }
     (s, warn)
+}
+
+impl Settings {
+    /// The once and twice rules for a gesture, as indexes into `gestures`.
+    fn rules(&self, fingers: usize, motion: Motion) -> (Option<usize>, Option<usize>) {
+        let rule = |times| self.gestures.iter().position(|g| g.fingers as usize == fingers && g.motion == motion && g.times == times);
+        (rule(1), rule(2))
+    }
+}
+
+/// The touchpad thread asks this for each gesture it recognizes (spec 0011).
+pub fn rules_for(fingers: usize, motion: Motion) -> (Option<usize>, Option<usize>) {
+    get().rules(fingers, motion)
+}
+
+/// The [[gesture]] blocks, or None to keep the default map. A bad rule costs only itself;
+/// writing any rule replaces the whole default map (spec 0011 AC-3, AC-4).
+fn gestures(v: &Value, warn: &mut Vec<String>) -> Option<Vec<Gesture>> {
+    let Some(items) = v.as_array().filter(|items| items.iter().all(Value::is_table)) else {
+        warn.push(format!("gesture: expected [[gesture]] blocks, got a {}, using the default gestures", v.type_str()));
+        return None;
+    };
+    if items.is_empty() {
+        return None; // no rule written
+    }
+    let mut out: Vec<Gesture> = Vec::new();
+    for (i, t) in items.iter().filter_map(Value::as_table).enumerate() {
+        let name = format!("gesture rule {}", i + 1);
+        let g = match gesture(t) {
+            Ok(g) => g,
+            Err(why) => {
+                warn.push(format!("{name}: {why}, skipped"));
+                continue;
+            }
+        };
+        if out.iter().any(|o| (o.fingers, o.motion, o.times) == (g.fingers, g.motion, g.times)) {
+            warn.push(format!("{name}: {g} is already set by an earlier rule, skipped"));
+            continue;
+        }
+        if let Action::Combo(c) = g.action
+            && (c == (Combo { mods: WIN, vk: b'L' as u16 }) || c == (Combo { mods: CTRL | ALT, vk: VK_DELETE.0 }))
+        {
+            warn.push(format!("{name}: Windows never lets a program type {c}, so it does nothing"));
+        }
+        out.push(g);
+    }
+    Some(out)
+}
+
+fn gesture(t: &Table) -> Result<Gesture, String> {
+    if let Some(key) = t.keys().find(|k| !GESTURE_KEYS.contains(&k.as_str())) {
+        return Err(format!("unknown field {key}"));
+    }
+    let fingers = match t.get("fingers") {
+        Some(Value::Integer(n @ 3..=4)) => *n as u8,
+        Some(v) => return Err(format!("fingers = {v}, not 3 or 4")),
+        None => return Err("no fingers".into()),
+    };
+    let motion = match (t.get("swipe"), t.get("tap")) {
+        (Some(Value::String(w)), None) => match SWIPES.iter().find(|(s, _)| s.eq_ignore_ascii_case(w)) {
+            Some((_, m)) => *m,
+            None => return Err(format!("swipe = \"{w}\", not \"left\", \"right\", \"up\" or \"down\"")),
+        },
+        (Some(v), None) => return Err(format!("swipe = {v}, not \"left\", \"right\", \"up\" or \"down\"")),
+        (None, Some(Value::Boolean(true))) => Motion::Tap,
+        (None, Some(v)) => return Err(format!("tap = {v}, only tap = true works")),
+        (Some(_), Some(_)) => return Err("both swipe and tap".into()),
+        (None, None) => return Err("neither swipe nor tap".into()),
+    };
+    let times = match t.get("times") {
+        None => 1,
+        Some(Value::Integer(n @ 1..=2)) => *n as u8,
+        Some(v) => return Err(format!("times = {v}, not 1 or 2")),
+    };
+    let action = match t.get("do") {
+        Some(Value::String(text)) => action(text)?,
+        Some(v) => return Err(format!("do = {v}, not text")),
+        None => return Err("no do".into()),
+    };
+    Ok(Gesture { fingers, motion, times, action })
+}
+
+/// An action name, any case, or else a key combo like the [shortcuts] ones.
+fn action(text: &str) -> Result<Action, String> {
+    let name = text.trim().to_ascii_lowercase();
+    if let Some((_, a)) = ACTIONS.iter().find(|(n, _)| *n == name) {
+        return Ok(*a);
+    }
+    let digit = |prefix: &str| name.strip_prefix(prefix)?.parse::<usize>().ok().filter(|n| (1..=9).contains(n)).map(|n| n - 1);
+    if let Some(i) = digit("send_to_stay_") {
+        return Ok(Action::SendTo(i, false));
+    }
+    if let Some(i) = digit("send_to_") {
+        return Ok(Action::SendTo(i, true));
+    }
+    if let Some(i) = digit("jump_") {
+        return Ok(Action::Jump(i));
+    }
+    parse_combo(text).map(Action::Combo).map_err(|why| format!("do = \"{text}\" is not an action name, and as a key combo it {why}"))
 }
 
 /// One word out of `options`, any case. A bad value keeps `default`.
@@ -489,14 +975,86 @@ impl fmt::Display for Combo {
     }
 }
 
+impl fmt::Display for Action {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if let Some((name, _)) = ACTIONS.iter().find(|(_, a)| a == self) {
+            return write!(f, "{name}");
+        }
+        match self {
+            Action::Jump(i) => write!(f, "jump_{}", i + 1),
+            Action::SendTo(i, true) => write!(f, "send_to_{}", i + 1),
+            Action::SendTo(i, false) => write!(f, "send_to_stay_{}", i + 1),
+            Action::Combo(c) => write!(f, "{c}"),
+            _ => write!(f, "?"),
+        }
+    }
+}
+
+impl Action {
+    /// The plain words the welcome screen shows for this action.
+    pub fn label(&self) -> String {
+        match self {
+            Action::Jump(i) => format!("workspace {}", i + 1),
+            Action::SendTo(i, true) => format!("send window to {}", i + 1),
+            Action::SendTo(i, false) => format!("send window to {}, stay", i + 1),
+            Action::Combo(c) => c.to_string(),
+            _ => {
+                let name = self.to_string();
+                ACTION_LABELS.iter().find(|(n, _)| *n == name).map_or(name, |(_, l)| l.to_string())
+            }
+        }
+    }
+}
+
+/// "4 left", "3 tap twice": the gesture, without its action.
+impl fmt::Display for Gesture {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{} {}{}", self.fingers, self.motion.word(), if self.times == 2 { " twice" } else { "" })
+    }
+}
+
+impl Settings {
+    /// Every setting as (name, value) in file order: the start log line, and the change log
+    /// that compares two of these (spec 0012 AC-15).
+    fn fields(&self) -> Vec<(&'static str, String)> {
+        let list = |l: &[Combo]| format!("[{}]", l.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(", "));
+        let word = |w: Option<&str>| w.unwrap_or("").to_string();
+        let gestures = self.gestures.iter().map(|g| format!("{g}: {}", g.action)).collect::<Vec<_>>().join(", ");
+        vec![
+            ("workspaces", self.workspaces.to_string()),
+            ("copilot_as_right_ctrl", self.copilot_as_right_ctrl.to_string()),
+            ("follow_activation", self.follow_activation.to_string()),
+            ("shortcuts.previous", list(&self.previous)),
+            ("shortcuts.next", list(&self.next)),
+            ("shortcuts.send_previous", list(&self.send_previous)),
+            ("shortcuts.send_next", list(&self.send_next)),
+            ("shortcuts.send_previous_stay", list(&self.send_previous_stay)),
+            ("shortcuts.send_next_stay", list(&self.send_next_stay)),
+            ("shortcuts.jump", mods_text(self.jump).to_string()),
+            ("shortcuts.send_to", mods_text(self.send_to).to_string()),
+            ("shortcuts.send_to_stay", mods_text(self.send_to_stay).to_string()),
+            ("shortcuts.finder", list(&self.finder)),
+            ("shortcuts.overview", list(&self.overview)),
+            ("indicator.enabled", self.indicator_enabled.to_string()),
+            ("indicator.hold_ms", self.hold_ms.to_string()),
+            ("indicator.fade_ms", self.fade_ms.to_string()),
+            ("restore.enabled", self.restore_enabled.to_string()),
+            ("restore.minutes", self.restore_minutes.to_string()),
+            ("overview.animation", word(ANIMATIONS.iter().find(|(_, v)| *v == self.overview_animation).map(|(w, _)| *w))),
+            ("overview.labels", word(LABELS.iter().find(|(_, v)| *v == self.overview_labels).map(|(w, _)| *w))),
+            ("overview.live", self.overview_live.to_string()),
+            ("touchpad.enabled", self.touchpad_enabled.to_string()),
+            ("touchpad.swipe_mm", self.swipe_mm.to_string()),
+            ("touchpad.twice_ms", self.twice_ms.to_string()),
+            ("gestures", format!("[{gestures}]")),
+        ]
+    }
+}
+
 impl fmt::Display for Settings {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let list = |l: &[Combo]| l.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(", ");
-        write!(
-            f,
-            "workspaces={} copilot_as_right_ctrl={} follow_activation={} shortcuts.previous=[{}] shortcuts.next=[{}] shortcuts.send_previous=[{}] shortcuts.send_next=[{}] shortcuts.send_previous_stay=[{}] shortcuts.send_next_stay=[{}] shortcuts.jump={} shortcuts.send_to={} shortcuts.send_to_stay={} shortcuts.finder=[{}] shortcuts.overview=[{}] indicator.enabled={} indicator.hold_ms={} indicator.fade_ms={} restore.enabled={} restore.minutes={} overview.animation={} overview.labels={} overview.live={}",
-            self.workspaces, self.copilot_as_right_ctrl, self.follow_activation, list(&self.previous), list(&self.next), list(&self.send_previous), list(&self.send_next), list(&self.send_previous_stay), list(&self.send_next_stay), mods_text(self.jump), mods_text(self.send_to), mods_text(self.send_to_stay), list(&self.finder), list(&self.overview), self.indicator_enabled, self.hold_ms, self.fade_ms, self.restore_enabled, self.restore_minutes, ANIMATIONS.iter().find(|(_, v)| *v == self.overview_animation).map_or("", |(w, _)| w), LABELS.iter().find(|(_, v)| *v == self.overview_labels).map_or("", |(w, _)| w), self.overview_live
-        )
+        let fields: Vec<String> = self.fields().into_iter().map(|(k, v)| format!("{k}={v}")).collect();
+        write!(f, "{}", fields.join(" "))
     }
 }
 
@@ -519,6 +1077,7 @@ mod tests {
         assert!(INDICATOR_KEYS.iter().all(|k| ind.contains_key(*k)));
         assert!(RESTORE_KEYS.iter().all(|k| res.contains_key(*k)));
         assert!(OVERVIEW_KEYS.iter().all(|k| top["overview"].as_table().unwrap().contains_key(*k)));
+        assert!(TOUCHPAD_KEYS.iter().all(|k| top["touchpad"].as_table().unwrap().contains_key(*k)));
     }
 
     // "none" is how you get a spread with no text at all, so it must stick; a typo costs only
@@ -720,6 +1279,141 @@ overview = [\"Win+F\"]
         assert_eq!(warn, ["shortcuts: Win+F is in both finder and overview, overview turned off"]);
     }
 
+    // The gestures you get without writing a rule are spec 0011 AC-2, spelled out here on
+    // purpose, apart from default_gestures(), so a slip in that table fails this test.
+    #[test]
+    fn the_default_gestures_are_ac_2() {
+        let (s, warn) = parse("");
+        assert!(warn.is_empty(), "{warn:?}");
+        let got: Vec<String> = s.gestures.iter().map(|g| format!("{g}: {}", g.action)).collect();
+        assert_eq!(
+            got,
+            [
+                "4 left: next", "4 right: previous", "4 up: overview", "4 down: show_desktop", "3 left: app_next",
+                "3 right: app_previous", "3 up: overview", "3 down: show_desktop", "3 tap: search", "4 tap: notifications",
+            ]
+        );
+    }
+
+    // Writing one rule means you chose your own map: none of the defaults may still act.
+    #[test]
+    fn a_written_rule_replaces_the_whole_default_map() {
+        let (s, warn) = parse("[[gesture]]\nfingers = 3\ntap = true\ndo = \"Play_Pause\"\n");
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(s.gestures, [Gesture { fingers: 3, motion: Motion::Tap, times: 1, action: action("play_pause").unwrap() }]);
+        assert_eq!(s.rules(4, Motion::Left), (None, None));
+    }
+
+    // AC-4: one typo must never cost the other gestures; each bad rule says why it was skipped.
+    #[test]
+    fn a_bad_rule_only_skips_itself() {
+        let text = r#"
+[[gesture]]
+fingers = 5
+swipe = "left"
+do = "next"
+[[gesture]]
+fingers = 4
+swipe = "left"
+do = "explode"
+[[gesture]]
+fingers = 4
+swipe = "left"
+tap = true
+do = "next"
+[[gesture]]
+fingers = 4
+do = "next"
+[[gesture]]
+fingers = 4
+swipe = "left"
+times = 3
+do = "next"
+[[gesture]]
+fingers = 4
+swipe = "left"
+do = "next"
+speed = 2
+[[gesture]]
+fingers = 3
+tap = false
+do = "search"
+[[gesture]]
+fingers = 4
+swipe = "sideways"
+do = "next"
+[[gesture]]
+fingers = 4
+swipe = "right"
+do = "previous"
+"#;
+        let (s, warn) = parse(text);
+        assert_eq!(s.gestures, [Gesture { fingers: 4, motion: Motion::Right, times: 1, action: Action::Switch(-1) }]);
+        assert_eq!(warn.len(), 8, "{warn:?}");
+        for (i, w) in warn.iter().enumerate() {
+            assert!(w.starts_with(&format!("gesture rule {}: ", i + 1)) && w.ends_with(", skipped"), "{w}");
+        }
+        assert!(warn[1].contains("\"explode\""), "{}", warn[1]);
+        assert!(warn[5].contains("speed"), "{}", warn[5]);
+    }
+
+    // Two rules for one gesture would make it do two things; the first one keeps it.
+    #[test]
+    fn a_repeated_gesture_keeps_the_first_rule() {
+        let (s, warn) = parse("[[gesture]]\nfingers = 4\nswipe = \"up\"\ndo = \"finder\"\n[[gesture]]\nfingers = 4\nswipe = \"UP\"\ndo = \"overview\"\n");
+        assert_eq!(s.gestures.len(), 1);
+        assert_eq!(s.gestures[0].action, Action::Finder);
+        assert_eq!(warn, ["gesture rule 2: 4 up is already set by an earlier rule, skipped"]);
+    }
+
+    // A combo is how you reach any key Windows or an app has; an action name always wins over
+    // one, so "next" can never be read as something else.
+    #[test]
+    fn do_takes_a_name_or_a_combo() {
+        assert_eq!(action("NEXT"), Ok(Action::Switch(1)));
+        assert_eq!(action("send_to_stay_3"), Ok(Action::SendTo(2, false)));
+        assert_eq!(action("send_to_9"), Ok(Action::SendTo(8, true)));
+        assert_eq!(action("jump_1"), Ok(Action::Jump(0)));
+        assert_eq!(action("Win+Ctrl+Right"), Ok(Action::Combo(Combo { mods: WIN | CTRL, vk: VK_RIGHT.0 })));
+        for bad in ["jump_0", "jump_10", "Left", "explode"] {
+            assert!(action(bad).is_err(), "{bad}");
+        }
+        // Every name prints back as itself, so the log shows what you wrote.
+        for (name, a) in ACTIONS {
+            assert_eq!(a.to_string(), *name);
+        }
+        // The welcome screen shows these words; a name with no label would show raw there.
+        for (name, _) in ACTIONS {
+            assert!(ACTION_LABELS.iter().any(|(n, _)| n == name), "{name} has no label");
+        }
+        assert_eq!(Action::SendTo(2, false).label(), "send window to 3, stay");
+        assert_eq!(Action::Combo(Combo { mods: WIN | CTRL, vk: VK_RIGHT.0 }).label(), "Win+Ctrl+Right");
+        let (_, warn) = parse("[[gesture]]\nfingers = 4\ntap = true\ndo = \"Win+L\"\n");
+        assert_eq!(warn, ["gesture rule 1: Windows never lets a program type Win+L, so it does nothing"]);
+    }
+
+    // AC-5: the reader must find both rules of a gesture, so it knows to wait for the second go.
+    #[test]
+    fn a_twice_rule_is_kept_beside_the_once_rule() {
+        let (s, warn) = parse("[[gesture]]\nfingers = 4\nswipe = \"left\"\ndo = \"next\"\n[[gesture]]\nfingers = 4\nswipe = \"left\"\ntimes = 2\ndo = \"jump_1\"\n[[gesture]]\nfingers = 3\ntap = true\ntimes = 2\ndo = \"finder\"\n");
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(s.rules(4, Motion::Left), (Some(0), Some(1)));
+        assert_eq!(s.rules(3, Motion::Tap), (None, Some(2)));
+        assert_eq!(s.rules(4, Motion::Right), (None, None));
+    }
+
+    // A bad [touchpad] value costs that key only; a gesture list that is not [[gesture]] blocks
+    // falls back to the default map, never to no gestures at all.
+    #[test]
+    fn a_bad_touchpad_value_only_resets_itself() {
+        let (s, warn) = parse("gesture = 4\n[touchpad]\nenabled = true\nswipe_mm = 60\ntwice_ms = 500\n");
+        let d = Settings::default();
+        assert!(s.touchpad_enabled);
+        assert_eq!((s.swipe_mm, s.twice_ms), (15, 500));
+        assert_eq!(s.gestures, d.gestures);
+        assert_eq!(warn.len(), 2, "{warn:?}");
+    }
+
     #[test]
     fn combo_text_round_trips() {
         for text in ["Win+Ctrl+Left", "Ctrl+Shift+A", "Alt+F24", "Win+7", "Ctrl+PageDown"] {
@@ -728,5 +1422,52 @@ overview = [\"Win+F\"]
         for bad in ["Left", "Win+Win+Left", "Win+A+B", "Win+", "Win+F25", "Win+Ctrl"] {
             assert!(parse_combo(bad).is_err(), "{bad}");
         }
+    }
+
+    // The page and your hand edits share one file, so a click must change only its value and
+    // keep every comment, both yours and the ones that explain each setting (spec 0012 AC-3).
+    #[test]
+    fn a_page_edit_changes_only_that_value() {
+        let edit = |name, value| edit_text(DEFAULT_FILE, &Edit::Value(name, value)).unwrap();
+        let off = edit("indicator.enabled", toml_edit::Value::from(false));
+        assert_eq!(off, DEFAULT_FILE.replacen("[indicator]\nenabled = true", "[indicator]\nenabled = false", 1));
+        assert!(!parse(&off).0.indicator_enabled);
+        let hold = edit("indicator.hold_ms", toml_edit::Value::from(600));
+        assert_eq!(hold, DEFAULT_FILE.replacen("hold_ms = 550               # 0 to 5000", "hold_ms = 600               # 0 to 5000", 1));
+        let top = edit("workspaces", toml_edit::Value::from(6));
+        assert_eq!(top, DEFAULT_FILE.replacen("workspaces = 4              # 2 to 9", "workspaces = 6              # 2 to 9", 1));
+        // A key the file left out is added, and nothing else moves.
+        let added = edit_text("[indicator]\nenabled = true # mine\n", &Edit::Value("indicator.hold_ms", toml_edit::Value::from(100))).unwrap();
+        assert_eq!(added, "[indicator]\nenabled = true # mine\nhold_ms = 100\n");
+    }
+
+    // A file you are halfway through typing must not become all defaults on a live reload:
+    // that would remap every shortcut mid edit (AC-14). At start, defaults stay the fallback.
+    #[test]
+    fn a_broken_file_is_an_error_on_reload_not_defaults() {
+        let why = reparse("workspaces = \n").unwrap_err();
+        assert!(why.starts_with("not valid TOML (") && why.contains("line 1"), "{why}");
+        assert!(edit_text("workspaces = \n", &Edit::Value("workspaces", toml_edit::Value::from(3))).is_err());
+        let (s, warn) = parse("workspaces = \n");
+        assert_eq!((s, warn.len()), (Settings::default(), 1));
+        assert_eq!(reparse("workspaces = 6\n").unwrap().0.workspaces, 6);
+    }
+
+    // The page finds a setting's note by its key, so the key must come from the log words.
+    #[test]
+    fn a_problem_knows_its_setting() {
+        let (_, warn) = parse("typo = 1\n[indicator]\nhold_ms = \"x\"\n");
+        let keys: Vec<String> = warn.into_iter().map(|w| Problem::new(w).key).collect();
+        assert_eq!(keys, ["", "indicator.hold_ms"]);
+    }
+
+    // The change log compares these one by one, so each must name its setting once.
+    #[test]
+    fn every_setting_is_logged_by_name() {
+        let names: Vec<&str> = Settings::default().fields().into_iter().map(|(k, _)| k).collect();
+        let mut unique = names.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!((names.len(), unique.len()), (26, 26));
     }
 }

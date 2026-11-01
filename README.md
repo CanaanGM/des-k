@@ -85,12 +85,38 @@ of their windows. Below that, the current workspace's windows are spread out so 
 
 The overview is the newest part and is still being worked on.
 
-## Touchpad swipes
+## Touchpad gestures
 
-You can make the four finger swipe switch pdesk's workspaces:
-**Settings → Bluetooth & devices → Touchpad → Advanced gestures**, then set the four finger
-swipe left to `Win+Ctrl+Right` and swipe right to `Win+Ctrl+Left` (or the other way round,
-whichever feels natural).
+pdesk reads your touchpad's three and four finger swipes and taps itself, so they work over
+every window, admin ones like Task Manager too. Out of the box:
+
+| Gesture | 4 fingers | 3 fingers |
+|---|---|---|
+| Swipe left | next workspace | next app |
+| Swipe right | previous workspace | previous app |
+| Swipe up | overview | overview |
+| Swipe down | show desktop | show desktop |
+| Tap | notifications | search |
+
+Windows has its own three and four finger gestures, and one swipe must never do two things. So
+pdesk acts only while Windows' own ones are all set to **Nothing**. The first time pdesk starts,
+a welcome screen helps you with that. It shows what each gesture does in pdesk. **Use these
+gestures** saves your current Windows values and opens Settings at Touchpad for you to set them
+to Nothing. **Choose my own** does the same and also opens `settings.toml`, so you can change
+what each gesture does. If one is still on, pdesk logs which one and does nothing for that
+gesture. Open the screen again any time from the tray, **Touchpad setup**. It shows, for each
+kind of gesture, whether Windows still has it on and what pdesk runs for it.
+
+**Give gestures back to Windows** (on that same screen) writes your saved values back and stops
+pdesk reading the touchpad at once. Windows uses them from your next sign in, or set them in
+Settings now. **Quit** writes them back too, from your next sign in; start pdesk again in the
+same sign in and its gestures keep working.
+
+Change what each gesture does in `settings.toml` (the `[touchpad]` part and the `[[gesture]]`
+blocks; the comments there list every action). A gesture can also send a key combo, or run a
+second action on `times = 2`. Set `enabled = false` to make pdesk ignore the touchpad. Plugging
+a touchpad in or out is picked up without a restart. Two finger scroll, zoom and right click
+stay exactly as they are.
 
 ## Settings
 
@@ -104,6 +130,8 @@ you can change:
 - Whether the Copilot key acts as `Right Ctrl`
 - The overview's window titles (`"hover"`, `"always"` or `"none"`), whether it updates live,
   and how it opens (`"off"` or `"fade"`)
+- What each three and four finger gesture does, how far a swipe travels before it counts, or
+  touchpad reading off altogether
 
 pdesk reads the file once at start, so after editing it run `install.ps1` again (or sign out
 and back in). If you type a bad value, only that one setting goes back to its default; the log
@@ -118,15 +146,17 @@ says which.
   window's workspace.
 - After a restart, pdesk puts reopened windows back on the workspaces they were on, for the
   first few minutes after you sign in.
-- The tray icon menu has **Open settings**, **Open log** and **Quit**.
+- The tray icon menu has **Touchpad setup**, **Open settings**, **Open log** and **Quit**.
 
 ## Stopping and uninstalling
 
 **Quit** from the tray (or `& "$env:ProgramFiles\pdesk\pdesk.exe" --quit`) stops pdesk and
 shows every hidden window, so nothing is ever lost. It also forgets which window was on which
-workspace, on purpose.
+workspace, on purpose. If pdesk runs your touchpad gestures, Quit also hands Windows its own
+gestures back from your next sign in.
 
-To remove it completely, quit it first, then in an **admin** terminal:
+To remove it completely, **Quit it first** (so your windows and touchpad gestures come back),
+then in an **admin** terminal:
 
 ```powershell
 Unregister-ScheduledTask -TaskName pdesk -Confirm:$false

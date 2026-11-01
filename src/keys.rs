@@ -8,6 +8,7 @@
 // - The finder shortcut: posted as WM_FINDER, once per press (spec 0007).
 // - The overview shortcut: posted as WM_OVERVIEW, once per press (spec 0010).
 // - Copilot key (sends LWin, LShift, F23): turned into Right Ctrl, unless settings turn it off.
+// - The keys and clicks touchpad gestures type (spec 0011).
 use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicU32, Ordering};
 use windows::Win32::{
@@ -48,23 +49,65 @@ thread_local! {
     static SEND_HELD: Cell<Option<u16>> = const { Cell::new(None) }; // the key of a send, finder or overview combo that is down
 }
 
+/// One key event; `extra` is MAGIC for pdesk's own input, 0 for a combo the hook should see.
+fn key(vk: u16, up: bool, extra: usize) -> INPUT {
+    let mut flags = if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) };
+    // Without it the arrows and friends arrive as their numpad twins.
+    let extended = [VK_RCONTROL, VK_LWIN, VK_LEFT, VK_RIGHT, VK_UP, VK_DOWN, VK_HOME, VK_END, VK_PRIOR, VK_NEXT, VK_INSERT, VK_DELETE];
+    if extended.iter().any(|e| e.0 == vk) {
+        flags |= KEYEVENTF_EXTENDEDKEY;
+    }
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT { wVk: VIRTUAL_KEY(vk), wScan: 0, dwFlags: flags, time: 0, dwExtraInfo: extra },
+        },
+    }
+}
+
 fn send(keys: &[(u16, bool)]) {
-    let inputs: Vec<INPUT> = keys
-        .iter()
-        .map(|&(vk, up)| {
-            let mut flags = if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) };
-            if vk == VK_RCONTROL.0 || vk == VK_LWIN.0 {
-                flags |= KEYEVENTF_EXTENDEDKEY;
-            }
-            INPUT {
-                r#type: INPUT_KEYBOARD,
-                Anonymous: INPUT_0 {
-                    ki: KEYBDINPUT { wVk: VIRTUAL_KEY(vk), wScan: 0, dwFlags: flags, time: 0, dwExtraInfo: MAGIC },
-                },
-            }
-        })
-        .collect();
+    let inputs: Vec<INPUT> = keys.iter().map(|&(vk, up)| key(vk, up, MAGIC)).collect();
     unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
+}
+
+/// Types VK_MASK, a key no app uses. Windows then counts pdesk as the source of the last
+/// input and lets it move focus, which after a touchpad gesture it does not (spec 0011).
+pub fn mask() {
+    send(&[(VK_MASK, false), (VK_MASK, true)]);
+}
+
+/// Presses `vks` in order and lets them go in reverse, as pdesk's own input, so it goes
+/// straight to Windows: Win+S, the media keys (spec 0011).
+pub fn tap(vks: &[u16]) {
+    let keys: Vec<(u16, bool)> = vks.iter().map(|&vk| (vk, false)).chain(vks.iter().rev().map(|&vk| (vk, true))).collect();
+    send(&keys);
+}
+
+/// Types a combo as if you pressed it: untagged, so this hook sees it and a combo that is a
+/// pdesk shortcut runs that shortcut (spec 0011). Win or Alt ones get VK_MASK before the
+/// modifiers go up, as the hook does, so neither Start nor a menu bar opens.
+pub fn combo(c: Combo) {
+    let mods: Vec<u16> = [(WIN, VK_LWIN), (CTRL, VK_LCONTROL), (ALT, VK_LMENU), (SHIFT, VK_LSHIFT)]
+        .iter()
+        .filter(|(bit, _)| c.mods & bit != 0)
+        .map(|(_, vk)| vk.0)
+        .collect();
+    let mut inputs: Vec<INPUT> = mods.iter().map(|&vk| key(vk, false, 0)).collect();
+    inputs.extend([key(c.vk, false, 0), key(c.vk, true, 0)]);
+    if c.mods & (WIN | ALT) != 0 {
+        inputs.extend([key(VK_MASK, false, MAGIC), key(VK_MASK, true, MAGIC)]);
+    }
+    inputs.extend(mods.iter().rev().map(|&vk| key(vk, true, 0)));
+    unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
+}
+
+/// A middle button down and up wherever the pointer is (spec 0011).
+pub fn middle_click() {
+    let click = |flags| INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 { mi: MOUSEINPUT { dwFlags: flags, dwExtraInfo: MAGIC, ..Default::default() } },
+    };
+    unsafe { SendInput(&[click(MOUSEEVENTF_MIDDLEDOWN), click(MOUSEEVENTF_MIDDLEUP)], size_of::<INPUT>() as i32) };
 }
 
 fn held(vk: VIRTUAL_KEY) -> bool {
