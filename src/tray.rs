@@ -1,4 +1,4 @@
-// Tray icon near the clock: shows pdesk is running, with Touchpad setup, Settings, Open log and Quit.
+// Tray icon near the clock: shows pdesk is running, with Settings, Open log and Quit.
 // Lives on the main thread (its messages come through main's loop) and adds itself again
 // whenever explorer restarts.
 use std::cell::Cell;
@@ -28,7 +28,6 @@ const WM_TRAY: u32 = WM_APP + 3;
 const ID_SETTINGS: usize = 1;
 const ID_LOG: usize = 2;
 const ID_QUIT: usize = 3;
-const ID_TOUCHPAD: usize = 4;
 
 thread_local! {
     static WND: Cell<Option<HWND>> = const { Cell::new(None) };
@@ -150,7 +149,6 @@ fn menu(hwnd: HWND) {
     let flag = |ok: bool| if ok { MF_STRING } else { MF_GRAYED };
     unsafe {
         let Ok(m) = CreatePopupMenu() else { return };
-        let _ = AppendMenuW(m, MF_STRING, ID_TOUCHPAD, w!("Touchpad setup"));
         let _ = AppendMenuW(m, MF_STRING, ID_SETTINGS, w!("Settings"));
         // Debug builds with a console log there instead of to the file.
         let _ = AppendMenuW(m, flag(log.exists()), ID_LOG, w!("Open log"));
@@ -163,7 +161,6 @@ fn menu(hwnd: HWND) {
         let cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, None, hwnd, None);
         let _ = DestroyMenu(m);
         match cmd.0 as usize {
-            ID_TOUCHPAD => crate::welcome::show(false),
             ID_SETTINGS => crate::settings_page::open(None),
             ID_LOG => open(&log),
             // Main's loop breaks on WM_CLOSE, the same path as `pdesk --quit`.

@@ -104,7 +104,7 @@ a welcome screen helps you with that. It shows what each gesture does in pdesk. 
 gestures** saves your current Windows values and opens Settings at Touchpad for you to set them
 to Nothing. **Choose my own** does the same and also opens the settings page at Touchpad, so
 you can change what each gesture does. If one is still on, pdesk logs which one and does nothing for that
-gesture. Open the screen again any time from the tray, **Touchpad setup**. It shows, for each
+gesture. Open the screen again any time from the settings page: Touchpad, **Touchpad setup**. It shows, for each
 kind of gesture, whether Windows still has it on and what pdesk runs for it.
 
 **Give gestures back to Windows** (on that same screen) writes your saved values back and stops
@@ -159,7 +159,7 @@ pdesk keeps the settings it had and the page turns read only until you fix it.
   window's workspace.
 - After a restart, pdesk puts reopened windows back on the workspaces they were on, for the
   first few minutes after you sign in.
-- The tray icon menu has **Touchpad setup**, **Settings**, **Open log** and **Quit**.
+- The tray icon menu has **Settings**, **Open log** and **Quit**.
 
 ## Stopping and uninstalling
 

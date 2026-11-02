@@ -2,7 +2,7 @@
 
 ## Summary
 
-pdesk cannot turn Windows' gestures off live: a registry write does nothing until you sign in again (check step, index.md Build plan step 1). So you set them to Nothing in Settings yourself, and pdesk acts only while it reads them all off in the registry. On the first start, a welcome screen says plainly what pdesk is, shows what each three and four finger gesture will do, and lets you go with that ("Use these gestures") or "Choose my own" (the same setup, plus pdesk's settings page opens at Touchpad, spec 0012). Either one saves your current Windows gesture values and opens Settings at Touchpad. Quit writes your saved values back, and Windows uses them from your next sign in. The tray can open the screen any time.
+pdesk cannot turn Windows' gestures off live: a registry write does nothing until you sign in again (check step, index.md Build plan step 1). So you set them to Nothing in Settings yourself, and pdesk acts only while it reads them all off in the registry. On the first start, a welcome screen says plainly what pdesk is, shows what each three and four finger gesture will do, and lets you go with that ("Use these gestures") or "Choose my own" (the same setup, plus pdesk's settings page opens at Touchpad, spec 0012). Either one saves your current Windows gesture values and opens Settings at Touchpad. Quit writes your saved values back, and Windows uses them from your next sign in. The settings page can open the screen any time (Touchpad, Touchpad setup).
 
 ## Setup state
 
@@ -80,7 +80,7 @@ Approved design (updated 2026-10-31): H2 "checklist", `pdesk-design/welcome/micr
 | One value can't be read | "pdesk can't read the <row> setting, so it leaves every gesture to Windows. The log has the details." The rows. The same Quit line. | as Not all off |
 | All off | "✓ pdesk runs these gestures." The rows. With no saved values: "You set them to Nothing yourself, so Quit has nothing to give back." | Choose my own |
 
-- Footer while saved values exist (every state): "Give gestures back to Windows" and "Gives back what you had the first time you chose Use, from your next sign in." On first start without saved values: "You can open this again from the tray: Touchpad setup."
+- Footer while saved values exist (every state): "Give gestures back to Windows" and "Gives back what you had the first time you chose Use, from your next sign in." On first start without saved values: "You can open this again in pdesk's settings, under Touchpad: Touchpad setup." ("pdesk's settings", because the card above says "Settings" and means Windows Settings.) Opened from the settings page without saved values: no footer text.
 - The state refreshes when the window gets focus back (you return from Settings), when the gesture thread posts `WM_TOUCHPADS_CHANGED`, and after each button.
 
 **After "Give gestures back"** the card shows a banner and the rows relabeled from what the write did, not from a registry read (the registry now holds your values, but Windows keeps its gestures off until you sign in again). No count, and no Use button while a failure banner shows.
@@ -92,7 +92,7 @@ Approved design (updated 2026-10-31): H2 "checklist", `pdesk-design/welcome/micr
 | Every write failed | ! "Giving back didn't work." "Nothing was written back (the log says why). Your saved values are kept, so you can try again. Settings is open if you want gestures now." Button [Try giving back again] | all "Not written" |
 | Every write worked, saving `touchpad.txt` failed | ⓘ the "come back at your next sign in" banner, plus "pdesk couldn't clear its copy of your values (the log says why). Press Give gestures back again to clear it." | all "✓ Written back" |
 
-- The result stays in memory until pdesk exits, a later give back replaces it, or `windows_off()` reads true again; so closing and reopening the screen from the tray shows the same banner and rows. After a pdesk restart it is gone and the rows read the registry again (this can show "Still on" for values Windows still has off live until you sign in; rare, accepted).
+- The result stays in memory until pdesk exits, a later give back replaces it, or `windows_off()` reads true again; so closing and reopening the screen from the settings page shows the same banner and rows. After a pdesk restart it is gone and the rows read the registry again (this can show "Still on" for values Windows still has off live until you sign in; rare, accepted).
 - `give_back` returns this result: `write_all` already names each failed value, and a failed `save` is the last case.
 
 **Controls and keyboard.** Real Windows `BUTTON` controls, owner drawn (pdesk paints them; Windows handles focus, Tab, Enter, Space and the name a screen reader says), for the card's primary button, "Choose my own", "Give gestures back to Windows", and Skip or Close. The main loop passes this window's messages through `IsDialogMessageW`.
@@ -102,15 +102,16 @@ Approved design (updated 2026-10-31): H2 "checklist", `pdesk-design/welcome/micr
 - If a refresh removes the focused control, focus moves to the default button.
 - "Choose my own" works as described under Windows' gesture values.
 
-**Window.** A normal top level window with a title bar (`pdesk`), centered on the screen under the mouse (its work area, the screen minus the taskbar). When the window is taller than that work area, its top sits at the work area's top so the title bar stays in reach, and the part below the screen edge is cut off (Tab and Enter still reach every button). In the taskbar while open, created on the main thread (not the placeholder's own thread). Per monitor DPI aware like the rest of pdesk: it rescales on `WM_DPICHANGED`. One at most: the tray item focuses an open one. No message filter is added.
+**Window.** A normal top level window with a title bar (`pdesk`), centered on the screen under the mouse (its work area, the screen minus the taskbar). When the window is taller than that work area, its top sits at the work area's top so the title bar stays in reach, and the part below the screen edge is cut off (Tab and Enter still reach every button). In the taskbar while open, created on the main thread (not the placeholder's own thread). Per monitor DPI aware like the rest of pdesk: it rescales on `WM_DPICHANGED`. One at most: Touchpad setup focuses an open one. No message filter is added.
 
 **Drawing.** GDI for text (Segoe UI Variable, ClearType) and GDI+ (`Win32_Graphics_GdiPlus`, the flat `Gdip*` calls, started once with `GdiplusStartup`) for the smooth (anti aliased) band gradient, art, tiles, pills and chips. Painted into a back buffer, then copied in one step, so nothing flickers.
 
 **Themes.** Follows Windows' app mode, light or dark (`AppsUseLightTheme`), and high contrast (`SPI_GETHIGHCONTRAST`: system colors only, the band drawn in the window color with a border). It repaints on `WM_SETTINGCHANGE` (`ImmersiveColorSet`) and `WM_SYSCOLORCHANGE`.
 
-## Tray
+## Opening it again
 
-- New item "Touchpad setup" above "Open settings" (`ID_TOUCHPAD = 4`), opens the welcome screen. One screen at most: if it is open, the item focuses it.
+- **Touchpad setup** on pdesk's settings page, under Touchpad (spec 0012), opens the welcome screen (`welcome::show(false)`). One screen at most: if it is open, the button focuses it, and restores it first if it is minimized.
+- The tray has no Touchpad setup item. It had one (`ID_TOUCHPAD = 4`) until 2026-11-02, when it moved to the settings page so every pdesk setting has one home; the tray keeps Settings, Open log and Quit.
 - Setting Windows' gestures to Nothing after an earlier Skip needs no restart: the gate reads the registry on every recognized gesture.
 
 ## Value sourcing

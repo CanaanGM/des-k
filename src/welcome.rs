@@ -1007,7 +1007,7 @@ fn foot(c: &mut Canvas, v: &View, top: f32) -> f32 {
             let line = "Gives back what you had the first time you chose Use, from your next sign in.";
             h += c.para(SIDE, y + h, 300.0, 16.0, &[(line, F::Small, t.dim)]);
         } else if v.first {
-            let runs = [("You can open this again from the tray: ", F::Small, t.dim), ("Touchpad setup", F::SmallBold, t.dim), (".", F::Small, t.dim)];
+            let runs = [("You can open this again in pdesk's settings, under Touchpad: ", F::Small, t.dim), ("Touchpad setup", F::SmallBold, t.dim), (".", F::Small, t.dim)];
             h += c.para(SIDE, y, 300.0, 16.0, &runs);
         }
         h

@@ -263,7 +263,7 @@ live = true                 # false: the list is taken when the overview opens
 [touchpad]
 # pdesk reads three and four finger gestures itself, so they work over admin windows too.
 # It acts only while Windows' own three and four finger gestures are all set to Nothing, so one
-# gesture never does two things. The tray's Touchpad setup helps you set them.
+# gesture never does two things. Touchpad setup, on the settings page, helps you set them.
 enabled = true
 swipe_mm = 15               # how far the fingers travel before a swipe counts, in mm (5 to 50)
 twice_ms = 300              # how long a gesture with a "times = 2" rule waits for its second go (100 to 1000)
