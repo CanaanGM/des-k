@@ -510,6 +510,14 @@ fn apply(old: &Settings, new: &Settings, source: Source) -> Vec<&'static str> {
 pub enum Edit {
     /// A key like "indicator.enabled" or "workspaces", and its new value.
     Value(&'static str, toml_edit::Value),
+    /// A shortcut list, like "shortcuts.finder"; empty is off.
+    Combos(&'static str, Vec<Combo>),
+    /// A digit set, like "shortcuts.jump", and its modifiers; None is off.
+    Digits(&'static str, Option<u8>),
+    /// Every [[gesture]] block, rewritten as this list (AC-12).
+    Gestures(Vec<Gesture>),
+    /// Two edits in one write, so a clash is never saved halfway (AC-9).
+    Pair(Box<Edit>, Box<Edit>),
 }
 
 /// Changes one value in the file and keeps every other byte, then reloads (AC-3). The new
@@ -534,16 +542,62 @@ pub fn write(edit: Edit) -> Result<(), String> {
 /// Pure, so the tests can run it: the file's text with the edit made and nothing else changed.
 fn edit_text(text: &str, edit: &Edit) -> Result<String, String> {
     let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e: toml_edit::TomlError| not_toml(&e.to_string(), e.message()))?;
-    let Edit::Value(name, value) = edit;
+    edit_doc(&mut doc, edit)?;
+    Ok(doc.to_string())
+}
+
+fn edit_doc(doc: &mut toml_edit::DocumentMut, edit: &Edit) -> Result<(), String> {
+    match edit {
+        Edit::Value(name, value) => set_value(doc, name, value.clone()),
+        Edit::Combos(name, list) => {
+            let mut items: toml_edit::Array = list.iter().map(|c| c.to_string()).collect();
+            items.fmt();
+            set_value(doc, name, items.into())
+        }
+        Edit::Digits(name, mods) => set_value(doc, name, mods.map_or(String::new(), |m| mods_text(Some(m))).into()),
+        Edit::Gestures(list) => {
+            set_gestures(doc, list);
+            Ok(())
+        }
+        Edit::Pair(a, b) => edit_doc(doc, a).and_then(|()| edit_doc(doc, b)),
+    }
+}
+
+/// The [[gesture]] blocks as `list`, one block per rule. The comment above the first block
+/// stays; comments inside the blocks go (spec 0012 AC-12).
+fn set_gestures(doc: &mut toml_edit::DocumentMut, list: &[Gesture]) {
+    let first = doc.get("gesture").and_then(toml_edit::Item::as_array_of_tables).and_then(|a| a.get(0)).and_then(|t| t.decor().prefix().cloned());
+    let mut blocks = toml_edit::ArrayOfTables::new();
+    for (i, g) in list.iter().enumerate() {
+        let mut t = toml_edit::Table::new();
+        t.insert("fingers", toml_edit::value(g.fingers as i64));
+        match g.motion {
+            Motion::Tap => t.insert("tap", toml_edit::value(true)),
+            m => t.insert("swipe", toml_edit::value(m.word())),
+        };
+        if g.times == 2 {
+            t.insert("times", toml_edit::value(2));
+        }
+        t.insert("do", toml_edit::value(g.action.to_string()));
+        match (i, &first) {
+            (0, Some(prefix)) => t.decor_mut().set_prefix(prefix.clone()),
+            _ => t.decor_mut().set_prefix("\n"),
+        }
+        blocks.push(t);
+    }
+    doc.insert("gesture", toml_edit::Item::ArrayOfTables(blocks));
+}
+
+fn set_value(doc: &mut toml_edit::DocumentMut, name: &str, value: toml_edit::Value) -> Result<(), String> {
     let (section, key) = match name.split_once('.') {
         Some((section, key)) => (Some(section), key),
-        None => (None, *name),
+        None => (None, name),
     };
     let table = match section {
         None => doc.as_table_mut(),
         Some(section) => doc.entry(section).or_insert(toml_edit::table()).as_table_mut().ok_or_else(|| format!("{section}: expected a [{section}] section"))?,
     };
-    let mut value = value.clone();
+    let mut value = value;
     match table.get_mut(key) {
         // get_mut, not insert, which would reformat the key. The old value's decor holds the
         // spacing and the comment after it.
@@ -557,7 +611,7 @@ fn edit_text(text: &str, edit: &Edit) -> Result<String, String> {
             table.insert(key, toml_edit::Item::Value(value));
         }
     }
-    Ok(doc.to_string())
+    Ok(())
 }
 
 /// For the settings page's tests: the default file with one value changed.
@@ -648,14 +702,8 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
                 None => sets.push((key, m)),
             }
         }
-        // The hook tries the lists first, so a list keeps its digit and the set the other eight.
-        for (list, got) in &taken {
-            for c in got.iter().filter(|c| (b'1' as u16..=b'9' as u16).contains(&c.vk)) {
-                if let Some((key, _)) = sets.iter().find(|(_, m)| *m == c.mods) {
-                    warn.push(format!("shortcuts: {c} is in {list}, {key} skips digit {}", c.vk as u8 as char));
-                }
-            }
-        }
+        // A list on one of a set's digits is valid: the hook tries the lists first, so the
+        // list keeps that digit and the set the other eight (the page says so, spec 0012 AC-8).
     }
 
     if let Some(t) = section(&top, "indicator", &mut warn) {
@@ -704,6 +752,108 @@ impl Settings {
 /// The touchpad thread asks this for each gesture it recognizes (spec 0011).
 pub fn rules_for(fingers: usize, motion: Motion) -> (Option<usize>, Option<usize>) {
     get().rules(fingers, motion)
+}
+
+/// The 10 gestures a touchpad makes, in the order the default file lists them.
+pub const GESTURE_ROWS: [(u8, Motion); 10] = [
+    (4, Motion::Left), (4, Motion::Right), (4, Motion::Up), (4, Motion::Down),
+    (3, Motion::Left), (3, Motion::Right), (3, Motion::Up), (3, Motion::Down),
+    (3, Motion::Tap), (4, Motion::Tap),
+];
+
+/// What the settings page writes for the touchpad: every row's once rule, "none" where there
+/// is none, then its twice rule when it has one (spec 0012 AC-12). `rule(fingers, motion,
+/// times)` gives a row's action.
+pub fn full_map(rule: impl Fn(u8, Motion, u8) -> Option<Action>) -> Vec<Gesture> {
+    let mut out = vec![];
+    for (fingers, motion) in GESTURE_ROWS {
+        out.push(Gesture { fingers, motion, times: 1, action: rule(fingers, motion, 1).unwrap_or(Action::Nothing) });
+        if let Some(action) = rule(fingers, motion, 2) {
+            out.push(Gesture { fingers, motion, times: 2, action });
+        }
+    }
+    out
+}
+
+/// Every named action, in the order the file's comment lists them, for the gesture pickers.
+pub fn actions() -> impl Iterator<Item = Action> {
+    ACTIONS.iter().map(|(_, a)| *a)
+}
+
+/// A key a shortcut can be saved with: the parser's own names (`vk_of`).
+pub fn savable(vk: u16) -> bool {
+    NAMED_KEYS.iter().any(|(_, k)| k.0 == vk) || (b'A' as u16..=b'Z' as u16).contains(&vk) || (b'0' as u16..=b'9' as u16).contains(&vk) || (VK_F1.0..=VK_F24.0).contains(&vk)
+}
+
+/// The shortcut lists in the order the hook tries them, then the digit sets (keys::shortcut).
+pub const LISTS: [&str; 8] = ["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "finder", "overview"];
+pub const SETS: [&str; 3] = ["jump", "send_to", "send_to_stay"];
+
+/// Who already uses a combo the page is about to save (spec 0012 AC-9).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Owner {
+    List(&'static str),
+    /// A digit set the combo is one digit of: the set would skip that digit.
+    Set(&'static str),
+}
+
+impl Settings {
+    /// A row's action for one go (`times` 1) or two.
+    pub fn rule(&self, fingers: u8, motion: Motion, times: u8) -> Option<Action> {
+        self.gestures.iter().find(|g| (g.fingers, g.motion, g.times) == (fingers, motion, times)).map(|g| g.action)
+    }
+
+    /// A shortcut list by its name in [shortcuts].
+    pub fn list(&self, name: &str) -> &[Combo] {
+        match name {
+            "previous" => &self.previous,
+            "next" => &self.next,
+            "send_previous" => &self.send_previous,
+            "send_next" => &self.send_next,
+            "send_previous_stay" => &self.send_previous_stay,
+            "send_next_stay" => &self.send_next_stay,
+            "finder" => &self.finder,
+            "overview" => &self.overview,
+            _ => &[],
+        }
+    }
+
+    /// A digit set by its name in [shortcuts].
+    pub fn set(&self, name: &str) -> Option<u8> {
+        match name {
+            "jump" => self.jump,
+            "send_to" => self.send_to,
+            "send_to_stay" => self.send_to_stay,
+            _ => None,
+        }
+    }
+
+    /// Who else uses `combo`, for the list `me`: another list first, as the hook tries them,
+    /// else a digit set it is one digit of.
+    pub fn combo_owner(&self, me: &str, combo: Combo) -> Option<Owner> {
+        if let Some(other) = LISTS.iter().find(|l| **l != me && self.list(l).contains(&combo)) {
+            return Some(Owner::List(other));
+        }
+        let digit = (b'1' as u16..=b'9' as u16).contains(&combo.vk);
+        SETS.iter().find(|s| digit && self.set(s) == Some(combo.mods)).map(|s| Owner::Set(s))
+    }
+
+    /// The other digit set with these modifiers, if one has them.
+    pub fn set_owner(&self, me: &str, mods: u8) -> Option<&'static str> {
+        SETS.iter().find(|s| **s != me && self.set(s) == Some(mods)).copied()
+    }
+
+    /// The digits a set skips because a list holds its modifiers plus that digit, each with
+    /// that list, by digit (AC-8).
+    pub fn skips(&self, set: &str) -> Vec<(char, &'static str)> {
+        let Some(mods) = self.set(set) else { return vec![] };
+        let mut out: Vec<(char, &'static str)> = LISTS
+            .iter()
+            .flat_map(|l| self.list(l).iter().filter(|c| c.mods == mods && (b'1' as u16..=b'9' as u16).contains(&c.vk)).map(move |c| (c.vk as u8 as char, *l)))
+            .collect();
+        out.sort();
+        out
+    }
 }
 
 /// The [[gesture]] blocks, or None to keep the default map. A bad rule costs only itself;
@@ -854,7 +1004,9 @@ fn boolean(t: &Table, key: &str, name: &str, default: bool, warn: &mut Vec<Strin
     }
 }
 
-/// Bad entries are dropped one by one; an empty result falls back to `default`.
+/// Bad entries are dropped one by one; a list left empty by that falls back to `default`.
+/// A list written empty, `[]`, is off: the settings page writes it when you remove the last
+/// combo (spec 0012 AC-8).
 fn combos(t: &Table, key: &str, name: &str, default: &[Combo], warn: &mut Vec<String>) -> Vec<Combo> {
     let fallback = || default.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(", ");
     let items = match t.get(key) {
@@ -877,7 +1029,7 @@ fn combos(t: &Table, key: &str, name: &str, default: &[Combo], warn: &mut Vec<St
             Err(why) => warn.push(format!("{name}: \"{text}\" {why}, dropped")),
         }
     }
-    if out.is_empty() {
+    if out.is_empty() && !items.is_empty() {
         warn.push(format!("{name}: no valid entry left, using default [{}]", fallback()));
         return default.to_vec();
     }
@@ -1260,13 +1412,25 @@ send_previous = [\"Win+Alt+N\"]
         assert_eq!(warn, ["shortcuts: Win is in both jump and send_to_stay, send_to_stay turned off"]);
     }
 
-    // An explicit list on one digit must not cost the set its other eight digits.
+    // An explicit list on one digit must not cost the set its other eight digits. It is a
+    // setting the page makes on purpose (Move it here), so it is not logged as a problem.
     #[test]
     fn a_list_on_a_digit_only_takes_that_digit() {
         let (s, warn) = parse("[shortcuts]\nnext = [\"Win+Ctrl+2\"]\n");
         assert_eq!(s.next, [Combo { mods: WIN | CTRL, vk: b'2' as u16 }]);
         assert_eq!(s.send_to_stay, Some(WIN | CTRL));
-        assert_eq!(warn, ["shortcuts: Win+Ctrl+2 is in next, send_to_stay skips digit 2"]);
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(s.skips("send_to_stay"), [('2', "next")]);
+    }
+
+    // Removing the last combo on the page writes [], and that must turn the shortcut off, not
+    // bring the default back. A list whose every entry is bad still falls back (spec 0001 AC-6).
+    #[test]
+    fn an_empty_list_is_off() {
+        let (s, warn) = parse("[shortcuts]\nfinder = []\nprevious = []\n");
+        assert!(s.finder.is_empty() && s.previous.is_empty());
+        assert_eq!(s.next, Settings::default().next);
+        assert!(warn.is_empty(), "{warn:?}");
     }
 
     // Win+Ctrl+Right must keep switching (and the swipe with it) even if the finder is set onto it.
@@ -1288,7 +1452,8 @@ finder = [\"Win+3\"]
 ");
         assert_eq!(s.finder, [Combo { mods: WIN, vk: b'3' as u16 }]);
         assert_eq!(s.jump, Some(WIN));
-        assert_eq!(warn, ["shortcuts: Win+3 is in finder, jump skips digit 3"]);
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(s.skips("jump"), [('3', "finder")]);
     }
 
     // Win+F must keep opening the finder if the overview is set onto it: the earlier list keeps
@@ -1483,6 +1648,87 @@ do = "previous"
         let (_, warn) = parse("typo = 1\n[indicator]\nhold_ms = \"x\"\n");
         let keys: Vec<String> = warn.into_iter().map(|w| Problem::new(w).key).collect();
         assert_eq!(keys, ["", "indicator.hold_ms"]);
+    }
+
+    // A recorded combo replaces only its own line, keeping the column the file lined up.
+    #[test]
+    fn a_combo_edit_changes_only_that_list() {
+        let c = |mods, vk: u8| Combo { mods, vk: vk as u16 };
+        let text = edit_text(DEFAULT_FILE, &Edit::Combos("shortcuts.finder", vec![c(WIN, b'F'), c(WIN | ALT, b'G')])).unwrap();
+        assert_eq!(text, DEFAULT_FILE.replacen("finder = [\"Win+F\"]", "finder = [\"Win+F\", \"Win+Alt+G\"]", 1));
+        assert_eq!(parse(&text).0.finder, [c(WIN, b'F'), c(WIN | ALT, b'G')]);
+        let off = edit_text(DEFAULT_FILE, &Edit::Digits("shortcuts.jump", None)).unwrap();
+        assert_eq!(off, DEFAULT_FILE.replacen("jump         = \"Win\"", "jump         = \"\"", 1));
+        let on = edit_text(&off, &Edit::Digits("shortcuts.jump", Some(WIN | ALT))).unwrap();
+        assert_eq!(parse(&on).0.jump, Some(WIN | ALT));
+    }
+
+    // Move it here saves both entries in one write, so the file never holds the clash.
+    #[test]
+    fn a_pair_writes_both_entries() {
+        let next = Combo { mods: WIN, vk: b'F' as u16 };
+        let pair = Edit::Pair(Box::new(Edit::Combos("shortcuts.next", vec![next])), Box::new(Edit::Combos("shortcuts.finder", vec![])));
+        let (s, warn) = parse(&edit_text(DEFAULT_FILE, &pair).unwrap());
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!((s.next, s.finder), (vec![next], vec![]));
+    }
+
+    // The page rewrites every block from its 10 rows. Written over the default file with the
+    // default map, nothing may change, so the comment above the blocks and their layout stay.
+    #[test]
+    fn the_gesture_rewrite_keeps_the_file() {
+        let d = Settings::default();
+        let map = full_map(|f, m, t| d.rule(f, m, t));
+        assert_eq!(map, d.gestures);
+        assert_eq!(edit_text(DEFAULT_FILE, &Edit::Gestures(map)).unwrap(), DEFAULT_FILE);
+    }
+
+    // A twice rule and a key combo survive the rewrite, and a row the file had no rule for is
+    // written as "none" (AC-12).
+    #[test]
+    fn the_gesture_rewrite_parses_back() {
+        let (hand, _) = parse("[[gesture]]\nfingers = 3\ntap = true\ndo = \"search\"\n");
+        let combo = Action::Combo(Combo { mods: CTRL | SHIFT, vk: b'T' as u16 });
+        let map = full_map(|f, m, t| match (f, m, t) {
+            (4, Motion::Left, 2) => Some(combo),
+            _ => hand.rule(f, m, t),
+        });
+        let text = edit_text("# mine\nworkspaces = 3\n", &Edit::Gestures(map.clone())).unwrap();
+        assert!(text.starts_with("# mine\nworkspaces = 3\n"), "{text}");
+        let (s, warn) = parse(&text);
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(s.gestures, map);
+        assert_eq!(s.rule(3, Motion::Tap, 1), Some(action("search").unwrap()));
+        assert_eq!(s.rule(4, Motion::Left, 1), Some(Action::Nothing));
+        assert_eq!(s.rule(4, Motion::Left, 2), Some(combo));
+        assert_eq!(s.gestures.len(), 11);
+    }
+
+    // The page's clash scan must agree with the hook: a list beats a set, a set only loses
+    // the one digit, and two sets with the same keys would make a digit do two things.
+    #[test]
+    fn clashes_are_found_like_the_hook_finds_combos() {
+        let d = Settings::default();
+        let c = |mods, vk: u8| Combo { mods, vk: vk as u16 };
+        assert_eq!(d.combo_owner("next", c(WIN, b'F')), Some(Owner::List("finder")));
+        assert_eq!(d.combo_owner("finder", c(WIN, b'F')), None); // its own
+        assert_eq!(d.combo_owner("finder", c(WIN, b'3')), Some(Owner::Set("jump")));
+        assert_eq!(d.combo_owner("finder", c(WIN, b'0')), None); // no workspace 0
+        assert_eq!(d.combo_owner("finder", c(WIN | ALT, b'3')), None);
+        assert_eq!(d.set_owner("send_to_stay", WIN), Some("jump"));
+        assert_eq!(d.set_owner("jump", WIN), None);
+        assert_eq!(d.set_owner("jump", WIN | ALT), None);
+        assert!(d.skips("jump").is_empty());
+    }
+
+    // The recorder refuses keys the file can't name, so every key it takes must round trip.
+    #[test]
+    fn every_savable_key_round_trips() {
+        for vk in (0..=255u16).filter(|vk| savable(*vk)) {
+            let combo = Combo { mods: CTRL, vk };
+            assert_eq!(parse_combo(&combo.to_string()), Ok(combo), "vk {vk:#x}");
+        }
+        assert!(!savable(VK_NUMPAD3.0) && !savable(VK_OEM_1.0) && !savable(VK_VOLUME_UP.0) && !savable(VK_LWIN.0));
     }
 
     // The change log compares these one by one, so each must name its setting once.

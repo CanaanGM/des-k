@@ -166,8 +166,8 @@ spec [0010](../specs/0010-workspace-overview/index.md) · code in `src/overview.
 - [ ] Build it: `/develop workspace overview`
   - [x] Hidden window preview check, then the thin thread: Win+Tab, a popup per screen, tiles, spread, click to go or switch (AC-1, AC-3, AC-4, AC-6, AC-12, AC-13, AC-14)
   - [x] Strip mini windows, near real place spread, cards, labels setting (AC-2, AC-3, AC-4, AC-5)
-  - [ ] Keys, selection, closing windows (AC-8, AC-9)
-  - [ ] Drag and drop across screens (AC-7)
+  - [x] Keys, selection, closing windows (AC-8, AC-9)
+  - [x] Drag and drop across screens (AC-7)
   - [ ] Live setting and animations, then tried on your screens and installed (AC-10, AC-11, all ACs)
 
 ## Slice 6: Touchpad
@@ -181,7 +181,7 @@ spec [0011](../specs/0011-touchpad-gestures/index.md) · code in `src/touchpad.r
   - [x] Check step on your touchpad, then the thin thread: four finger left and right over Task Manager (AC-1, AC-11, AC-13)
   - [x] The map: `[touchpad]`, `[[gesture]]` rules, twice, every action (AC-2 to AC-7)
   - [x] Setup logic: registry gate, save, write back on Quit and same sign in rewrite, tray item (AC-6, AC-8, AC-9, AC-10)
-  - [ ] Welcome screen to the approved H2 design: Q1 check first, then the window, four rows, give back results; plus the 2026-11-01 change (what pdesk is, the map in each row, Use these gestures or Choose my own) (AC-8, AC-9, AC-11)
+  - [x] Welcome screen to the approved H2 design: Q1 check first, then the window, four rows, give back results; plus the 2026-11-01 change (what pdesk is, the map in each row, Use these gestures or Choose my own) (AC-8, AC-9, AC-11)
   - [ ] Hot plug, README, installed and tried on your screens (AC-12, all ACs)
 
 ## Slice 7: Settings page
@@ -189,14 +189,14 @@ spec [0011](../specs/0011-touchpad-gestures/index.md) · code in `src/touchpad.r
 ### 14. Settings page · in-progress
 A pdesk window where you change every setting by clicking, instead of editing `settings.toml` by hand: workspaces, shortcuts, the indicator, restore, the overview and touchpad gestures. It opens from the tray and from the welcome screen's "Choose my own".
 **Done when:** every setting in `settings.toml` can be changed from the page, the tray opens it, "Choose my own" opens it at the gestures, and the page says when each change takes effect.
-spec [0012](../specs/0012-settings-page/index.md) · code in `src/settings_page.rs`, `src/settings.rs`, `src/main.rs`, `src/tray.rs`
+spec [0012](../specs/0012-settings-page/index.md) · code in `src/settings_page.rs`, `src/settings.rs`, `src/main.rs`, `src/tray.rs`, `src/keys.rs`, `src/welcome.rs`
 - [x] Design it (spec): `/architect settings page`
 - [ ] Build it: `/develop settings page`
-  - [ ] Live settings core and a one toggle tracer page, tray opens it (AC-1, AC-3, AC-4, AC-5, AC-14, AC-15, AC-17)
+  - [x] Live settings core and a one toggle tracer page, tray opens it (AC-1, AC-3, AC-4, AC-5, AC-14, AC-15, AC-17)
   - [x] Design pass approved (`pdesk-design/settings/`, r4, 2026-11-01)
   - [ ] Every plain setting, screen pictures, live workspace resize, banner and touchpad status, keyboard and themes (AC-2, AC-4, AC-6, AC-10, AC-11, AC-14, AC-16, AC-18 to AC-21)
-  - [ ] Shortcut recorder, chips and clash prompt (AC-7, AC-8, AC-9)
-  - [ ] Gesture rows and Choose my own opens the page (AC-12, AC-13)
+  - [x] Shortcut recorder, chips and clash prompt (AC-7, AC-8, AC-9)
+  - [x] Gesture rows and Choose my own opens the page (AC-12, AC-13)
 
 ## Deferred
 Out of scope for the current build pass, kept so the plan stays honest.

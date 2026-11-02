@@ -90,7 +90,7 @@ pub(crate) struct Theme {
     pub(crate) disabled: u32,
 }
 
-const DARK: Theme = Theme {
+pub(crate) const DARK: Theme = Theme {
     dark: true,
     hc: false,
     surface: 0x202020,
@@ -123,7 +123,7 @@ const DARK: Theme = Theme {
     disabled: 0x8A8A8A,
 };
 
-const LIGHT: Theme = Theme {
+pub(crate) const LIGHT: Theme = Theme {
     dark: false,
     hc: false,
     surface: 0xFFFFFF,
@@ -1235,7 +1235,7 @@ fn on_command(h: HWND, id: i32) {
             if card == Some(true) {
                 setup::use_gestures();
             }
-            crate::tray::open(&crate::settings::path());
+            crate::settings_page::open(Some(crate::settings_page::Section::Touchpad));
             refresh();
         }
         ID_GIVE => give(),
@@ -1345,7 +1345,7 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use windows::core::GUID;
 
@@ -1409,7 +1409,7 @@ mod tests {
         Theme { dark: true, hc: true, surface: bg, text: fg, dim: fg, stroke: fg, accent: hi, on_accent: bg, band_a: bg, band_b: bg, on_band: fg, card: bg, card_edge: fg, tile: bg, tile_ico: bg, tile_ico_fg: fg, chip_on: bg, chip_on_fg: fg, chip_off: bg, chip_off_fg: fg, chip_err: bg, chip_err_fg: fg, note: bg, note_edge: fg, warn: bg, warn_edge: fg, btn: bg, btn_edge: fg, foot: bg, disabled: gray }
     }
 
-    fn save_png(w: i32, h: i32, path: &std::path::Path, f: impl FnOnce(HDC)) {
+    pub(crate) fn save_png(w: i32, h: i32, path: &std::path::Path, f: impl FnOnce(HDC)) {
         unsafe {
             let screen = GetDC(None);
             let mem = CreateCompatibleDC(Some(screen));

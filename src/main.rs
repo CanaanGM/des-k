@@ -191,6 +191,7 @@ fn main() -> windows::core::Result<()> {
                 overview::close(true);
                 finder::toggle();
             }
+            keys::WM_RECORDED => settings_page::recorded(msg.wParam.0 as u16, msg.lParam.0 as u8),
             keys::WM_OVERVIEW => {
                 finder::close(true);
                 overview::toggle();

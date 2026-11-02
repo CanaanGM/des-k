@@ -19,9 +19,9 @@ use windows::Win32::{
         WindowsAndMessaging::*,
     },
 };
-use windows::core::{PCWSTR, w};
+use windows::core::{HSTRING, PCWSTR, w};
 
-use crate::settings::{self, Edit, Motion, Settings};
+use crate::settings::{self, Action, Combo, Edit, Motion, Owner, Settings};
 use crate::welcome::{Bx, Canvas, F, Fonts, Theme, alpha, buffered, dark_title, mix, op, theme};
 
 const CLASS: PCWSTR = w!("pdesk-settings");
@@ -68,7 +68,7 @@ impl Section {
     fn intro(self, s: &Settings) -> String {
         match self {
             Section::Workspaces => "Every screen has its own row of workspaces, all the same length.".into(),
-            Section::Shortcuts => "The combos pdesk listens for. No combo means off. Recording new ones comes with the shortcut recorder; until then, change them in settings.toml.".into(),
+            Section::Shortcuts => "The combos pdesk listens for. Click a combo to record a new one in its place, or + Add for another. No combo means off.".into(),
             Section::Indicator => "The dots that show which workspace you are on after a switch, a jump or a send.".into(),
             Section::Restore => "pdesk reads these once, when it starts.".into(),
             Section::Overview => match s.overview.first() {
@@ -211,24 +211,65 @@ fn stepped(v: i64, lo: i64, hi: i64, by: i64, up: bool) -> i64 {
     n.clamp(lo, hi)
 }
 
-/// A shortcut entry's combos as the file spells them; a digit entry as "Win + 1…9".
+/// A shortcut key's name in [shortcuts]: "shortcuts.finder" → "finder".
+fn short(key: &str) -> &str {
+    key.strip_prefix("shortcuts.").unwrap_or(key)
+}
+
+/// One of the three digit entries.
+fn is_digits(key: &str) -> bool {
+    settings::SETS.contains(&short(key))
+}
+
+/// A shortcut entry by its name in [shortcuts]: its page key and title.
+fn entry(name: &str) -> (&'static str, &'static str) {
+    SHORTCUTS.iter().find(|(k, _)| short(k) == name).copied().unwrap_or(("", ""))
+}
+
+/// A shortcut entry's combos as the file spells them; a digit entry as "Win + 1…9", with the
+/// digits a list takes from it (AC-8).
 fn combos(s: &Settings, key: &str) -> Vec<String> {
-    let list = |l: &[settings::Combo]| l.iter().map(|c| c.to_string()).collect();
-    let digits = |m: Option<u8>| m.map(|m| format!("{} + 1…9", settings::mods_text(Some(m)))).into_iter().collect();
-    match key {
-        "shortcuts.previous" => list(&s.previous),
-        "shortcuts.next" => list(&s.next),
-        "shortcuts.send_previous" => list(&s.send_previous),
-        "shortcuts.send_next" => list(&s.send_next),
-        "shortcuts.send_previous_stay" => list(&s.send_previous_stay),
-        "shortcuts.send_next_stay" => list(&s.send_next_stay),
-        "shortcuts.jump" => digits(s.jump),
-        "shortcuts.send_to" => digits(s.send_to),
-        "shortcuts.send_to_stay" => digits(s.send_to_stay),
-        "shortcuts.finder" => list(&s.finder),
-        "shortcuts.overview" => list(&s.overview),
-        _ => vec![],
+    let name = short(key);
+    if !is_digits(key) {
+        return s.list(name).iter().map(|c| c.to_string()).collect();
     }
+    let Some(m) = s.set(name) else { return vec![] };
+    let mut text = format!("{} + 1…9", settings::mods_text(Some(m)));
+    let skips: Vec<String> = s.skips(name).iter().map(|(d, list)| format!("{d} ({})", entry(list).1)).collect();
+    if !skips.is_empty() {
+        text += &format!(", skips {}", skips.join(", "));
+    }
+    vec![text]
+}
+
+/// "Next workspace" in a sentence: "next workspace".
+fn lower(title: &str) -> String {
+    let mut c = title.chars();
+    c.next().map_or(String::new(), |f| f.to_lowercase().chain(c).collect())
+}
+
+/// An action's label as a picker shows it: "Next workspace".
+fn label(a: Action) -> String {
+    let text = a.label();
+    let mut c = text.chars();
+    c.next().map_or(String::new(), |f| f.to_uppercase().chain(c).collect())
+}
+
+/// What the recorder is recording for (spec 0012 AC-7, AC-12).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Rec {
+    List(&'static str, Option<usize>), // a shortcut list, and the combo it replaces (None: + Add)
+    Digits(&'static str),
+    Gesture(usize, u8), // a GESTURE_ROWS row and its times: Key combo…
+}
+
+/// A clash the recorder found, waiting for Move it here or Cancel (AC-9). Nothing is saved
+/// until you choose.
+struct Prompt {
+    key: &'static str, // the entry it shows under
+    title: String,
+    sub: String,
+    edit: Edit,
 }
 
 /// Something you can click, focus from the keyboard, or both.
@@ -245,19 +286,28 @@ enum Ctl {
     Open,    // Open settings.toml
     Dismiss, // the save error banner
     Setup,   // Touchpad setup: the welcome screen
+    Chip(&'static str, usize),   // a shortcut's combo: records a new one in its place
+    Remove(&'static str, usize), // its ×
+    Add(&'static str),           // + Add: records one more
+    StopRec(&'static str),       // Cancel while recording
+    Move(&'static str),          // the clash prompt's two buttons
+    Cancel(&'static str),
+    Once(usize), // a gesture row's pickers, by GESTURE_ROWS index
+    Twice(usize),
 }
 
 impl Ctl {
     fn key(self) -> Option<&'static str> {
         match self {
             Ctl::Toggle(k) | Ctl::Minus(k) | Ctl::Plus(k) | Ctl::Stepper(k) | Ctl::Choice(k, _) | Ctl::Pick(k) | Ctl::Reset(k) => Some(k),
+            Ctl::Chip(k, _) | Ctl::Remove(k, _) | Ctl::Add(k) | Ctl::StopRec(k) | Ctl::Move(k) | Ctl::Cancel(k) => Some(k),
             _ => None,
         }
     }
 
-    /// Changes the file; a read only page still lets you focus it.
+    /// Changes the file (or starts recording a change); a read only page still lets you focus it.
     fn writes(self) -> bool {
-        self.key().is_some()
+        !matches!(self, Ctl::StopRec(_) | Ctl::Cancel(_)) && (self.key().is_some() || matches!(self, Ctl::Once(_) | Ctl::Twice(_)))
     }
 
     /// The keyboard stop this control belongs to: one per row.
@@ -298,6 +348,9 @@ struct Win {
     press: Option<Ctl>,
     drag: Option<f32>, // dragging the scroll thumb: where in the thumb it was grabbed
     error: Option<(String, String)>, // the last save that failed: what stays, and why
+    rec: Option<Rec>,
+    refused: Option<(String, String)>, // the last key the recorder refused: title and line
+    prompt: Option<Prompt>,
 }
 
 thread_local! {
@@ -644,32 +697,219 @@ impl Ctx<'_, '_> {
         h
     }
 
-    /// A shortcut entry and its combos, read only until the shortcut recorder (step 5).
+    /// `text` cut with "…" to fit `w`.
+    fn fit(&self, text: &str, f: F, w: f32) -> String {
+        if self.c.width(text, f) <= w {
+            return text.into();
+        }
+        let mut s: String = text.into();
+        while !s.is_empty() && self.c.width(&format!("{s}…"), f) > w {
+            s.pop();
+        }
+        format!("{}…", s.trim_end())
+    }
+
+    /// A note inside a card, under the row it is about: a glyph, a bold title, a line, and
+    /// buttons under them. `kind`: 0 information, 1 a question (the clash prompt), 2 refused.
+    #[allow(clippy::too_many_arguments)]
+    fn note(&mut self, x: f32, y: f32, w: f32, kind: u8, title: &str, sub: &str, buttons: &[(Ctl, &str)]) -> f32 {
+        let t = self.c.t;
+        let (tx, tw) = (x + 40.0, w - 52.0);
+        let text = |c: &mut Self| {
+            let h = c.c.para(tx, y + 10.0, tw, 20.0, &[(title, F::Bold, t.text)]);
+            h + 2.0 + c.c.para(tx, y + 12.0 + h, tw, 17.0, &[(sub, F::Small, t.dim)])
+        };
+        let th = self.measured(|c| text(c));
+        let h = 10.0 + th + if buttons.is_empty() { 10.0 } else { 10.0 + 32.0 + 12.0 };
+        let (fill, edge, fg, glyph) = match kind {
+            0 => (t.tile, t.card_edge, t.accent, "i"),
+            1 => (t.warn, t.warn_edge, t.text, "!"),
+            _ => (t.chip_err, mix(t.chip_err, t.chip_err_fg, 0.4), t.chip_err_fg, "×"),
+        };
+        self.c.boxed((x, y, w, h), 8.0, fill, Some(edge));
+        self.c.circle(x + 20.0, y + 20.0, 10.0, None, Some((op(fg), 1.5)));
+        let gw = self.c.width(glyph, F::Glyph);
+        self.c.text(x + 20.0 - gw / 2.0, y + 10.0, 20.0, glyph, F::Glyph, fg);
+        text(self);
+        let mut bx = tx;
+        for (ctl, label) in buttons {
+            bx += self.button(*ctl, bx, y + 10.0 + th + 10.0, None, label, 1) + 8.0;
+        }
+        h
+    }
+
+    /// A combo chip with its × on the right. Returns its width.
+    fn chip(&mut self, key: &'static str, i: usize, x: f32, y: f32, text: &str) -> f32 {
+        let t = self.c.t;
+        let (body, cross) = (Ctl::Chip(key, i), Ctl::Remove(key, i));
+        let tw = self.c.width(text, F::Small);
+        let w = tw + 20.0 + 24.0;
+        let fill = if self.hovered(body) && !self.ro { mix(t.tile, t.text, 0.08) } else { t.tile };
+        self.c.boxed((x, y, w, 28.0), 8.0, fill, Some(t.card_edge));
+        self.c.text(x + 10.0, y, 28.0, text, F::Small, t.text);
+        let (cx, cy) = (x + w - 15.0, y + 14.0);
+        if self.hovered(cross) && !self.ro {
+            self.c.circle(cx, cy, 9.0, Some(op(mix(t.tile, t.text, 0.14))), None);
+        }
+        let col = op(if self.ro { t.disabled } else { t.dim });
+        self.c.lines(&[(cx - 3.5, cy - 3.5), (cx + 3.5, cy + 3.5)], 1.4, col);
+        self.c.lines(&[(cx + 3.5, cy - 3.5), (cx - 3.5, cy + 3.5)], 1.4, col);
+        self.ring((x, y, w - 26.0, 28.0), 8.0, body);
+        self.ring((cx - 10.0, y + 4.0, 20.0, 20.0), 10.0, cross);
+        self.hit(body, (x, y, w - 26.0, 28.0), 1);
+        self.hit(cross, (x + w - 26.0, y, 26.0, 28.0), 1);
+        w
+    }
+
+    /// The chip that waits for a combo while recording. Returns its width.
+    fn waiting(&mut self, x: f32, y: f32, text: &str) -> f32 {
+        let t = self.c.t;
+        let w = self.c.width(text, F::SmallBold) + 24.0;
+        self.c.boxed((x, y, w, 28.0), 8.0, mix(t.card, t.accent, 0.12), Some(t.accent));
+        self.c.text(x + 12.0, y, 28.0, text, F::SmallBold, t.accent);
+        w
+    }
+
+    /// The recording note or the clash prompt for `key`, if either is open. Returns its height.
+    fn row_note(&mut self, key: &'static str, x: f32, y: f32, w: f32) -> f32 {
+        if let Some(p) = self.w.prompt.as_ref().filter(|p| p.key == key) {
+            let (title, sub) = (p.title.clone(), p.sub.clone());
+            return 8.0 + self.note(x, y + 8.0, w, 1, &title, &sub, &[(Ctl::Move(key), "Move it here"), (Ctl::Cancel(key), "Cancel")]);
+        }
+        let Some(rec) = self.w.rec.filter(|r| match r {
+            Rec::List(k, _) | Rec::Digits(k) => *k == key,
+            Rec::Gesture(..) => key == "gesture",
+        }) else {
+            return 0.0;
+        };
+        let stop = [(Ctl::StopRec(key), "Cancel")];
+        if let Some((title, sub)) = self.w.refused.clone() {
+            return 8.0 + self.note(x, y + 8.0, w, 2, &title, &sub, &stop);
+        }
+        let (title, sub) = match rec {
+            Rec::Digits(_) => ("Hold the keys you want, then press any digit 1 to 9.", "All nine digits get the same keys: with Win+Alt, Win+Alt+1 goes to workspace 1, and so on. Esc alone cancels."),
+            Rec::List(..) => ("Press the new shortcut.", "pdesk's own shortcuts are paused, and the keys reach no other program, until you finish. Esc alone or a click elsewhere cancels; Esc with Win, Ctrl, Alt or Shift held is recorded."),
+            Rec::Gesture(..) => ("Press the key combo this gesture should type.", "No clash check here: a gesture may type any combo, one of pdesk's own too. Esc alone or a click elsewhere cancels."),
+        };
+        8.0 + self.note(x, y + 8.0, w, 0, title, sub, &stop)
+    }
+
+    /// A shortcut entry: its combos as chips, each with ×, and + Add (AC-8). While it records,
+    /// a waiting chip and a note; after a clash, the prompt (AC-9).
     fn shortcut(&mut self, key: &'static str, title: &str, y: f32) -> f32 {
         let t = self.c.t;
         let (x, w) = (CX + 16.0, CW - 32.0);
-        let name = format!(" {}", key.rsplit('.').next().unwrap_or(key));
+        let name = format!(" {}", short(key));
         let mut h = 12.0;
         h += self.c.para(x, y + h, w, 20.0, &[(title, F::Bold, t.text), (&name, F::Mono, t.dim)]);
         h += 6.0;
         let list = combos(self.s, key);
-        let mut cx = x;
-        if list.is_empty() {
-            self.c.text(cx, y + h, 24.0, "Off", F::Small, t.dim);
+        let digits = is_digits(key);
+        let rec = self.w.rec;
+        let (mut cx, mut cy) = (x, y + h);
+        // Wraps to a new line when the next piece does not fit.
+        let room = |cx: &mut f32, cy: &mut f32, pw: f32| {
+            if *cx > x && *cx + pw > x + w {
+                *cx = x;
+                *cy += 36.0;
+            }
+        };
+        for (i, text) in list.iter().enumerate() {
+            if rec == Some(Rec::List(key, Some(i))) || (digits && rec == Some(Rec::Digits(key))) {
+                let label = if digits { "Hold keys, press a digit" } else { "Press a combo" };
+                room(&mut cx, &mut cy, self.c.width(label, F::SmallBold) + 24.0);
+                cx += self.waiting(cx, cy, label) + 8.0;
+                continue;
+            }
+            room(&mut cx, &mut cy, self.c.width(text, F::Small) + 44.0);
+            cx += self.chip(key, i, cx, cy, text) + 8.0;
         }
-        for combo in &list {
-            let cw = self.c.width(combo, F::Small) + 20.0;
-            self.c.boxed((cx, y + h, cw, 24.0), 6.0, t.tile, Some(t.card_edge));
-            self.c.text(cx + 10.0, y + h, 24.0, combo, F::Small, t.text);
-            cx += cw + 8.0;
+        if rec == Some(Rec::List(key, None)) || (digits && list.is_empty() && rec == Some(Rec::Digits(key))) {
+            let label = if digits { "Hold keys, press a digit" } else { "Press a combo" };
+            room(&mut cx, &mut cy, self.c.width(label, F::SmallBold) + 24.0);
+            cx += self.waiting(cx, cy, label) + 8.0;
+        } else if list.is_empty() {
+            self.c.text(cx, cy, 28.0, "Off", F::Small, t.dim);
+            cx += self.c.width("Off", F::Small) + 12.0;
         }
-        h += 24.0;
+        // A digit entry holds one set of keys, so it records anew from its chip instead.
+        if !digits || list.is_empty() {
+            let label = "+ Add";
+            room(&mut cx, &mut cy, self.c.width(label, F::Body) + 28.0);
+            let ctl = Ctl::Add(key);
+            let bw = self.c.width(label, F::Small) + 24.0;
+            let fill = if self.hovered(ctl) && !self.ro { mix(t.card, t.text, 0.08) } else { t.card };
+            self.c.boxed((cx, cy, bw, 28.0), 8.0, fill, Some(t.stroke));
+            self.c.text(cx + 12.0, cy, 28.0, label, F::Small, if self.ro { t.disabled } else { t.text });
+            self.ring((cx, cy, bw, 28.0), 8.0, ctl);
+            self.hit(ctl, (cx, cy, bw, 28.0), 1);
+        }
+        h = cy - y + 28.0;
         let e = self.measured(|c| c.extras(key, x, 0.0, w));
         if e > 0.0 {
             self.extras(key, x, y + h + 6.0, w);
             h += 6.0 + e;
         }
+        h += self.row_note(key, x, y + h, w);
         h + 12.0
+    }
+
+    /// A gesture picker: what the row does now, and a ▾. While it records, the waiting chip.
+    fn picker(&mut self, ctl: Ctl, x: f32, y: f32, w: f32, text: &str, waiting: bool) {
+        let t = self.c.t;
+        if waiting {
+            self.c.boxed((x, y, w, 30.0), 8.0, mix(t.card, t.accent, 0.12), Some(t.accent));
+            self.c.text(x + 10.0, y, 30.0, "Press a combo", F::SmallBold, t.accent);
+        } else {
+            let fill = if self.hovered(ctl) && !self.ro { mix(t.btn, t.text, 0.08) } else { t.btn };
+            self.c.boxed((x, y, w, 30.0), 8.0, fill, Some(t.btn_edge));
+            let shown = self.fit(text, F::Small, w - 34.0);
+            self.c.text(x + 10.0, y, 30.0, &shown, F::Small, if self.ro { t.disabled } else { t.text });
+            let (ax, ay) = (x + w - 16.0, y + 13.0);
+            self.c.lines(&[(ax - 4.0, ay), (ax, ay + 4.0), (ax + 4.0, ay)], 1.4, op(t.dim));
+        }
+        self.ring((x, y, w, 30.0), 8.0, ctl);
+        self.hit(ctl, (x, y, w, 30.0), 1);
+    }
+
+    /// The 10 gesture rows, each with its once and twice picker (AC-12).
+    fn gestures(&mut self, y: f32) -> f32 {
+        let t = self.c.t;
+        let (x, w) = (CX + 16.0, CW - 32.0);
+        let (px, pw) = (x + 150.0, (w - 150.0 - 10.0) / 2.0);
+        let mut h = 14.0;
+        h += self.c.para(x, y + h, w, 20.0, &[("Gestures", F::Bold, t.text), (" gesture", F::Mono, t.dim)]);
+        h += self.c.para(x, y + h, w, 17.0, &[("What each gesture does. A twice action waits for a second go (Wait for a second go, above). Not set: the once action runs at once. Nothing: the gesture still waits, and a second go does nothing.", F::Small, t.dim)]);
+        h += 8.0;
+        self.c.text(px, y + h, 18.0, "Once", F::SmallBold, t.dim);
+        self.c.text(px + pw + 10.0, y + h, 18.0, "Twice", F::SmallBold, t.dim);
+        h += 22.0;
+        let motions = [(Motion::Left, "swipe left"), (Motion::Right, "swipe right"), (Motion::Up, "swipe up"), (Motion::Down, "swipe down"), (Motion::Tap, "tap")];
+        for fingers in [3u8, 4] {
+            for (m, word) in motions {
+                let Some(i) = settings::GESTURE_ROWS.iter().position(|r| *r == (fingers, m)) else { continue };
+                let (once, twice) = (self.s.rule(fingers, m, 1), self.s.rule(fingers, m, 2));
+                let mut rh = 30.0;
+                self.c.text(x, y + h, 30.0, &format!("{fingers} fingers, {word}"), F::Small, t.text);
+                if once.is_none() {
+                    self.c.text(x, y + h + 24.0, 16.0, "not in the file", F::Small, t.chip_on_fg);
+                    rh = 42.0;
+                }
+                let rec = self.w.rec;
+                self.picker(Ctl::Once(i), px, y + h, pw, &label(once.unwrap_or(Action::Nothing)), rec == Some(Rec::Gesture(i, 1)));
+                self.picker(Ctl::Twice(i), px + pw + 10.0, y + h, pw, &twice.map_or("Not set".into(), label), rec == Some(Rec::Gesture(i, 2)));
+                h += rh + 8.0;
+                if matches!(rec, Some(Rec::Gesture(r, _)) if r == i) {
+                    h += self.row_note("gesture", x, y + h - 8.0, w);
+                }
+            }
+        }
+        let e = self.measured(|c| c.extras("gesture", x, 0.0, w));
+        if e > 0.0 {
+            self.extras("gesture", x, y + h + 6.0, w);
+            h += 6.0 + e;
+        }
+        h + 6.0
     }
 
     fn setup_row(&mut self, y: f32) -> f32 {
@@ -682,30 +922,6 @@ impl Ctx<'_, '_> {
         h += self.c.para(x, y + h, w - bw - 16.0, 17.0, &[("Windows' own gestures, and giving them back.", F::Small, t.dim)]);
         self.button(Ctl::Setup, x + w - bw, y + 14.0 + ((h - 14.0 - 32.0) / 2.0).max(0.0), Some(bw), label, 1);
         h.max(14.0 + 32.0) + 14.0
-    }
-
-    /// The 10 gesture rows and what each does, read only until the gesture editor (step 6).
-    fn gestures(&mut self, y: f32) -> f32 {
-        let t = self.c.t;
-        let x = CX + 16.0;
-        let mut h = 14.0;
-        h += self.c.para(x, y + h, CW - 32.0, 20.0, &[("Gestures", F::Bold, t.text), (" gesture", F::Mono, t.dim)]);
-        h += self.c.para(x, y + h, CW - 32.0, 17.0, &[("Choosing them here comes with the gesture editor; until then, change them in settings.toml.", F::Small, t.dim)]);
-        h += 6.0;
-        let motions = [(Motion::Left, "swipe left"), (Motion::Right, "swipe right"), (Motion::Up, "swipe up"), (Motion::Down, "swipe down"), (Motion::Tap, "tap")];
-        for fingers in [3, 4] {
-            for (m, word) in motions {
-                let name = format!("{fingers} fingers, {word}");
-                self.c.text(x, y + h, 22.0, &name, F::Small, t.dim);
-                h += self.c.para(x + 150.0, y + h + 2.5, CW - 32.0 - 150.0, 17.0, &[(&crate::welcome::does(fingers, m), F::Small, t.text)]).max(22.0);
-            }
-        }
-        let e = self.measured(|c| c.extras("gesture", x, 0.0, CW - 32.0));
-        if e > 0.0 {
-            self.extras("gesture", x, y + h + 6.0, CW - 32.0);
-            h += 6.0 + e;
-        }
-        h + 12.0
     }
 
     /// The side list item the view is in: the last section whose top has scrolled past.
@@ -984,6 +1200,249 @@ fn save(key: &'static str, v: i64) {
     }
 }
 
+/// Writes an edit that is not one row's value; a failure shows like a failed save.
+fn commit(edit: Edit, title: &str) {
+    let failed = settings::write(edit).err();
+    let _ = set(|w| w.error = failed.map(|why| (format!("Not saved. {title} stays as it was."), why)));
+    refresh();
+}
+
+/// Starts recording; the hook swallows every key until it stops (AC-7).
+fn start_rec(rec: Rec) {
+    let _ = set(|w| {
+        w.rec = Some(rec);
+        w.refused = None;
+        w.prompt = None;
+    });
+    crate::keys::record(true);
+    refresh();
+}
+
+/// Ends recording, after a combo, Esc, Cancel, a click, focus loss or close.
+fn stop_rec() {
+    crate::keys::record(false);
+    let _ = set(|w| {
+        w.rec = None;
+        w.refused = None;
+    });
+    refresh();
+}
+
+/// The hook's WM_RECORDED: the first key down that is not a modifier, and the modifiers held
+/// with it. Main thread.
+pub fn recorded(vk: u16, mods: u8) {
+    let Some(rec) = get(|w| w.rec).flatten() else { return };
+    if vk == VK_ESCAPE.0 && mods == 0 {
+        return stop_rec();
+    }
+    let refuse = |title: &str, sub: &str| {
+        let _ = set(|w| w.refused = Some((title.into(), sub.into())));
+        refresh();
+    };
+    if let Rec::Digits(key) = rec {
+        let digit = (b'1' as u16..=b'9' as u16).contains(&vk) || (VK_NUMPAD1.0..=VK_NUMPAD9.0).contains(&vk);
+        if !digit {
+            return refuse("Press a digit 1 to 9 while you hold the keys.", "Still recording. Esc alone cancels.");
+        }
+        if mods & (settings::WIN | settings::CTRL | settings::ALT) == 0 {
+            return refuse("Hold Win, Ctrl or Alt with the digit.", "Shift alone would take every typed ! @ #. Shift can join the others. Still recording.");
+        }
+        stop_rec();
+        return digits_recorded(key, mods);
+    }
+    if !settings::savable(vk) {
+        return refuse("This key can't be saved; try another", "Use a letter, a number row digit, F1 to F24, an arrow, or Home, End, Page Up, Page Down, Insert, Delete, Space, Enter, Tab, or Esc with a modifier. Numpad, punctuation and media keys can't be saved. Still recording.");
+    }
+    if mods == 0 {
+        return refuse("Hold Win, Ctrl, Alt or Shift with the key.", "A combo needs at least one of them. Still recording; Esc alone cancels.");
+    }
+    stop_rec();
+    let combo = Combo { mods, vk };
+    match rec {
+        Rec::List(key, replace) => combo_recorded(key, replace, combo),
+        Rec::Gesture(row, times) => set_gesture(row, times, Some(Action::Combo(combo))),
+        Rec::Digits(_) => {}
+    }
+}
+
+/// A combo for a list: saved, or the clash prompt when another entry has it (AC-9).
+fn combo_recorded(key: &'static str, replace: Option<usize>, combo: Combo) {
+    let (s, name) = (settings::get(), short(key));
+    let mut mine = s.list(name).to_vec();
+    match replace {
+        Some(i) if i < mine.len() => mine[i] = combo,
+        _ => mine.push(combo),
+    }
+    let mut seen = vec![];
+    mine.retain(|c| !seen.contains(c) && {
+        seen.push(*c);
+        true
+    });
+    if mine == s.list(name) {
+        return;
+    }
+    let title = entry(name).1;
+    let edit = Edit::Combos(key, mine);
+    let prompt = match s.combo_owner(name, combo) {
+        None => return commit(edit, title),
+        Some(Owner::List(other)) => {
+            let (other_key, other_title) = entry(other);
+            let rest: Vec<Combo> = s.list(other).iter().filter(|c| **c != combo).copied().collect();
+            let after = if rest.is_empty() {
+                format!("{other_title} has no shortcut left (it turns off)")
+            } else {
+                format!("{other_title} keeps {}", rest.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(", "))
+            };
+            Prompt {
+                key,
+                title: format!("{combo} already belongs to {other_title}."),
+                sub: format!("Move it here, and {after}. Cancel keeps both as they are. Nothing is saved until you choose."),
+                edit: Edit::Pair(Box::new(edit), Box::new(Edit::Combos(other_key, rest))),
+            }
+        }
+        // The hook tries the lists first, so the set only loses this one digit (AC-8).
+        Some(Owner::Set(set)) => {
+            let set_title = entry(set).1;
+            let d = combo.vk as u8 as char;
+            Prompt {
+                key,
+                title: format!("{combo} is part of {set_title} ({} + 1…9).", settings::mods_text(Some(combo.mods))),
+                sub: format!("Move it here, and {} skips {d}; its other eight digits keep working. Cancel keeps it. Nothing is saved until you choose.", lower(set_title)),
+                edit,
+            }
+        }
+    };
+    let _ = set(|w| {
+        w.prompt = Some(prompt);
+        w.focus = Some(Ctl::Cancel(key));
+    });
+    reveal_after_layout();
+}
+
+/// Modifiers for a digit set: saved, or the clash prompt when another set has them (AC-9). A
+/// list on one of their digits is no clash: the set skips that digit.
+fn digits_recorded(key: &'static str, mods: u8) {
+    let (s, name) = (settings::get(), short(key));
+    if s.set(name) == Some(mods) {
+        return;
+    }
+    let edit = Edit::Digits(key, Some(mods));
+    let Some(other) = s.set_owner(name, mods) else { return commit(edit, entry(name).1) };
+    let (other_key, other_title) = entry(other);
+    let prompt = Prompt {
+        key,
+        title: format!("{} + 1…9 already belongs to {other_title}.", settings::mods_text(Some(mods))),
+        sub: format!("Move it here, and {} turns off. Cancel keeps both as they are. Nothing is saved until you choose.", lower(other_title)),
+        edit: Edit::Pair(Box::new(edit), Box::new(Edit::Digits(other_key, None))),
+    };
+    let _ = set(|w| {
+        w.prompt = Some(prompt);
+        w.focus = Some(Ctl::Cancel(key));
+    });
+    reveal_after_layout();
+}
+
+fn reveal_after_layout() {
+    layout();
+    reveal();
+}
+
+/// × on a combo: that list loses it, a digit set turns off. No combo left means off (AC-8).
+fn remove(key: &'static str, i: usize) {
+    let (s, name) = (settings::get(), short(key));
+    if is_digits(key) {
+        return commit(Edit::Digits(key, None), entry(name).1);
+    }
+    let mut mine = s.list(name).to_vec();
+    if i < mine.len() {
+        mine.remove(i);
+        commit(Edit::Combos(key, mine), entry(name).1);
+    }
+}
+
+/// One gesture row's once or twice action; None: no twice rule (Not set). The whole map is
+/// written again, every row's once rule included (AC-12).
+fn set_gesture(row: usize, times: u8, action: Option<Action>) {
+    let s = settings::get();
+    let (fingers, motion) = settings::GESTURE_ROWS[row];
+    let now = s.rule(fingers, motion, times);
+    // A row with no once rule in the file shows Nothing; picking Nothing writes it down.
+    if now == action && (times == 2 || now.is_some()) {
+        return;
+    }
+    let map = settings::full_map(|f, m, t| if (f, m, t) == (fingers, motion, times) { action } else { s.rule(f, m, t) });
+    commit(Edit::Gestures(map), "Gestures");
+}
+
+/// The once or twice picker as a menu under its button: Not set (twice only), Nothing, every
+/// action by its label, the three digit families, and Key combo… (AC-12).
+fn pick(row: usize, times: u8) {
+    const NOT_SET: usize = 1;
+    const COMBO: usize = 2;
+    const BASE: usize = 100;
+    let Some((h, at, scale)) = get(|w| w.hits.iter().find(|x| x.ctl == if times == 1 { Ctl::Once(row) } else { Ctl::Twice(row) }).map(|x| (w.hwnd, x.at, w.scale))).flatten() else {
+        return;
+    };
+    let (fingers, motion) = settings::GESTURE_ROWS[row];
+    let now = settings::get().rule(fingers, motion, times);
+    let mut list: Vec<Action> = vec![Action::Nothing];
+    list.extend(settings::actions().filter(|a| *a != Action::Nothing));
+    type Family = fn(usize) -> Action;
+    let families: [(&str, Family); 3] = [
+        ("Go to workspace", Action::Jump),
+        ("Send window to, and go", |i| Action::SendTo(i, true)),
+        ("Send window to, stay", |i| Action::SendTo(i, false)),
+    ];
+    let chosen = unsafe {
+        let Ok(menu) = CreatePopupMenu() else { return };
+        let add = |menu: HMENU, id: usize, text: &str, on: bool| {
+            let flags = if on { MF_STRING | MF_CHECKED } else { MF_STRING };
+            let _ = AppendMenuW(menu, flags, id, PCWSTR(HSTRING::from(text).as_ptr()));
+        };
+        if times == 2 {
+            add(menu, NOT_SET, "Not set", now.is_none());
+        }
+        let shown = now.or((times == 1).then_some(Action::Nothing));
+        for (i, a) in list.iter().enumerate() {
+            add(menu, BASE + i, &label(*a), shown == Some(*a));
+        }
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+        for (name, make) in families {
+            let Ok(sub) = CreatePopupMenu() else { continue };
+            let mut any = false;
+            for n in 0..9 {
+                let a = make(n);
+                add(sub, BASE + list.len(), &(n + 1).to_string(), now == Some(a));
+                any |= now == Some(a);
+                list.push(a);
+            }
+            let flags = if any { MF_POPUP | MF_CHECKED } else { MF_POPUP };
+            let _ = AppendMenuW(menu, flags, sub.0 as usize, PCWSTR(HSTRING::from(name).as_ptr()));
+        }
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+        let combo = match now {
+            Some(Action::Combo(c)) => format!("Key combo… ({c})"),
+            _ => "Key combo…".into(),
+        };
+        add(menu, COMBO, &combo, matches!(now, Some(Action::Combo(_))));
+        let mut p = windows::Win32::Foundation::POINT { x: (at.0 * scale) as i32, y: ((at.1 + at.3) * scale) as i32 };
+        let _ = ClientToScreen(h, &mut p);
+        let id = TrackPopupMenuEx(menu, (TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN).0, p.x, p.y, h, None).0 as usize;
+        let _ = DestroyMenu(menu);
+        id
+    };
+    match chosen {
+        0 => {}
+        NOT_SET => set_gesture(row, times, None),
+        COMBO => start_rec(Rec::Gesture(row, times)),
+        n => {
+            if let Some(a) = list.get(n - BASE) {
+                set_gesture(row, times, Some(*a));
+            }
+        }
+    }
+}
+
 fn step_key(key: &'static str, up: bool) {
     if let Some(Row { kind: Kind::Step { lo, hi, by, .. }, .. }) = find_row(key) {
         save(key, stepped(value(settings::get(), key), *lo, *hi, *by, up));
@@ -1008,6 +1467,21 @@ fn act(ctl: Ctl) {
             refresh();
         }
         Ctl::Setup => crate::welcome::show(false),
+        Ctl::Chip(key, i) => start_rec(if is_digits(key) { Rec::Digits(key) } else { Rec::List(key, Some(i)) }),
+        Ctl::Add(key) => start_rec(if is_digits(key) { Rec::Digits(key) } else { Rec::List(key, None) }),
+        Ctl::Remove(key, i) => remove(key, i),
+        Ctl::StopRec(_) => stop_rec(),
+        Ctl::Move(_) => {
+            if let Some(p) = set(|w| w.prompt.take()).flatten() {
+                commit(p.edit, entry(short(p.key)).1);
+            }
+        }
+        Ctl::Cancel(_) => {
+            let _ = set(|w| w.prompt = None);
+            refresh();
+        }
+        Ctl::Once(row) => pick(row, 1),
+        Ctl::Twice(row) => pick(row, 2),
     }
 }
 
@@ -1171,6 +1645,9 @@ pub fn open(section: Option<Section>) {
             press: None,
             drag: None,
             error: None,
+            rec: None,
+            refused: None,
+            prompt: None,
         }));
         let (ww, wh) = size(h);
         let (x, y) = ((work.left + work.right - ww) / 2, ((work.top + work.bottom - wh) / 2).max(work.top));
@@ -1224,6 +1701,12 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                 LRESULT(0)
             }
             WM_LBUTTONDOWN => {
+                // A click while recording only cancels it: the note goes, and the page moves
+                // under the mouse, so the click must not land on whatever is there now.
+                if get(|w| w.rec.is_some()) == Some(true) {
+                    stop_rec();
+                    return LRESULT(0);
+                }
                 let _ = SetCapture(h);
                 let _ = set(|w| {
                     let (x, y) = point(lp, w.scale);
@@ -1293,10 +1776,15 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                 LRESULT(0)
             }
             WM_ACTIVATE => {
+                // Recording ends when the page loses focus (AC-7).
+                if (wp.0 & 0xFFFF) as u32 == WA_INACTIVE && get(|w| w.rec.is_some()) == Some(true) {
+                    stop_rec();
+                }
                 refresh();
                 LRESULT(0)
             }
             WM_DESTROY => {
+                crate::keys::record(false);
                 if let Some(w) = WIN.with_borrow_mut(Option::take) {
                     w.fonts.delete();
                 }
@@ -1365,6 +1853,49 @@ mod tests {
             let (s, warn) = settings::parse_for_test(&text);
             assert!(warn.is_empty(), "{}: {warn:?}", row.key);
             assert_eq!(value(&s, row.key), v, "{}", row.key);
+        }
+    }
+
+    // Not a check that can fail: draws the whole page, as tall as its content, in the
+    // recorder's states into target/settings/*.png, so they can be compared with the approved
+    // design without opening the window. Run with `cargo test render_settings -- --ignored`.
+    #[test]
+    #[ignore]
+    fn render_settings() {
+        assert!(crate::welcome::gdiplus());
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("settings");
+        std::fs::create_dir_all(&dir).unwrap();
+        let next = "shortcuts.next";
+        let clash = || Prompt { key: next, title: "Win+F already belongs to Finder.".into(), sub: "Move it here, and Finder has no shortcut left (it turns off). Cancel keeps both as they are. Nothing is saved until you choose.".into(), edit: Edit::Gestures(vec![]) };
+        let states: [(&str, Option<Rec>, Option<(String, String)>, bool); 5] = [
+            ("rest", None, None, false),
+            ("rec", Some(Rec::List(next, None)), None, false),
+            ("refused", Some(Rec::List("shortcuts.finder", Some(0))), Some(("This key can't be saved; try another".into(), "Still recording.".into())), false),
+            ("digits", Some(Rec::Digits("shortcuts.jump")), None, false),
+            ("clash", None, None, true),
+        ];
+        for (tname, theme) in [("light", crate::welcome::LIGHT), ("dark", crate::welcome::DARK)] {
+            for (sname, rec, refused, prompt) in &states {
+                let scale = 1.0;
+                let win = Win {
+                    hwnd: HWND::default(), scale, theme, fonts: Fonts::new(scale), scroll: 0.0, height: 0.0, tops: vec![], hits: vec![],
+                    focus: prompt.then_some(Ctl::Cancel(next)), kb: *prompt, hover: None, press: None, drag: None, error: None,
+                    rec: *rec, refused: refused.clone(), prompt: prompt.then(clash),
+                };
+                let height = unsafe {
+                    let dc = GetDC(None);
+                    let out = compose(&mut Canvas::new(dc, false, scale, theme, &win.fonts), &win);
+                    ReleaseDC(None, dc);
+                    out.height
+                };
+                let ph = (BAND + height).ceil() as i32;
+                crate::welcome::tests::save_png(W as i32, ph, &dir.join(format!("{sname}-{tname}.png")), |dc| {
+                    let mut c = Canvas::new(dc, true, scale, theme, &win.fonts);
+                    c.boxed((0.0, 0.0, W + 1.0, ph as f32 + 1.0), 0.0, theme.surface, None);
+                    compose(&mut c, &win);
+                });
+                win.fonts.delete();
+            }
         }
     }
 

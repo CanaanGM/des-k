@@ -6,7 +6,7 @@ Per monitor virtual desktops for Windows 11: each screen switches its own worksp
 
 - **Language / Runtime**: Rust, edition 2024, Windows 11 only (verified on 25H2, build 26200)
 - **Framework**: none, plain Win32 message loop
-- **Key dependencies**: `windows` 0.62 (Win32 features listed in `Cargo.toml`); the undocumented shell `IApplicationView` called by raw vtable slot; `toml` reads `settings.toml`
+- **Key dependencies**: `windows` 0.62 (Win32 features listed in `Cargo.toml`); the undocumented shell `IApplicationView` called by raw vtable slot; `toml` reads `settings.toml`; `toml_edit` writes one value back in place, keeping comments (`settings::write`, spec 0012)
 - **Package manager**: cargo
 
 ## Build approach

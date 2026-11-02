@@ -17,3 +17,17 @@ _Steps derived from spec 0012 acceptance criteria. You run the on screen steps; 
 
 ## Commands
 - [ ] `cargo test` → all pass, including the in place edit, gesture rewrite, clash and bad reload tests → AC-3, AC-9, AC-12, AC-14, AC-17
+
+## Steps 5 and 6, added 2026-11-02 (shortcut recorder, gesture editor)
+- [ ] While recording, press Win+; and a numpad digit → "This key can't be saved; try another", still recording; press F alone → asks for a modifier, still recording → AC-7
+- [ ] While recording, Ctrl+Esc → recorded as Ctrl+Escape; Esc alone → cancels; a click on the page or on another window → cancels → AC-7
+- [ ] With `copilot_as_right_ctrl` on, record Copilot+F → the chip reads Ctrl+F, not Win+Shift → AC-7
+- [ ] Hold Win before clicking + Add, then press F → Win+F is recorded, and letting go of Win opens no Start menu → AC-7
+- [ ] × on Finder's only chip → the file says `finder = []`, Win+F does nothing, and the log names no problem; × on jump → `jump = ""` → AC-8
+- [ ] Record Win+3 for Finder → the prompt says Go to workspace skips 3; Move it here → the jump chip reads "Win + 1…9, skips 3 (Finder)", Win+3 opens the finder, Win+4 still jumps → AC-8, AC-9
+- [ ] Record Win+Shift on Go to workspace → the prompt names Send window to 1 to 9, and go; Move it here → that set is off, in one write → AC-9
+- [ ] 4 fingers, swipe left: set Twice to Overview → the file gets a `times = 2` block and keeps the comment above the first block; one swipe now waits, two open the overview; set it back to Not set → the block goes → AC-12
+- [ ] Hand delete the 3 finger tap block → its row shows Nothing and "not in the file"; pick Nothing → the file gets `do = "none"` for it → AC-12
+
+## Commands
+- [ ] `cargo test render_settings -- --ignored` → target/settings/*.png show the recording, refused, digit and clash states in light and dark → AC-7, AC-9

@@ -9,8 +9,11 @@
 // - The overview shortcut: posted as WM_OVERVIEW, once per press (spec 0010).
 // - Copilot key (sends LWin, LShift, F23): turned into Right Ctrl, unless settings turn it off.
 // - The keys and clicks touchpad gestures type (spec 0011).
+// - Recording for the settings page: while on, every key is swallowed and none of the above
+//   fires; each first key down that is not a modifier goes to the main thread as WM_RECORDED
+//   (wparam = vk, lparam = modifier bits) (spec 0012 AC-7).
 use std::cell::{Cell, RefCell};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use windows::Win32::{
     Foundation::{LPARAM, LRESULT, WPARAM},
     System::LibraryLoader::GetModuleHandleW,
@@ -31,8 +34,16 @@ pub const WM_SEND_TO: u32 = WM_APP + 5;
 pub const WM_FINDER: u32 = WM_APP + 6;
 /// Thread message: open or close the workspace overview.
 pub const WM_OVERVIEW: u32 = WM_APP + 7;
+/// Thread message: the settings page's recorder got a key (spec 0012).
+pub const WM_RECORDED: u32 = WM_APP + 10;
 
 static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
+static RECORDING: AtomicBool = AtomicBool::new(false);
+
+/// The settings page turns recording on and off. Main thread.
+pub fn record(on: bool) {
+    RECORDING.store(on, Ordering::Relaxed);
+}
 
 #[derive(Default)]
 struct State {
@@ -47,6 +58,62 @@ struct State {
 thread_local! {
     static STATE: RefCell<State> = RefCell::default();
     static SEND_HELD: Cell<Option<u16>> = const { Cell::new(None) }; // the key of a send, finder or overview combo that is down
+    // Keys whose down the recorder swallowed: their repeats and up are swallowed too, even
+    // after recording ends, so Windows never sees half a key.
+    static SWALLOWED: RefCell<[bool; 256]> = const { RefCell::new([false; 256]) };
+}
+
+fn mod_of(vk: u16) -> u8 {
+    match VIRTUAL_KEY(vk) {
+        VK_LWIN | VK_RWIN => WIN,
+        VK_LCONTROL | VK_RCONTROL | VK_CONTROL => CTRL,
+        VK_LMENU | VK_RMENU | VK_MENU => ALT,
+        VK_LSHIFT | VK_RSHIFT | VK_SHIFT => SHIFT,
+        _ => 0,
+    }
+}
+
+/// Recording, or a key the recorder still owns: swallow it. The modifiers come from the keys
+/// it swallowed (Windows never saw those go down) plus any held from before recording.
+fn recorder(vk: u16, up: bool) -> bool {
+    let recording = RECORDING.load(Ordering::Relaxed);
+    SWALLOWED.with_borrow_mut(|keys| {
+        let i = vk as usize & 0xFF;
+        if up {
+            if keys[i] {
+                keys[i] = false;
+                return true;
+            }
+            // Held from before recording: its up goes through, but a lone Win or Alt up would
+            // open Start or a menu bar.
+            if recording && mod_of(vk) & (WIN | ALT) != 0 {
+                send(&[(VK_MASK, false), (VK_MASK, true)]);
+            }
+            return false;
+        }
+        if keys[i] {
+            return true; // a repeat
+        }
+        if !recording {
+            return false;
+        }
+        keys[i] = true;
+        if mod_of(vk) == 0 {
+            let swallowed = keys.iter().enumerate().filter(|(_, down)| **down).fold(0, |m, (k, _)| m | mod_of(k as u16));
+            unsafe {
+                let _ = PostThreadMessageW(MAIN_THREAD.load(Ordering::Relaxed), WM_RECORDED, WPARAM(vk as usize), LPARAM((mods_held() | swallowed) as isize));
+            }
+        }
+        true
+    })
+}
+
+/// The recorder while it is on or still owns this key, else the shortcuts.
+fn route(vk: u16, up: bool) -> bool {
+    if RECORDING.load(Ordering::Relaxed) || SWALLOWED.with_borrow(|keys| keys[vk as usize & 0xFF]) {
+        return recorder(vk, up);
+    }
+    shortcut(vk, up)
 }
 
 /// One key event; `extra` is MAGIC for pdesk's own input, 0 for a combo the hook should see.
@@ -195,7 +262,7 @@ fn shortcut(vk: u16, up: bool) -> bool {
 /// true = swallow the event.
 fn handle(vk: u16, up: bool) -> bool {
     if !settings::get().copilot_as_right_ctrl {
-        return shortcut(vk, up);
+        return route(vk, up);
     }
     STATE.with_borrow_mut(|s| {
         // Copilot key in progress: its own LWin/LShift repeats and ups must not reach anyone.
@@ -213,7 +280,7 @@ fn handle(vk: u16, up: bool) -> bool {
                     s.copilot = false;
                     return true;
                 }
-                _ => return shortcut(vk, up), // e.g. Copilot as Ctrl, with Win+Left
+                _ => return route(vk, up), // e.g. Copilot as Ctrl, with Win+Left
             }
         }
 
@@ -242,6 +309,16 @@ fn handle(vk: u16, up: bool) -> bool {
                 }
                 seq.push((VK_RCONTROL.0, false));
                 send(&seq);
+                // A recorder that swallowed those downs forgets them: the Copilot key counts
+                // as Ctrl held (the Right Ctrl just sent), not as Win+Shift (spec 0012 AC-7).
+                SWALLOWED.with_borrow_mut(|keys| {
+                    if !s.shift_before {
+                        keys[VK_LSHIFT.0 as usize] = false;
+                    }
+                    if !s.win_before {
+                        keys[VK_LWIN.0 as usize] = false;
+                    }
+                });
                 s.copilot = true;
                 s.copilot_released = false;
                 return true;
@@ -249,7 +326,7 @@ fn handle(vk: u16, up: bool) -> bool {
             _ => {}
         }
 
-        shortcut(vk, up)
+        route(vk, up)
     })
 }
 
