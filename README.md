@@ -102,8 +102,8 @@ Windows has its own three and four finger gestures, and one swipe must never do 
 pdesk acts only while Windows' own ones are all set to **Nothing**. The first time pdesk starts,
 a welcome screen helps you with that. It shows what each gesture does in pdesk. **Use these
 gestures** saves your current Windows values and opens Settings at Touchpad for you to set them
-to Nothing. **Choose my own** does the same and also opens `settings.toml`, so you can change
-what each gesture does. If one is still on, pdesk logs which one and does nothing for that
+to Nothing. **Choose my own** does the same and also opens the settings page at Touchpad, so
+you can change what each gesture does. If one is still on, pdesk logs which one and does nothing for that
 gesture. Open the screen again any time from the tray, **Touchpad setup**. It shows, for each
 kind of gesture, whether Windows still has it on and what pdesk runs for it.
 
@@ -112,9 +112,11 @@ pdesk reading the touchpad at once. Windows uses them from your next sign in, or
 Settings now. **Quit** writes them back too, from your next sign in; start pdesk again in the
 same sign in and its gestures keep working.
 
-Change what each gesture does in `settings.toml` (the `[touchpad]` part and the `[[gesture]]`
-blocks; the comments there list every action). A gesture can also send a key combo, or run a
-second action on `times = 2`. Set `enabled = false` to make pdesk ignore the touchpad. Plugging
+Change what each gesture does on the settings page, under Touchpad (or by hand in
+`settings.toml`, the `[touchpad]` part and the `[[gesture]]` blocks). A gesture can also send a
+key combo, or run a second action when you do it twice. The top of that section says whether
+pdesk is reading your gestures right now, or what it is waiting for. Turn **Read touchpad
+gestures** off to make pdesk ignore the touchpad, no restart needed. Plugging
 a touchpad in or out is picked up without a restart. Two finger scroll, zoom and right click
 stay exactly as they are.
 
@@ -136,10 +138,15 @@ change a value. Things you can change:
 - What each three and four finger gesture does, how far a swipe travels before it counts, or
   touchpad reading off altogether
 
-For now the page shows the workspace count, the shortcuts and the gestures but can't change
-them yet; change those in the file. pdesk checks the file once a second and applies changes
-right away, except the workspace count and restore, which apply from pdesk's next start (run
-`install.ps1` again, or sign out and back in). If you type a bad value, only that one setting
+Workspaces shows a picture of each screen with its windows. Hover × on the last workspace to
+see which windows would move before you remove it; they go to the workspace before it, never
+away. To record a shortcut, click **+ Add** and press the combo; if another action already
+uses it, the page asks before moving it. Indicator's **Play** shows the dots as they are set.
+
+pdesk checks the file once a second and applies every change right away, except restore,
+which applies from pdesk's next start (run `install.ps1` again, or sign out and back in). If
+you change the file by hand while the page is open, a banner says what changed. If you type a
+bad value, only that one setting
 goes back to its default; the page and the log say which. If the file can't be read at all,
 pdesk keeps the settings it had and the page turns read only until you fix it.
 
@@ -152,7 +159,7 @@ pdesk keeps the settings it had and the page turns read only until you fix it.
   window's workspace.
 - After a restart, pdesk puts reopened windows back on the workspaces they were on, for the
   first few minutes after you sign in.
-- The tray icon menu has **Touchpad setup**, **Open settings**, **Open log** and **Quit**.
+- The tray icon menu has **Touchpad setup**, **Settings**, **Open log** and **Quit**.
 
 ## Stopping and uninstalling
 

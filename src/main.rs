@@ -176,7 +176,10 @@ fn main() -> windows::core::Result<()> {
         }
         match msg.message {
             WM_APP => ws::switch(msg.wParam.0 as isize),
-            indicator::WM_DISPLAY_CHANGED => ws::on_display_change(),
+            indicator::WM_DISPLAY_CHANGED => {
+                ws::on_display_change();
+                settings_page::tick();
+            }
             WM_FOLLOW => {
                 let h = HWND(msg.wParam.0 as *mut _);
                 finder::used(h);
@@ -205,7 +208,10 @@ fn main() -> windows::core::Result<()> {
                     restore_timer = 0;
                 }
             }
-            WM_TIMER if msg.hwnd.is_invalid() && watch_timer != 0 && msg.wParam.0 == watch_timer => settings::watch(),
+            WM_TIMER if msg.hwnd.is_invalid() && watch_timer != 0 && msg.wParam.0 == watch_timer => {
+                settings::watch();
+                settings_page::tick();
+            }
             WM_CLOSE => break, // posted by `pdesk --quit` and the tray's Quit
             // Indicator, tray, finder, overview, welcome screen and settings page messages.
             // TranslateMessage makes the finder's typed characters and IME input; the finder and the

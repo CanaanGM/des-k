@@ -31,3 +31,24 @@ _Steps derived from spec 0012 acceptance criteria. You run the on screen steps; 
 
 ## Commands
 - [ ] `cargo test render_settings -- --ignored` → target/settings/*.png show the recording, refused, digit and clash states in light and dark → AC-7, AC-9
+
+## Step 4b, added 2026-11-02 (pictures, live resize, Play, banner, touchpad status, scenes)
+- [ ] Open Settings → Workspaces shows one picture per screen, numbered left to right, headed "Screen N · name · width × height · scale%"; the laptop panel reads "Built-in display"; each tile shows its windows where they sit, "now" on the one in view, and the right window counts → AC-18
+- [ ] With the page open, switch a workspace or move a window on any screen → its picture follows within about 1 s → AC-18
+- [ ] Hover × on the last tile → a note lists, per screen, what moves where ("Screen 2: 3 windows from 4 move to 3"), or "nothing moves" → AC-6
+- [ ] Put windows on workspace 4 of a screen that shows 2, click × → they are hidden on workspace 3 there; on a screen that showed 4, it now shows 3 with those windows in view → AC-6, AC-10
+- [ ] + Add → every screen gets an empty last workspace; earlier moved windows stay where they went; at 9 it reads "9 max" → AC-6, AC-10
+- [ ] Keyboard: focus the pictures, Right adds one, Left removes one, Delete removes one; hold Delete → only one goes → AC-10, AC-16
+- [ ] With 6 workspaces, hover or focus Reset → the note says Reset removes workspaces 5 to 6 and what moves → AC-6, AC-11
+- [ ] Set `workspaces = 3` in settings.toml by hand with the page open → a banner "settings.toml changed at HH:MM and is in use:" lists workspaces 4 → 3 and the move lines; Dismiss hides it; a change made on the page shows no banner → AC-5, AC-20
+- [ ] Indicator › Play → the real dots show on the page's screen with your hold and fade; with the dots off, Play is greyed and does nothing → AC-19
+- [ ] Touchpad opens with a status: all of Windows' gestures Nothing and reading on → "pdesk reads your three and four finger gestures"; turn on a 3 finger swipe in Windows' Settings → within about 1 s "pdesk is waiting: Windows' own 3-finger swipes are still on" → AC-20
+- [ ] Turn Read touchpad gestures off → swipes do nothing and the status says reading is off; turn it on → swipes work again, no restart (also when pdesk started with it off) → AC-4, AC-20
+- [ ] The other touchpad states: reading off and Windows' gestures Nothing → "No three or four finger gesture does anything now"; reading off and a Windows gesture back on → "Reading is off here, and Windows' own gestures are on". (No touchpad and "can't read a setting" are hard to reach on the laptop; skip them unless you have a way.) → AC-20
+- [ ] Shortcuts shows three scenes (Switch, Send and go, Send and stay) with your combos under them; change one → its scene shows the new combo → AC-21
+- [ ] Overview's picture: pick Always, On hover, None → the names in the picture follow; the line under it says at once or fades in → AC-21
+- [ ] Open the overview (Win+Tab), then save a hand edit → the overview closes → AC-5
+
+## Commands
+- [ ] `cargo test` → the three resize tests pass (lowering keeps every window, the shown removed workspace switches, raising adds empty ones) → AC-6
+- [ ] `cargo test render_settings -- --ignored` → target/settings/pictures-light.png and pictures-dark.png show two screens, the removal note, the banner and the waiting status → AC-6, AC-18, AC-20

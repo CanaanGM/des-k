@@ -172,7 +172,7 @@ Tracer Bullet: the first slice runs one setting through every layer (page → fi
 ## Follow-up
 
 - [x] When step 1 lands, add an "Updated" line to spec 0001: its AC-2 and "read once at start" are changed by this spec.
-- [ ] When step 6 lands, update spec 0011 (the Choose my own line, verify step 6 of its welcome list) and the README.
-- [ ] `/sync` after the build: add `WM_APP + 10` (`WM_RECORDED`) to AGENTS.md's thread message id list. ("Read once at start" and `+ 6` to `+ 9` were updated 2026-11-02.)
+- [x] When step 6 lands, update spec 0011 (the Choose my own line, verify step 6 of its welcome list) and the README.
+- [x] `/sync` after the build: add `WM_APP + 10` (`WM_RECORDED`) to AGENTS.md's thread message id list. ("Read once at start" and `+ 6` to `+ 9` were updated 2026-11-02.)
 - [x] Record the approved settings design in `pdesk-design/decisions.md` (step 3).
-- [ ] Step 7: add on screen checks for AC-18 to AC-21 to [verify.md](verify.md) (screen names on both monitors, the banner after a hand edit, Play, the six touchpad states you can reach).
+- [x] Step 7: add on screen checks for AC-18 to AC-21 to [verify.md](verify.md) (screen names on both monitors, the banner after a hand edit, Play, the six touchpad states you can reach).

@@ -453,12 +453,12 @@ pub fn watch() {
 
 /// Read the file again and put it in effect for every reader at once. A file that is not
 /// TOML keeps the settings in effect: a typo mid edit must not remap every shortcut (AC-14).
-/// Returns the names of the settings that changed. Main thread.
-pub fn reload(source: Source) -> Result<Vec<&'static str>, String> {
+/// Returns the settings that changed. Main thread.
+pub fn reload(source: Source) -> Result<Vec<Change>, String> {
     let path = path();
     SEEN.set(modified(&path)); // before reading, so a save during the read is seen next tick
     let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {} ({e})", path.display()));
-    let (mut settings, mut warnings) = match text.and_then(|t| reparse(&t)) {
+    let (settings, warnings) = match text.and_then(|t| reparse(&t)) {
         Ok(got) => got,
         Err(why) => {
             eprintln!("settings: {why}, keeping the settings in effect");
@@ -469,41 +469,75 @@ pub fn reload(source: Source) -> Result<Vec<&'static str>, String> {
     };
     PARSE_ERROR.set(None);
     let old = get();
-    // Until step 4 of the settings page build resizes every screen live (AC-6), ws state stays
-    // sized for the count pdesk started with, so a new count waits for the next start.
-    if settings.workspaces != old.workspaces {
-        warnings.push(format!("workspaces: {} applies from pdesk's next start, using {} until then", settings.workspaces, old.workspaces));
-        settings.workspaces = old.workspaces;
-    }
     // Only new problems are logged, so one bad value is not logged again on every save.
     let before = problems();
     for w in warnings.iter().filter(|w| !before.iter().any(|p| &p.message == *w)) {
         eprintln!("settings: {w}");
     }
     let problems: Vec<Problem> = warnings.into_iter().map(Problem::new).collect();
-    let changed = apply(old, &settings, source);
-    if !changed.is_empty() || problems != before {
+    let changes = diff(old, &settings, source);
+    if !changes.is_empty() || problems != before {
         store(settings, problems);
     }
+    let moves = apply(old, &changes);
+    if matches!(source, Source::File) && !changes.is_empty() {
+        crate::settings_page::hand_edit(&changes, &moves);
+    }
     crate::settings_page::refresh();
-    Ok(changed)
+    Ok(changes)
 }
 
-/// Logs one line per changed setting (AC-15) and returns their names. Every reader calls
-/// get() each time it acts, so none needs telling yet.
-fn apply(old: &Settings, new: &Settings, source: Source) -> Vec<&'static str> {
+/// One changed setting, as the log and the page's banner name it (AC-15, AC-20).
+#[derive(Debug, PartialEq)]
+pub struct Change {
+    pub key: &'static str,
+    pub was: String,
+    pub now: String,
+}
+
+/// Logs one line per changed setting (AC-15) and returns them.
+fn diff(old: &Settings, new: &Settings, source: Source) -> Vec<Change> {
     let from = match source {
         Source::Page => "page",
         Source::File => "file",
     };
-    let mut changed = Vec::new();
+    let mut changes = Vec::new();
     for ((key, was), (_, now)) in old.fields().into_iter().zip(new.fields()) {
         if was != now {
             println!("settings: {key} {was} -> {now} ({from})");
-            changed.push(key);
+            changes.push(Change { key, was, now });
         }
     }
-    changed
+    changes
+}
+
+/// The side effects of `changes`, once the new settings are in effect. Most readers call
+/// get() each time they act and need nothing. Returns the workspace move lines (AC-6).
+fn apply(old: &Settings, changes: &[Change]) -> Vec<String> {
+    if changes.is_empty() {
+        return vec![];
+    }
+    let new = get();
+    let has = |k: &str| changes.iter().any(|c| c.key == k);
+    // Its tiles are drawn for the old settings.
+    if crate::overview::is_open() {
+        crate::overview::close(true);
+    }
+    let mut moves = vec![];
+    if new.workspaces != old.workspaces {
+        moves = crate::ws::resize(new.workspaces);
+        for line in &moves {
+            println!("settings: workspaces {} -> {}: {line}", old.workspaces, new.workspaces);
+        }
+    }
+    if has("touchpad.enabled") && new.touchpad_enabled {
+        crate::touchpad::start();
+    }
+    if has("gestures") || has("touchpad.twice_ms") {
+        crate::touchpad::drop_pending();
+    }
+    crate::welcome::refresh();
+    moves
 }
 
 /// A change the settings page makes to the file (spec 0012).

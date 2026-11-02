@@ -5,7 +5,7 @@
 // an action itself.
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 use windows::Win32::{
     Devices::HumanInterfaceDevice::*,
@@ -26,8 +26,12 @@ const CLASS: PCWSTR = w!("pdesk-touchpad");
 const TAP_TIME: Duration = Duration::from_millis(250);
 const TAP_DRIFT_MM: f64 = 3.0;
 const TWICE_TIMER: usize = 1;
+// To the reader's own window: the gestures or twice_ms changed, so a waiting gesture is dropped (spec 0012).
+const WM_DROP_PENDING: u32 = WM_APP + 1;
 
 static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
+static STARTED: AtomicBool = AtomicBool::new(false);
+static READER: AtomicIsize = AtomicIsize::new(0); // the reader's window, once it exists
 
 /// A gesture that has a twice rule, waiting `twice_ms` for its second go.
 #[derive(Clone, Copy)]
@@ -350,6 +354,10 @@ fn recognized(hwnd: HWND, fingers: usize, motion: Motion) {
 }
 
 fn on_input(hwnd: HWND, h: HRAWINPUT) {
+    // Turned off live: the reader keeps running and drops every report (spec 0012).
+    if !settings::get().touchpad_enabled {
+        return;
+    }
     let header = size_of::<RAWINPUTHEADER>() as u32;
     let mut size = 0;
     unsafe { GetRawInputData(h, RID_INPUT, None, &mut size, header) };
@@ -394,6 +402,10 @@ fn touchpads_changed() {
 unsafe extern "system" fn wnd(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match m {
         WM_INPUT => on_input(h, HRAWINPUT(lp.0 as _)),
+        WM_DROP_PENDING => {
+            unsafe { let _ = KillTimer(Some(h), TWICE_TIMER); }
+            PENDING.take();
+        }
         // No second go in time: the once rule runs.
         WM_TIMER if wp.0 == TWICE_TIMER => {
             unsafe { let _ = KillTimer(Some(h), TWICE_TIMER); }
@@ -415,14 +427,30 @@ unsafe extern "system" fn wnd(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESUL
     unsafe { DefWindowProcW(h, m, wp, lp) }
 }
 
-/// Starts the reader unless `[touchpad] enabled` is false. A failure here costs the
-/// gestures only, logged, never pdesk: a panic on this thread would show every hidden window.
+/// Starts the reader unless `[touchpad] enabled` is false; turning it on later starts it then.
 pub fn spawn(main_thread: u32) {
+    MAIN_THREAD.store(main_thread, Ordering::Relaxed);
     if !settings::get().touchpad_enabled {
         println!("touchpad gestures off ([touchpad] enabled = false)");
         return;
     }
-    MAIN_THREAD.store(main_thread, Ordering::Relaxed);
+    start();
+}
+
+/// Drops a gesture waiting for its second go, so it never runs a rule that was just changed.
+pub fn drop_pending() {
+    let hwnd = READER.load(Ordering::Relaxed);
+    if hwnd != 0 {
+        unsafe { let _ = PostMessageW(Some(HWND(hwnd as *mut _)), WM_DROP_PENDING, WPARAM(0), LPARAM(0)); }
+    }
+}
+
+/// Starts the reader thread, once. A failure here costs the gestures only, logged, never
+/// pdesk: a panic on this thread would show every hidden window.
+pub fn start() {
+    if STARTED.swap(true, Ordering::Relaxed) {
+        return;
+    }
     std::thread::spawn(|| unsafe {
         let Ok(module) = GetModuleHandleW(None) else {
             eprintln!("touchpad: no module handle, no gestures");
@@ -437,6 +465,7 @@ pub fn spawn(main_thread: u32) {
                 return;
             }
         };
+        READER.store(hwnd.0 as isize, Ordering::Relaxed);
         add_all();
         // INPUTSINK: reports arrive whatever window has focus. DEVNOTIFY: touchpads coming and going.
         let rid = RAWINPUTDEVICE { usUsagePage: 0x0D, usUsage: 0x05, dwFlags: RIDEV_INPUTSINK | RIDEV_DEVNOTIFY, hwndTarget: hwnd };

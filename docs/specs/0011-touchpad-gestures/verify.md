@@ -5,9 +5,9 @@ _Steps derived from spec 0011 acceptance criteria. `/check verify` runs these; `
 - [ ] Stop the installed pdesk (`& "$env:ProgramFiles\pdesk\pdesk.exe" --quit`), `cargo build`, start `target\debug\pdesk.exe`; tray › Touchpad setup → the screen opens centered on the screen under the mouse, as tall as its content, with nothing cut off on your screens → AC-8
 - [ ] With every three and four finger gesture set to Nothing in Settings → four "✓ Nothing" chips, "4 of 4 off", "pdesk runs your gestures" (each row comes from its own registry values, the Rows table) → AC-9
 - [ ] Set Four-finger Taps back to an action in Settings, return to the screen → that row reads "Still on", "3 of 4 off", the Use button shows (refresh when the window gets focus back) → AC-9
-- [ ] The screen says in plain lines what pdesk is, and each of the four rows shows what pdesk does for it (4 finger swipes: ← next workspace, → previous workspace, ↑ overview, ↓ show desktop), plus "Edits to settings.toml apply from pdesk's next start" → AC-8
+- [x] The screen says in plain lines what pdesk is, and each of the four rows shows what pdesk does for it (4 finger swipes: ← next workspace, → previous workspace, ↑ overview, ↓ show desktop), plus "What pdesk runs now. Choose my own changes them, and changes apply at once." → AC-8
 - [ ] Keyboard only: Tab goes Use these gestures › Choose my own › Close; Enter presses the focused button; Esc closes → AC-8
-- [ ] Mouse: "Choose my own" opens settings.toml (and Settings at Touchpad while gestures are still on); "Use these gestures" opens Settings at Touchpad → AC-8
+- [x] Mouse: "Choose my own" opens pdesk's settings page at Touchpad (and Windows Settings at Touchpad while gestures are still on); "Use these gestures" opens Settings at Touchpad → AC-8
 - [ ] Switch light and dark (Settings › Personalization › Colors), then a contrast theme → the screen repaints each time → AC-11
 - [ ] Drag the screen to a monitor at another scale → it resizes and stays sharp
 

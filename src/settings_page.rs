@@ -154,8 +154,11 @@ const SHORTCUTS: [(&str, &str); 11] = [
 
 static DEFAULTS: LazyLock<Settings> = LazyLock::new(Settings::default);
 
+/// The workspace count: drawn as the pictures' + Add and ×, not as a row of its own (AC-10).
+const WORKSPACES: Row = row("workspaces", "Workspaces", "", step(2, 9, 1, "workspaces"));
+
 fn find_row(key: &str) -> Option<&'static Row> {
-    ROWS.iter().map(|(_, r)| r).find(|r| r.key == key)
+    ROWS.iter().map(|(_, r)| r).chain([&WORKSPACES]).find(|r| r.key == key)
 }
 
 /// A setting with a place of its own on the page; its problems show under it.
@@ -171,6 +174,7 @@ fn word<T: Copy + PartialEq>(list: &[(&'static str, T)], v: T) -> &'static str {
 fn value(s: &Settings, key: &str) -> i64 {
     let index = |w: &str, words: &[(&str, &str)]| words.iter().position(|(x, _)| *x == w).unwrap_or(0) as i64;
     match key {
+        "workspaces" => s.workspaces as i64,
         "follow_activation" => s.follow_activation as i64,
         "copilot_as_right_ctrl" => s.copilot_as_right_ctrl as i64,
         "indicator.enabled" => s.indicator_enabled as i64,
@@ -294,6 +298,8 @@ enum Ctl {
     Cancel(&'static str),
     Once(usize), // a gesture row's pickers, by GESTURE_ROWS index
     Twice(usize),
+    Play,        // the indicator's Play: the real dots on this screen (AC-19)
+    DismissEdit, // the hand edit banner (AC-20)
 }
 
 impl Ctl {
@@ -351,6 +357,65 @@ struct Win {
     rec: Option<Rec>,
     refused: Option<(String, String)>, // the last key the recorder refused: title and line
     prompt: Option<Prompt>,
+    pics: Pics,
+    edited: Option<(String, Vec<String>)>, // the last hand edit's banner: its time and lines (AC-20)
+}
+
+/// What the workspace pictures draw, copied out of ws (AC-18), with what removing would move
+/// (AC-6): to one fewer, and to the default.
+#[derive(Clone, PartialEq, Default)]
+struct Pics {
+    screens: Vec<crate::ws::ScreenInfo>,
+    view: crate::ws::View,
+    pad: Option<crate::setup::State>, // the touchpad status line's source (AC-20)
+}
+
+/// The pictures' data now, or None while ws is busy (the next tick tries again).
+fn pictures() -> Option<Pics> {
+    let n = settings::get().workspaces;
+    let view = crate::ws::view(&[n.saturating_sub(1).max(2), DEFAULTS.workspaces])?;
+    Some(Pics { screens: crate::ws::screen_info(), view, pad: Some(crate::setup::state()) })
+}
+
+/// Takes a new copy of the pictures' data; lays the page out again only if it changed.
+fn update_pictures(always: bool) {
+    let changed = pictures().and_then(|new| {
+        set(|w| {
+            let changed = w.pics != new;
+            w.pics = new;
+            changed
+        })
+    });
+    if changed == Some(true) || always {
+        layout();
+    }
+}
+
+/// Main loop, every second and on a display change: the pictures follow your windows while
+/// the page is open and not minimized (AC-18).
+pub fn tick() {
+    if let Some(h) = hwnd()
+        && !unsafe { IsIconic(h) }.as_bool()
+    {
+        update_pictures(false);
+    }
+}
+
+/// A hand edit was put in effect: an open page shows what changed until Dismiss or the next
+/// one (AC-20). Changes made on the page show none.
+pub fn hand_edit(changes: &[settings::Change], moves: &[String]) {
+    if hwnd().is_none() {
+        return;
+    }
+    let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+    let mut lines = Vec::new();
+    for c in changes {
+        lines.push(format!("{}: {} → {}", c.key, c.was, c.now));
+        if c.key == "workspaces" {
+            lines.extend(moves.iter().cloned());
+        }
+    }
+    let _ = set(|w| w.edited = Some((format!("{:02}:{:02}", t.wHour, t.wMinute), lines)));
 }
 
 thread_local! {
@@ -372,6 +437,19 @@ struct Out {
     hits: Vec<Hit>,
     height: f32,
     tops: Vec<(Option<Section>, f32)>,
+}
+
+/// A sample window in the fixed drawings: its name, then left, top, width, height as parts of its tile.
+type Sample = (&'static str, f32, f32, f32, f32);
+
+/// The pictures' tile and window colors: tile, its edge, a window, its edge. High contrast
+/// fills windows with the text color, so a maximized one never reads as an empty tile.
+fn pic_colors(t: &Theme) -> (u32, u32, u32, u32) {
+    if t.hc {
+        (t.surface, t.text, t.text, t.surface)
+    } else {
+        (t.tile, mix(t.card_edge, t.dim, 0.5), mix(t.tile, t.dim, 0.45), mix(t.tile, t.text, 0.5))
+    }
 }
 
 /// One pass over the page, drawing or only measuring.
@@ -662,39 +740,321 @@ impl Ctx<'_, '_> {
                 let t = c.c.t;
                 let x = CX + 16.0;
                 let n = c.s.workspaces.to_string();
-                let mut h = 14.0;
+                let mut h = 14.0 + c.pictures(y + 14.0) + 4.0;
                 h += c.c.para(x, y + h, CW - 32.0, 20.0, &[("Every screen has ", F::Body, t.text), (&n, F::Bold, t.text), (" workspaces ", F::Body, t.text), ("(2 to 9) ", F::Small, t.dim), ("workspaces", F::Mono, t.dim)]);
                 let e = c.measured(|c| c.extras("workspaces", x, 0.0, CW - 32.0));
                 if e > 0.0 {
                     c.extras("workspaces", x, y + h + 6.0, CW - 32.0);
                     h += 6.0 + e;
                 }
+                h += c.removal(y + h);
                 h += 14.0;
                 c.line(y + h);
                 h + c.rows(Section::Workspaces, y + h)
             }),
             Section::Shortcuts => self.card(y + h, |c, y| {
-                let mut h = 0.0;
-                for (i, (key, title)) in SHORTCUTS.iter().enumerate() {
-                    if i > 0 {
-                        c.line(y + h);
-                    }
+                let mut h = c.scenes(y);
+                for (key, title) in SHORTCUTS.iter() {
+                    c.line(y + h);
                     h += c.shortcut(key, title, y + h);
                 }
                 h
             }),
             Section::Touchpad => {
                 let mut g = self.card(y + h, |c, y| {
-                    let h = c.rows(Section::Touchpad, y);
+                    let h = c.touchpad_status(y);
+                    c.line(y + h);
+                    let h = h + c.rows(Section::Touchpad, y + h);
                     c.line(y + h);
                     h + c.setup_row(y + h)
                 });
                 g += 16.0;
                 g + self.card(y + h + g, |c, y| c.gestures(y))
             }
+            Section::Indicator => self.card(y + h, |c, y| {
+                let h = c.rows(Section::Indicator, y);
+                c.line(y + h);
+                h + c.play_row(y + h)
+            }),
+            Section::Overview => self.card(y + h, |c, y| {
+                let h = c.overview_art(y);
+                c.line(y + h);
+                h + c.rows(Section::Overview, y + h)
+            }),
             _ => self.card(y + h, |c, y| c.rows(sec, y)),
         };
         h
+    }
+
+    /// One picture per present screen: its workspaces as tiles with their windows where they
+    /// sit, the one in view marked "now", then + Add, and × on the first screen's last tile
+    /// (AC-18, AC-10). The whole picture is one keyboard stop: Right adds, Left and Delete remove.
+    fn pictures(&mut self, y: f32) -> f32 {
+        let t = self.c.t;
+        let w = self.w;
+        let n = self.s.workspaces;
+        let (x0, wmax) = (CX + 16.0, CW - 32.0);
+        let th = if n <= 4 { 52.0 } else if n <= 6 { 40.0 } else { 24.0 };
+        let small = n > 6;
+        let gap = if small { 5.0 } else { 10.0 };
+        let (tile, edge, win, win_edge) = pic_colors(&t);
+        let (minus, plus) = (Ctl::Minus("workspaces"), Ctl::Plus("workspaces"));
+        if w.pics.screens.is_empty() {
+            return self.c.para(x0, y, wmax, 18.0, &[("Reading your screens…", F::Small, t.dim)]) + 8.0;
+        }
+        let going = !self.ro && n > 2 && (self.hovered(minus) || self.focused(Ctl::Stepper("workspaces")));
+        let mut h = 0.0;
+        for (si, sc) in w.pics.screens.iter().enumerate() {
+            if si > 0 {
+                h += 12.0;
+            }
+            let (rw, rh) = (sc.rect.right - sc.rect.left, sc.rect.bottom - sc.rect.top);
+            let head = format!("Screen {}", sc.number);
+            let hw = self.c.width(&head, F::SmallBold);
+            self.c.text(x0, y + h, 18.0, &head, F::SmallBold, t.text);
+            let rest = self.fit(&format!("{} · {rw} × {rh} · {}%", sc.name, sc.scale), F::Small, wmax - hw - 8.0);
+            self.c.text(x0 + hw + 8.0, y + h, 18.0, &rest, F::Small, t.dim);
+            h += 24.0;
+            let (rw, rh) = (rw.max(1) as f32, rh.max(1) as f32);
+            let tw = (th * rw / rh).round().clamp(th * 0.5, th * 3.0);
+            let active = w.pics.view.active.iter().find(|(d, _)| *d == sc.device).map_or(0, |(_, a)| *a);
+            let mut x = x0;
+            for i in 0..n {
+                if x + tw > x0 + wmax + 0.5 {
+                    x = x0;
+                    h += th + 26.0;
+                }
+                let (ty, last, cur) = (y + h, i + 1 == n, i == active);
+                let (fill, ed) = if last && going { (mix(tile, t.card, 0.5), mix(edge, t.card, 0.5)) } else { (tile, edge) };
+                self.c.boxed((x, ty, tw, th), 6.0, fill, Some(ed));
+                let mut count = 0;
+                for (d, ws, r) in &w.pics.view.windows {
+                    if *d != sc.device || *ws != i {
+                        continue;
+                    }
+                    count += 1;
+                    // Cut at the tile's edge, like a window hanging off its screen.
+                    let fx = |v: i32| ((v - sc.rect.left) as f32 / rw).clamp(0.0, 1.0) * (tw - 4.0) + x + 2.0;
+                    let fy = |v: i32| ((v - sc.rect.top) as f32 / rh).clamp(0.0, 1.0) * (th - 4.0) + ty + 2.0;
+                    let (l, top, r, b) = (fx(r.left), fy(r.top), fx(r.right), fy(r.bottom));
+                    if r - l >= 1.0 && b - top >= 1.0 {
+                        self.c.boxed((l, top, r - l, b - top), 2.0, win, Some(win_edge));
+                    }
+                }
+                let num = (i + 1).to_string();
+                let bh = if small { 14.0 } else { 16.0 };
+                let nw = self.c.width(&num, F::SmallBold);
+                let bw = (nw + 10.0).max(bh);
+                let (bf, bfg, be) = if cur { (t.accent, t.on_accent, t.accent) } else { (t.surface, t.text, edge) };
+                self.c.boxed((x + 3.0, ty + th - bh - 3.0, bw, bh), bh / 2.0, bf, Some(be));
+                self.c.text(x + 3.0 + (bw - nw) / 2.0, ty + th - bh - 3.0, bh, &num, F::SmallBold, bfg);
+                if cur {
+                    self.c.stroke_rr((x - 4.0, ty - 4.0, tw + 8.0, th + 8.0), 9.0, 2.5, op(t.accent));
+                }
+                let plural = |k: usize| if k == 1 { "window" } else { "windows" };
+                let cap = match (small, cur, count) {
+                    (true, true, _) => "now".to_string(),
+                    (true, false, 0) => "·".to_string(),
+                    (true, false, k) => format!("{k} win"),
+                    (false, true, 0) => "now · empty".to_string(),
+                    (false, true, k) => format!("now · {k} {}", plural(k)),
+                    (false, false, 0) => "empty".to_string(),
+                    (false, false, k) => format!("{k} {}", plural(k)),
+                };
+                let cap = self.fit(&cap, F::Small, tw + gap);
+                let cw = self.c.width(&cap, F::Small);
+                self.c.text(x + (tw - cw) / 2.0, ty + th + 4.0, 16.0, &cap, F::Small, if cur { t.text } else { t.dim });
+                if last && si == 0 {
+                    let (cx, cy) = (x + tw - 2.0, ty + 2.0);
+                    let on = !self.ro && n > 2;
+                    let fill = if on && self.hovered(minus) { mix(t.btn, t.text, 0.08) } else { t.btn };
+                    self.c.circle(cx, cy, 11.0, Some(op(fill)), Some((op(t.btn_edge), 1.0)));
+                    let xw = self.c.width("×", F::Body);
+                    self.c.text(cx - xw / 2.0, cy - 10.0, 20.0, "×", F::Body, if on { t.text } else { t.disabled });
+                    if on {
+                        self.hit(minus, (cx - 12.0, cy - 12.0, 24.0, 24.0), 1);
+                    }
+                }
+                x += tw + gap;
+            }
+            let aw = if small { 40.0 } else { (tw * 0.6).max(56.0) };
+            if x + aw > x0 + wmax + 0.5 {
+                x = x0;
+                h += th + 26.0;
+            }
+            let ty = y + h;
+            let on = !self.ro && n < 9;
+            if on && self.hovered(plus) {
+                self.c.boxed((x, ty, aw, th), 6.0, mix(t.card, t.text, 0.06), None);
+            }
+            self.c.stroke_rr((x, ty, aw, th), 6.0, 1.0, op(if on { t.btn_edge } else { t.card_edge }));
+            let label = if n >= 9 { "9 max" } else { "+ Add" };
+            let lw = self.c.width(label, F::SmallBold);
+            self.c.text(x + (aw - lw) / 2.0, ty, th, label, F::SmallBold, if on { t.text } else { t.disabled });
+            if on {
+                self.hit(plus, (x, ty, aw, th), 1);
+            }
+            h += th + 24.0;
+        }
+        self.ring((x0 - 8.0, y - 6.0, wmax + 16.0, h + 4.0), 8.0, Ctl::Stepper("workspaces"));
+        h
+    }
+
+    /// Before a removal, what moves where on each screen, since there is no undo (AC-6):
+    /// while × is hovered or the pictures have the keyboard, and while Reset would lower the count.
+    fn removal(&mut self, y: f32) -> f32 {
+        let n = self.s.workspaces;
+        let removals = &self.w.pics.view.removals;
+        let (to, title) = if n > 2 && (self.hovered(Ctl::Minus("workspaces")) || self.focused(Ctl::Stepper("workspaces"))) {
+            (0, format!("× removes workspace {n} from every screen. There is no undo."))
+        } else if n > DEFAULTS.workspaces && (self.hovered(Ctl::Reset("workspaces")) || self.focused(Ctl::Reset("workspaces"))) {
+            (1, format!("Reset removes workspaces {} to {n} from every screen and goes back to {}. There is no undo.", DEFAULTS.workspaces + 1, DEFAULTS.workspaces))
+        } else {
+            return 0.0;
+        };
+        if self.ro {
+            return 0.0;
+        }
+        let lines = removals.get(to).filter(|l| !l.is_empty()).map_or("nothing moves".to_string(), |l| l.join("\n"));
+        let sub = format!("{lines}\nA screen showing a removed workspace switches to the new last one. From the keyboard, Delete removes one.");
+        12.0 + self.note(CX + 16.0, y + 12.0, CW - 32.0, 1, &title, &sub, &[])
+    }
+
+    /// Play: the real dots on this screen with the current hold and fade; off while the dots
+    /// are off (AC-19).
+    fn play_row(&mut self, y: f32) -> f32 {
+        let t = self.c.t;
+        let x = CX + 16.0;
+        let on = self.s.indicator_enabled;
+        let bw = self.c.width("Play", F::Body) + 28.0;
+        let help = if on { "Shows the dots on this screen, with the hold and fade above." } else { "Turn the dots on to try them." };
+        self.c.text(x, y + 14.0, 20.0, "Try it", F::Bold, t.text);
+        let h = 20.0 + self.c.para(x, y + 34.0, CW - 64.0 - bw, 17.0, &[(help, F::Small, t.dim)]);
+        let bx = CX + CW - 16.0 - bw;
+        if on {
+            self.button(Ctl::Play, bx, y + 14.0, Some(bw), "Play", 1);
+        } else {
+            self.c.boxed((bx, y + 14.0, bw, 32.0), 16.0, t.card, Some(t.card_edge));
+            let lw = self.c.width("Play", F::Body);
+            self.c.text(bx + (bw - lw) / 2.0, y + 14.0, 32.0, "Play", F::Body, t.disabled);
+        }
+        14.0 + h.max(32.0) + 14.0
+    }
+
+    /// The overview as a fixed drawing that follows the labels and animation settings (AC-21).
+    fn overview_art(&mut self, y: f32) -> f32 {
+        let t = self.c.t;
+        let (tile, edge, win, win_edge) = pic_colors(&t);
+        let labels = word(settings::LABELS, self.s.overview_labels);
+        let (tw, th, gap) = (96.0, 60.0, 12.0);
+        let x0 = CX + (CW - (4.0 * tw + 3.0 * gap)) / 2.0;
+        let ty = y + 16.0;
+        let wins: [&[Sample]; 4] = [&[("Mail", 0.06, 0.08, 0.52, 0.42), ("Terminal", 0.44, 0.48, 0.5, 0.42)], &[], &[], &[("Docs", 0.1, 0.12, 0.7, 0.66)]];
+        for (i, list) in wins.iter().enumerate() {
+            let x = x0 + i as f32 * (tw + gap);
+            self.c.boxed((x, ty, tw, th), 6.0, tile, Some(edge));
+            if i == 1 {
+                self.c.stroke_rr((x - 4.0, ty - 4.0, tw + 8.0, th + 8.0), 9.0, 2.5, op(t.accent));
+            }
+            for (j, (name, fx, fy, fw, fh)) in list.iter().enumerate() {
+                let b = (x + fx * tw, ty + fy * th, fw * tw, fh * th);
+                self.c.boxed(b, 2.0, win, Some(win_edge));
+                if labels == "always" || (labels == "hover" && i == 0 && j == 0) {
+                    let lw = self.c.width(name, F::Small) + 8.0;
+                    self.c.boxed((b.0 + 2.0, b.1 + b.3 - 18.0, lw, 16.0), 3.0, t.surface, Some(edge));
+                    self.c.text(b.0 + 6.0, b.1 + b.3 - 18.0, 16.0, name, F::Small, t.text);
+                }
+            }
+        }
+        let names = match labels {
+            "always" => "every window's name shows",
+            "hover" => "a window's name shows when you point at it",
+            _ => "no names show",
+        };
+        let opening = if word(settings::ANIMATIONS, self.s.overview_animation) == "fade" { "it fades in" } else { "it opens at once" };
+        let cap = format!("Win+Tab shows every workspace of every screen: {names}, and {opening}.");
+        let ch = self.c.para(CX + 16.0, ty + th + 12.0, CW - 32.0, 17.0, &[(&cap, F::Small, t.dim)]);
+        16.0 + th + 12.0 + ch + 14.0
+    }
+
+    /// The three moves as fixed drawings with your current combos under them (AC-21).
+    fn scenes(&mut self, y: f32) -> f32 {
+        let t = self.c.t;
+        let (tile, edge, win, win_edge) = pic_colors(&t);
+        let s = self.s;
+        let first = |key: &str| combos(s, key).into_iter().next().unwrap_or_else(|| "not set".into());
+        let list = [
+            ("Switch", false, "you go", "shortcuts.previous", "shortcuts.next", "shortcuts.jump"),
+            ("Send and go", true, "the window and you go", "shortcuts.send_previous", "shortcuts.send_next", "shortcuts.send_to"),
+            ("Send and stay", true, "the window goes, you stay", "shortcuts.send_previous_stay", "shortcuts.send_next_stay", "shortcuts.send_to_stay"),
+        ];
+        let colw = (CW - 32.0 - 2.0 * 16.0) / 3.0;
+        let (tw, th, gap) = (28.0, 18.0, 8.0);
+        let mut most: f32 = 0.0;
+        for (k, (title, sends, sub, prev, next, digits)) in list.iter().enumerate() {
+            let x = CX + 16.0 + k as f32 * (colw + 16.0);
+            let mut h = 14.0;
+            self.c.text(x, y + h, 20.0, title, F::Bold, t.text);
+            h += 20.0;
+            self.c.text(x, y + h, 16.0, sub, F::Small, t.dim);
+            h += 26.0;
+            let ax = x + (colw - (4.0 * tw + 3.0 * gap)) / 2.0;
+            let ty = y + h;
+            let tx = |i: usize| ax + i as f32 * (tw + gap);
+            for i in 0..4 {
+                self.c.boxed((tx(i), ty, tw, th), 4.0, tile, Some(if i == 1 { t.accent } else { edge }));
+                if *sends && i != 1 {
+                    self.c.boxed((tx(i) + 6.0, ty + 4.0, tw - 12.0, th - 8.0), 2.0, win, Some(win_edge));
+                }
+            }
+            if *sends {
+                // Where the window was: an outline only.
+                self.c.stroke_rr((tx(1) + 6.0, ty + 4.0, tw - 12.0, th - 8.0), 2.0, 1.0, op(win_edge));
+            }
+            self.c.circle(tx(1) + tw / 2.0, ty - 7.0, 3.5, Some(op(t.accent)), None);
+            // An arrow from where you are to each side.
+            for to in [0usize, 2] {
+                let (a, b) = (tx(1) + tw / 2.0, tx(to) + tw / 2.0);
+                let base = ty + th + 3.0;
+                let pts: Vec<(f32, f32)> = (0..=8)
+                    .map(|j| {
+                        let u = j as f32 / 8.0;
+                        (a + (b - a) * u, base + 8.0 * (1.0 - (2.0 * u - 1.0).powi(2)))
+                    })
+                    .collect();
+                self.c.lines(&pts, 1.5, op(t.dim));
+                let back = if b > a { -4.0 } else { 4.0 };
+                self.c.lines(&[(b + back, base + 4.0), (b, base), (b + back * 1.25, base - 1.0)], 1.5, op(t.dim));
+            }
+            h += th + 20.0;
+            for (label, key) in [("←  ", prev), ("→  ", next), ("", digits)] {
+                let text = self.fit(&format!("{label}{}", first(key)), F::Small, colw);
+                self.c.text(x, y + h, 17.0, &text, F::Small, t.text);
+                h += 17.0;
+            }
+            most = most.max(h);
+        }
+        most + 14.0
+    }
+
+    /// Where reading gestures stands, in one of six states checked in AC-20's order.
+    fn touchpad_status(&mut self, y: f32) -> f32 {
+        use crate::setup::{ROWS as WIN_ROWS, Row as WinRow};
+        let Some(st) = self.w.pics.pad else { return 0.0 };
+        let (kind, title, line): (u8, String, &str) = if !st.pad {
+            (0, "No precision touchpad found".into(), "Your gestures are kept and work when one is plugged in.")
+        } else if !st.enabled && !st.off {
+            (0, "Reading is off here, and Windows' own gestures are on".into(), "Your touchpad works the Windows way. Turn on Read touchpad gestures to use the gestures below.")
+        } else if !st.enabled {
+            (1, "No three or four finger gesture does anything now".into(), "Reading is off here, but Windows' own gestures are set to Nothing. Turn reading on, or give them back to Windows in Touchpad setup.")
+        } else if st.rows.contains(&WinRow::CantRead) {
+            (1, "pdesk can't read one of Windows' gesture settings, so it waits".into(), "Touchpad setup shows which row.")
+        } else if let Some(i) = st.rows.iter().position(|r| *r == WinRow::StillOn) {
+            (1, format!("pdesk is waiting: Windows' own {} are still on", WIN_ROWS[i].0), "pdesk acts only when all of Windows' three and four finger gestures are Nothing, so one gesture never does two things.")
+        } else {
+            (0, "pdesk reads your three and four finger gestures".into(), "Windows' own three and four finger gestures are all set to Nothing.")
+        };
+        14.0 + self.note(CX + 16.0, y + 14.0, CW - 32.0, kind, &title, line, &[]) + 14.0
     }
 
     /// `text` cut with "…" to fit `w`.
@@ -716,8 +1076,11 @@ impl Ctx<'_, '_> {
         let t = self.c.t;
         let (tx, tw) = (x + 40.0, w - 52.0);
         let text = |c: &mut Self| {
-            let h = c.c.para(tx, y + 10.0, tw, 20.0, &[(title, F::Bold, t.text)]);
-            h + 2.0 + c.c.para(tx, y + 12.0 + h, tw, 17.0, &[(sub, F::Small, t.dim)])
+            let mut h = c.c.para(tx, y + 10.0, tw, 20.0, &[(title, F::Bold, t.text)]);
+            for line in sub.split('\n') {
+                h += 2.0 + c.c.para(tx, y + 12.0 + h, tw, 17.0, &[(line, F::Small, t.dim)]);
+            }
+            h
         };
         let th = self.measured(|c| text(c));
         let h = 10.0 + th + if buttons.is_empty() { 10.0 } else { 10.0 + 32.0 + 12.0 };
@@ -1072,6 +1435,10 @@ fn compose(c: &mut Canvas, w: &Win) -> Out {
     if let Some((what, why)) = &w.error {
         y += x.banner(y, true, what, &[(why.clone(), F::Mono)], Some((Ctl::Dismiss, "Dismiss"))) + 16.0;
     }
+    if let Some((time, lines)) = &w.edited {
+        let lines: Vec<(String, F)> = lines.iter().map(|l| (l.clone(), F::Mono)).collect();
+        y += x.banner(y, false, &format!("settings.toml changed at {time} and is in use:"), &lines, Some((Ctl::DismissEdit, "Dismiss"))) + 16.0;
+    }
     let notes: Vec<(String, F)> = settings::problems().iter().filter(|p| home(&p.key).is_none()).map(|p| (p.message.clone(), F::Small)).collect();
     if !notes.is_empty() {
         x.out.tops.push((None, y - top0));
@@ -1139,7 +1506,7 @@ fn layout() {
 /// Shows what pdesk read back from the file. Called after every reload.
 pub fn refresh() {
     if hwnd().is_some() {
-        layout();
+        update_pictures(true);
     }
 }
 
@@ -1170,7 +1537,7 @@ fn reveal() {
     .flatten();
     match dy {
         Some(dy) => scroll_by(dy),
-        None => repaint(),
+        None => layout(), // the focus can show the removal preview (AC-6)
     }
 }
 
@@ -1482,7 +1849,20 @@ fn act(ctl: Ctl) {
         }
         Ctl::Once(row) => pick(row, 1),
         Ctl::Twice(row) => pick(row, 2),
+        Ctl::Play => play(),
+        Ctl::DismissEdit => {
+            let _ = set(|w| w.edited = None);
+            refresh();
+        }
     }
+}
+
+/// The real dots on the screen the page is on, with the current hold and fade (AC-19).
+fn play() {
+    let Some(h) = hwnd() else { return };
+    let mon = unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) };
+    let active = crate::ws::active(&crate::ws::device_name(mon));
+    crate::indicator::show(mon, active, settings::get().workspaces, None);
 }
 
 /// The keyboard stops in one area, in order, each with its top: the side list and its file
@@ -1575,6 +1955,10 @@ fn on_key(h: HWND, vk: VIRTUAL_KEY) {
                 reveal();
             }
         },
+        // On the pictures: removes the last workspace, as × does (AC-10).
+        VK_DELETE if focus == Some(Ctl::Stepper("workspaces")) => {
+            change(Ctl::Stepper("workspaces"), false);
+        }
         VK_PRIOR => scroll_by(-(VIEW - 40.0)),
         VK_NEXT => scroll_by(VIEW - 40.0),
         _ => {}
@@ -1648,11 +2032,13 @@ pub fn open(section: Option<Section>) {
             rec: None,
             refused: None,
             prompt: None,
+            pics: Pics::default(),
+            edited: None,
         }));
         let (ww, wh) = size(h);
         let (x, y) = ((work.left + work.right - ww) / 2, ((work.top + work.bottom - wh) / 2).max(work.top));
         let _ = SetWindowPos(h, None, x, y, ww, wh, SWP_NOZORDER | SWP_NOACTIVATE);
-        layout();
+        update_pictures(true);
         if section.is_some() {
             jump(section);
         }
@@ -1691,6 +2077,8 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                 LRESULT(0)
             }
             WM_ERASEBKGND => LRESULT(1),
+            // A held Delete removes one workspace only, not one per repeat.
+            WM_KEYDOWN if wp.0 as u16 == VK_DELETE.0 && lp.0 >> 30 & 1 == 1 => LRESULT(0),
             WM_KEYDOWN => {
                 on_key(h, VIRTUAL_KEY(wp.0 as u16));
                 LRESULT(0)
@@ -1747,13 +2135,13 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                 {
                     let mut tme = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
                     let _ = TrackMouseEvent(&mut tme);
-                    repaint();
+                    layout(); // hover on × or Reset shows what a removal moves (AC-6)
                 }
                 LRESULT(0)
             }
             WM_MOUSELEAVE => {
                 let _ = set(|w| w.hover = None);
-                repaint();
+                layout();
                 LRESULT(0)
             }
             WM_LBUTTONUP => {
@@ -1867,12 +2255,34 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let next = "shortcuts.next";
         let clash = || Prompt { key: next, title: "Win+F already belongs to Finder.".into(), sub: "Move it here, and Finder has no shortcut left (it turns off). Cancel keeps both as they are. Nothing is saved until you choose.".into(), edit: Edit::Gestures(vec![]) };
-        let states: [(&str, Option<Rec>, Option<(String, String)>, bool); 5] = [
+        // Two screens as a laptop plus an external one, a hovered ×, a hand edit and a waiting
+        // touchpad: the step 4 parts (spec 0012 AC-6, AC-18, AC-20).
+        let r = |l, t, rr, b| RECT { left: l, top: t, right: rr, bottom: b };
+        let fake = || Pics {
+            screens: vec![
+                crate::ws::ScreenInfo { device: "DISPLAY1".into(), number: 1, name: "Built-in display".into(), rect: r(0, 0, 2880, 1800), scale: 200 },
+                crate::ws::ScreenInfo { device: "DISPLAY2".into(), number: 2, name: "DELL U2720Q".into(), rect: r(2880, 0, 6720, 2160), scale: 150 },
+            ],
+            view: crate::ws::View {
+                active: vec![("DISPLAY1".into(), 1), ("DISPLAY2".into(), 3)],
+                windows: vec![
+                    ("DISPLAY1".into(), 1, r(100, 100, 1500, 1200)),
+                    ("DISPLAY1".into(), 1, r(1200, 600, 3000, 1700)),
+                    ("DISPLAY1".into(), 0, r(0, 0, 2880, 1740)),
+                    ("DISPLAY2".into(), 3, r(3000, 100, 5000, 1500)),
+                    ("DISPLAY2".into(), 2, r(4000, 200, 6700, 2100)),
+                ],
+                removals: vec![vec!["Screen 2: 1 window from 4 moves to 3".into()], vec![]],
+            },
+            pad: Some(crate::setup::State { pad: true, enabled: true, rows: [crate::setup::Row::Nothing, crate::setup::Row::StillOn, crate::setup::Row::Nothing, crate::setup::Row::Nothing], off: false, saved: false }),
+        };
+        let states: [(&str, Option<Rec>, Option<(String, String)>, bool); 6] = [
             ("rest", None, None, false),
             ("rec", Some(Rec::List(next, None)), None, false),
             ("refused", Some(Rec::List("shortcuts.finder", Some(0))), Some(("This key can't be saved; try another".into(), "Still recording.".into())), false),
             ("digits", Some(Rec::Digits("shortcuts.jump")), None, false),
             ("clash", None, None, true),
+            ("pictures", None, None, false),
         ];
         for (tname, theme) in [("light", crate::welcome::LIGHT), ("dark", crate::welcome::DARK)] {
             for (sname, rec, refused, prompt) in &states {
@@ -1880,8 +2290,13 @@ mod tests {
                 let win = Win {
                     hwnd: HWND::default(), scale, theme, fonts: Fonts::new(scale), scroll: 0.0, height: 0.0, tops: vec![], hits: vec![],
                     focus: prompt.then_some(Ctl::Cancel(next)), kb: *prompt, hover: None, press: None, drag: None, error: None,
-                    rec: *rec, refused: refused.clone(), prompt: prompt.then(clash),
+                    rec: *rec, refused: refused.clone(), prompt: prompt.then(clash), pics: fake(), edited: None,
                 };
+                let mut win = win;
+                if *sname == "pictures" {
+                    win.hover = Some(Ctl::Minus("workspaces"));
+                    win.edited = Some(("14:32".into(), vec!["indicator.hold_ms: 800 → 550".into(), "workspaces: 5 → 4".into(), "Screen 1: 2 windows from 5 move to 4".into()]));
+                }
                 let height = unsafe {
                     let dc = GetDC(None);
                     let out = compose(&mut Canvas::new(dc, false, scale, theme, &win.fonts), &win);

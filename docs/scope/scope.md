@@ -194,7 +194,7 @@ spec [0012](../specs/0012-settings-page/index.md) · code in `src/settings_page.
 - [ ] Build it: `/develop settings page`
   - [x] Live settings core and a one toggle tracer page, tray opens it (AC-1, AC-3, AC-4, AC-5, AC-14, AC-15, AC-17)
   - [x] Design pass approved (`pdesk-design/settings/`, r4, 2026-11-01)
-  - [ ] Every plain setting, screen pictures, live workspace resize, banner and touchpad status, keyboard and themes (AC-2, AC-4, AC-6, AC-10, AC-11, AC-14, AC-16, AC-18 to AC-21)
+  - [x] Every plain setting, screen pictures, live workspace resize, banner and touchpad status, keyboard and themes (AC-2, AC-4, AC-6, AC-10, AC-11, AC-14, AC-16, AC-18 to AC-21)
   - [x] Shortcut recorder, chips and clash prompt (AC-7, AC-8, AC-9)
   - [x] Gesture rows and Choose my own opens the page (AC-12, AC-13)
 

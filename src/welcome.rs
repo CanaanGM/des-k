@@ -786,9 +786,9 @@ fn card(c: &mut Canvas, v: &View, x: f32, top: f32) -> f32 {
     let mut y = top;
     // Reading off wins over no touchpad: then pdesk runs nothing, so the rows would mislead.
     let (primary, open) = if !st.enabled {
-        let sub = "Windows' three and four finger gestures are set to Nothing, so right now they do nothing. Turn reading on in settings.toml and restart pdesk, or set them back in Settings.";
+        let sub = "Windows' three and four finger gestures are set to Nothing, so right now they do nothing. Turn reading back on with Choose my own, or set them back in Windows Settings.";
         let sub = st.off.then_some(sub);
-        y += banner(c, x, y, CARD_IN, st.off, "Touchpad reading is off in settings.toml.", sub.as_slice());
+        y += banner(c, x, y, CARD_IN, st.off, "Touchpad reading is off in pdesk's settings.", sub.as_slice());
         (Some((USE, false)), st.off)
     } else {
         match v.back {
@@ -844,7 +844,7 @@ fn card(c: &mut Canvas, v: &View, x: f32, top: f32) -> f32 {
         y += rows(c, v, x, y);
         if v.back.is_none() {
             // Only while pdesk reads the touchpad: after a give back it runs nothing.
-            let edits = "What pdesk runs now. Edits to settings.toml apply from pdesk's next start (sign out and in, or run install.ps1 again).";
+            let edits = "What pdesk runs now. Choose my own changes them, and changes apply at once.";
             y += 12.0 + c.para(x, y + 12.0, CARD_IN, 16.0, &[(edits, F::Small, t.dim)]);
             let after = match all {
                 _ if !st.pad => None,

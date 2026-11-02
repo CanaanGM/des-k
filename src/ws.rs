@@ -42,7 +42,31 @@ struct Monitor {
 
 impl Monitor {
     fn new() -> Self {
-        Monitor { active: 0, hidden: vec![Vec::new(); settings::get().workspaces], last_follow: None, last_switch: None, desktop: Vec::new() }
+        Self::with(settings::get().workspaces)
+    }
+
+    fn with(count: usize) -> Self {
+        Monitor { active: 0, hidden: vec![Vec::new(); count], last_follow: None, last_switch: None, desktop: Vec::new() }
+    }
+
+    /// Gives this screen `count` workspaces (spec 0012 AC-6), lists only. The windows of a
+    /// removed workspace go to the new last one; if this screen showed a removed one, it
+    /// shows the new last one and the returned windows (top first) must be shown.
+    fn resize(&mut self, count: usize) -> Vec<isize> {
+        if self.hidden.len() <= count {
+            self.hidden.resize(count, Vec::new());
+            return vec![];
+        }
+        let last = count - 1;
+        let gone: Vec<isize> = self.hidden.drain(count..).flatten().collect();
+        self.last_switch = self.last_switch.filter(|&(_, ws)| ws < count);
+        if self.active < count {
+            self.hidden[last].extend(gone);
+            return vec![];
+        }
+        // The windows on screen stay; the ones hidden on the new last one come into view too.
+        self.active = last;
+        self.hidden[last].drain(..).chain(gone).collect()
     }
 }
 
@@ -141,7 +165,7 @@ fn save_lines(s: &State, fingerprints: bool) {
     }
 }
 
-fn device_name(m: HMONITOR) -> String {
+pub(crate) fn device_name(m: HMONITOR) -> String {
     let mut mi = MONITORINFOEXW::default();
     mi.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
     unsafe { let _ = GetMonitorInfoW(m, &mut mi as *mut _ as *mut MONITORINFO); }
@@ -485,7 +509,10 @@ pub struct Place {
 /// Every listed window on screen (front to back), then every live window pdesk hid, by
 /// screen, workspace and saved order.
 pub fn windows() -> Vec<Place> {
-    let mut s = state();
+    windows_in(&mut state())
+}
+
+fn windows_in(s: &mut State) -> Vec<Place> {
     let mut out: Vec<Place> = app_windows()
         .into_iter()
         .map(|h| {
@@ -523,6 +550,175 @@ pub fn screens() -> Vec<(String, RECT)> {
 /// The workspace `device` shows (0 based), for the overview (spec 0010).
 pub fn active(device: &str) -> usize {
     state().monitors.get(device).map_or(0, |m| m.active)
+}
+
+/// Present screens' devices, numbered as the finder and the settings page number them: left
+/// to right, then top to bottom.
+pub fn screen_order() -> Vec<String> {
+    let mut all = screens();
+    all.sort_by_key(|(_, r)| (r.left, r.top));
+    all.into_iter().map(|(dev, _)| dev).collect()
+}
+
+/// What lowering the count to `count` would move: one line per screen with something to
+/// move, as "Screen 2: 3 windows from 7, 8 move to 6"; a screen not plugged in now goes under
+/// its device name (spec 0012 AC-6). The windows on screen count for the workspace shown.
+fn moves(s: &State, count: usize) -> Vec<String> {
+    let order = screen_order();
+    let mut devs: Vec<&String> = s.monitors.keys().collect();
+    devs.sort_by_key(|d| (order.iter().position(|o| o == *d).unwrap_or(usize::MAX), d.to_string()));
+    let mut out = Vec::new();
+    for dev in devs {
+        let m = &s.monitors[dev];
+        let (mut from, mut n) = (Vec::new(), 0);
+        for ws in count..m.hidden.len() {
+            let k = if ws == m.active {
+                monitor_named(dev).map_or(0, |mon| app_windows_on(mon).len())
+            } else {
+                m.hidden[ws].iter().filter(|&&h| unsafe { IsWindow(Some(HWND(h as *mut _))) }.as_bool()).count()
+            };
+            if k > 0 {
+                from.push((ws + 1).to_string());
+                n += k;
+            }
+        }
+        if n == 0 {
+            continue;
+        }
+        let name = order.iter().position(|o| o == dev).map_or(dev.clone(), |i| format!("Screen {}", i + 1));
+        let (win, go) = if n == 1 { ("window", "moves") } else { ("windows", "move") };
+        out.push(format!("{name}: {n} {win} from {} {go} to {count}", from.join(", ")));
+    }
+    out
+}
+
+/// Gives every screen `count` workspaces (spec 0012 AC-6). Raising adds empty ones. Lowering
+/// moves the windows of every removed workspace onto the new last one; a screen showing a
+/// removed one switches to the new last one with all of them in view, elsewhere they stay
+/// hidden. Returns `removal`'s lines, as they were before the move. Main thread, from
+/// `settings::apply` only, never under `state()`.
+pub fn resize(count: usize) -> Vec<String> {
+    let mut s = state();
+    let lines = moves(&s, count);
+    let shell = Shell::new();
+    for (dev, m) in s.monitors.iter_mut() {
+        let show = m.resize(count);
+        if show.is_empty() {
+            continue;
+        }
+        let Ok(shell) = &shell else {
+            // Kept with the shown workspace: the next switch away and back shows them.
+            eprintln!("shell unavailable, {dev}: {} windows stay hidden", show.len());
+            m.hidden[count - 1] = show;
+            continue;
+        };
+        for raw in show {
+            let h = HWND(raw as *mut _);
+            if unsafe { IsWindow(Some(h)) }.as_bool()
+                && let Err(e) = shell.hide(h, false)
+            {
+                eprintln!("uncloak {raw:#x} failed: {e}");
+            }
+        }
+    }
+    save(&s);
+    lines
+}
+
+/// One present screen, as the settings page heads its picture (spec 0012 AC-18).
+#[derive(Clone, PartialEq)]
+pub struct ScreenInfo {
+    pub device: String,
+    pub number: usize, // 1 based, screen_order's
+    pub name: String,
+    pub rect: RECT,
+    pub scale: u32, // percent
+}
+
+/// Every present screen in screen_order, with its own name: the monitor's, "Built-in
+/// display" for a laptop panel, or the device name when Windows gives none.
+pub fn screen_info() -> Vec<ScreenInfo> {
+    use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+    let names = display_names();
+    let mut all = screens();
+    all.sort_by_key(|(_, r)| (r.left, r.top));
+    all.into_iter()
+        .enumerate()
+        .map(|(i, (device, rect))| {
+            let (mut dx, mut dy) = (96, 96);
+            if let Some(mon) = monitor_named(&device) {
+                unsafe { let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy); }
+            }
+            let name = names.get(&device).filter(|n| !n.is_empty()).cloned().unwrap_or_else(|| device.clone());
+            ScreenInfo { device, number: i + 1, name, rect, scale: dx * 100 / 96 }
+        })
+        .collect()
+}
+
+/// Each active display's name by GDI device name (DISPLAY1), from the display config.
+fn display_names() -> HashMap<String, String> {
+    use windows::Win32::Devices::Display::*;
+    let mut out = HashMap::new();
+    let (mut np, mut nm) = (0u32, 0u32);
+    unsafe {
+        if GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut np, &mut nm).is_err() {
+            return out;
+        }
+        let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); np as usize];
+        let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); nm as usize];
+        if QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &mut np, paths.as_mut_ptr(), &mut nm, modes.as_mut_ptr(), None).is_err() {
+            return out;
+        }
+        let text = |w: &[u16]| String::from_utf16_lossy(&w[..w.iter().position(|&c| c == 0).unwrap_or(w.len())]);
+        for p in &paths[..np as usize] {
+            let mut src = DISPLAYCONFIG_SOURCE_DEVICE_NAME { header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                r#type: DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+                size: size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32,
+                adapterId: p.sourceInfo.adapterId,
+                id: p.sourceInfo.id,
+            }, ..Default::default() };
+            if DisplayConfigGetDeviceInfo(&mut src.header) != 0 {
+                continue;
+            }
+            let device = text(&src.viewGdiDeviceName).replace(r"\\.\", "");
+            let tech = p.targetInfo.outputTechnology;
+            let name = if [DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INTERNAL, DISPLAYCONFIG_OUTPUT_TECHNOLOGY_DISPLAYPORT_EMBEDDED, DISPLAYCONFIG_OUTPUT_TECHNOLOGY_UDI_EMBEDDED].contains(&tech) {
+                "Built-in display".to_string()
+            } else {
+                let mut tgt = DISPLAYCONFIG_TARGET_DEVICE_NAME { header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                    r#type: DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
+                    size: size_of::<DISPLAYCONFIG_TARGET_DEVICE_NAME>() as u32,
+                    adapterId: p.targetInfo.adapterId,
+                    id: p.targetInfo.id,
+                }, ..Default::default() };
+                if DisplayConfigGetDeviceInfo(&mut tgt.header) == 0 { text(&tgt.monitorFriendlyDeviceName) } else { String::new() }
+            };
+            out.entry(device).or_insert(name);
+        }
+    }
+    out
+}
+
+/// What the settings page draws of the layout, copied out so it paints with no lock held.
+#[derive(Clone, PartialEq, Default)]
+pub struct View {
+    pub active: Vec<(String, usize)>,       // device and the workspace it shows
+    pub windows: Vec<(String, usize, RECT)>, // device, workspace, where it sits
+    pub removals: Vec<Vec<String>>,          // removal's lines, one list per count asked
+}
+
+/// The layout now, or None while a switch holds it: the page can be asked to refresh from
+/// inside one (an activation change mid switch), and the lock is not reentrant.
+pub fn view(counts: &[usize]) -> Option<View> {
+    let mut s = match STATE.try_lock() {
+        Ok(g) => g,
+        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return None,
+    };
+    let windows = windows_in(&mut s).into_iter().map(|p| (p.device, p.workspace, real_rect(p.hwnd))).collect();
+    let active = s.monitors.iter().map(|(d, m)| (d.clone(), m.active)).collect();
+    let removals = counts.iter().map(|&n| moves(&s, n)).collect();
+    Some(View { active, windows, removals })
 }
 
 /// Show workspace `ws` on `device`, exactly like a switch there: the indicator shows, and
@@ -1116,6 +1312,44 @@ mod tests {
         let external = rect(1920, -200, 1920 + 2560, -200 + 1400);
         let left_half = rect(0, 0, 960, 1140);
         assert_eq!(map_rect(laptop, external, left_half), rect(1920, -200, 1920 + 1280, 1200));
+    }
+
+    fn with_hidden(active: usize, hidden: &[&[isize]]) -> Monitor {
+        let mut m = Monitor::with(hidden.len());
+        m.active = active;
+        m.hidden = hidden.iter().map(|l| l.to_vec()).collect();
+        m
+    }
+
+    // Lowering the count must never lose a window: the windows of every removed workspace end
+    // up hidden on the new last one, and the workspace you look at does not change (AC-6).
+    #[test]
+    fn lowering_moves_removed_windows_to_the_new_last_workspace() {
+        let mut m = with_hidden(0, &[&[], &[1], &[2, 3], &[4]]);
+        assert_eq!(m.resize(2), Vec::<isize>::new());
+        assert_eq!(m.active, 0);
+        assert_eq!(m.hidden, vec![vec![], vec![1, 2, 3, 4]]);
+    }
+
+    // A screen showing a removed workspace switches to the new last one, and the windows that
+    // land there are shown, not left hidden behind a workspace you are already on (AC-6).
+    #[test]
+    fn lowering_below_the_shown_workspace_shows_what_lands_there() {
+        let mut m = with_hidden(3, &[&[9], &[1], &[2], &[]]);
+        m.last_switch = Some((Instant::now(), 2));
+        assert_eq!(m.resize(2), vec![1, 2]);
+        assert_eq!(m.active, 1);
+        assert_eq!(m.hidden, vec![vec![9], vec![]]);
+        assert!(m.last_switch.is_none(), "a back jump to a removed workspace would index past the end");
+    }
+
+    // Raising adds empty workspaces and leaves windows where an earlier lowering put them (AC-6).
+    #[test]
+    fn raising_adds_empty_workspaces_only() {
+        let mut m = with_hidden(1, &[&[5], &[]]);
+        assert_eq!(m.resize(4), Vec::<isize>::new());
+        assert_eq!(m.active, 1);
+        assert_eq!(m.hidden, vec![vec![5], vec![], vec![], vec![]]);
     }
 
     // A window hanging off its old screen must still land fully on the new one, never lost off its edge.
