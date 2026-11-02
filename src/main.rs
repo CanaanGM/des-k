@@ -208,9 +208,9 @@ fn main() -> windows::core::Result<()> {
             WM_CLOSE => break, // posted by `pdesk --quit` and the tray's Quit
             // Indicator, tray, finder, overview, welcome screen and settings page messages.
             // TranslateMessage makes the finder's typed characters and IME input; the finder and the
-            // overview take their own keys before that, and the welcome screen's and the settings
-            // page's go through IsDialogMessageW (Tab, Enter, Esc).
-            _ if welcome::key(&msg) || settings_page::key(&msg) || finder::key(&msg) || overview::key(&msg) => {}
+            // overview take their own keys before that, and the welcome screen's go through
+            // IsDialogMessageW (Tab, Enter, Esc). The settings page takes its keys in its wndproc.
+            _ if welcome::key(&msg) || finder::key(&msg) || overview::key(&msg) => {}
             _ => unsafe {
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);

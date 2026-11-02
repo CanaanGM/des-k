@@ -280,10 +280,12 @@ impl Session {
             self.began = Some(Instant::now());
         }
         let at = (down.iter().map(|p| p.0).sum::<f64>() / n as f64, down.iter().map(|p| p.1).sum::<f64>() / n as f64);
-        if n > self.down {
-            self.start = at; // fingers landing one by one is not motion
-        } else if n < self.down {
-            // A lifting finger makes the mean jump; move the start with it to keep the distance so far.
+        if n > self.fingers {
+            // Fingers landing one by one is not motion, and a two finger scroll before is no swipe.
+            self.start = at;
+        } else if n != self.down {
+            // A finger lifting, or one back after dropping out for a frame (lost contact, a palm
+            // flag), makes the mean jump; move the start with it to keep the distance so far.
             self.start.0 += at.0 - self.at.0;
             self.start.1 += at.1 - self.at.1;
         }
@@ -447,4 +449,39 @@ pub fn spawn(main_thread: u32) {
             DispatchMessageW(&msg);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Four fingers side by side, their mean at `x` mm.
+    fn four(x: f64) -> Vec<(f64, f64)> {
+        (0..4).map(|i| (x - 7.5 + 5.0 * i as f64, 30.0)).collect()
+    }
+
+    #[test]
+    fn a_finger_flickering_mid_swipe_keeps_the_distance_so_far() {
+        // A finger near the edge often drops out for a frame (lost contact, or its confidence
+        // bit flickers). The swipe must still fire once the hand has moved swipe_mm (15) in all,
+        // not 15 more after the finger comes back: else gestures come late or never.
+        let mut s = Session::default();
+        assert_eq!(s.frame(&four(10.0), false), None);
+        assert_eq!(s.frame(&four(20.0), false), None); // 10 mm so far
+        assert_eq!(s.frame(&four(21.0)[..3], false), None); // one finger out for a frame
+        assert_eq!(s.frame(&four(22.0), false), None); // back; the 2 mm moved while it was out is lost
+        assert_eq!(s.frame(&four(28.0), false), Some((4, Motion::Right))); // 16 mm counted (6 after a reset)
+    }
+
+    #[test]
+    fn fingers_landing_one_by_one_are_not_a_swipe() {
+        // The mean jumps as each finger lands; that jump is not motion.
+        let mut s = Session::default();
+        let hand = four(10.0);
+        for n in 1..=4 {
+            assert_eq!(s.frame(&hand[..n], false), None);
+        }
+        assert_eq!(s.frame(&four(20.0), false), None); // 10 mm since the last landed
+        assert_eq!(s.frame(&four(26.0), false), Some((4, Motion::Right)));
+    }
 }

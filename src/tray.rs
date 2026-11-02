@@ -164,7 +164,7 @@ fn menu(hwnd: HWND) {
         let _ = DestroyMenu(m);
         match cmd.0 as usize {
             ID_TOUCHPAD => crate::welcome::show(false),
-            ID_SETTINGS => crate::settings_page::open(),
+            ID_SETTINGS => crate::settings_page::open(None),
             ID_LOG => open(&log),
             // Main's loop breaks on WM_CLOSE, the same path as `pdesk --quit`.
             ID_QUIT => { let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)); }

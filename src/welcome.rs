@@ -57,37 +57,37 @@ const RING: f32 = 4.0; // a button's window reaches this far past its pill, for 
 
 /// Colors as 0xRRGGBB: the design file's tokens (provisional, the indicator's).
 #[derive(Clone, Copy, PartialEq)]
-struct Theme {
-    dark: bool,
-    hc: bool,
-    surface: u32,
-    text: u32,
-    dim: u32,
-    stroke: u32,
-    accent: u32,
-    on_accent: u32,
-    band_a: u32,
-    band_b: u32,
-    on_band: u32,
-    card: u32,
-    card_edge: u32,
-    tile: u32,
-    tile_ico: u32,
-    tile_ico_fg: u32,
-    chip_on: u32,
-    chip_on_fg: u32,
-    chip_off: u32,
-    chip_off_fg: u32,
-    chip_err: u32,
-    chip_err_fg: u32,
-    note: u32,
-    note_edge: u32,
-    warn: u32,
-    warn_edge: u32,
-    btn: u32,
-    btn_edge: u32,
-    foot: u32,
-    disabled: u32,
+pub(crate) struct Theme {
+    pub(crate) dark: bool,
+    pub(crate) hc: bool,
+    pub(crate) surface: u32,
+    pub(crate) text: u32,
+    pub(crate) dim: u32,
+    pub(crate) stroke: u32,
+    pub(crate) accent: u32,
+    pub(crate) on_accent: u32,
+    pub(crate) band_a: u32,
+    pub(crate) band_b: u32,
+    pub(crate) on_band: u32,
+    pub(crate) card: u32,
+    pub(crate) card_edge: u32,
+    pub(crate) tile: u32,
+    pub(crate) tile_ico: u32,
+    pub(crate) tile_ico_fg: u32,
+    pub(crate) chip_on: u32,
+    pub(crate) chip_on_fg: u32,
+    pub(crate) chip_off: u32,
+    pub(crate) chip_off_fg: u32,
+    pub(crate) chip_err: u32,
+    pub(crate) chip_err_fg: u32,
+    pub(crate) note: u32,
+    pub(crate) note_edge: u32,
+    pub(crate) warn: u32,
+    pub(crate) warn_edge: u32,
+    pub(crate) btn: u32,
+    pub(crate) btn_edge: u32,
+    pub(crate) foot: u32,
+    pub(crate) disabled: u32,
 }
 
 const DARK: Theme = Theme {
@@ -199,7 +199,7 @@ fn high_contrast() -> Theme {
 }
 
 /// Windows' app mode, light or dark, unless high contrast is on.
-fn theme() -> Theme {
+pub(crate) fn theme() -> Theme {
     let mut hc = HIGHCONTRASTW { cbSize: size_of::<HIGHCONTRASTW>() as u32, ..Default::default() };
     let read = unsafe { SystemParametersInfoW(SPI_GETHIGHCONTRAST, hc.cbSize, Some((&mut hc as *mut HIGHCONTRASTW).cast()), Default::default()) };
     if read.is_ok() && hc.dwFlags.0 & HCF_HIGHCONTRASTON.0 != 0 {
@@ -211,22 +211,22 @@ fn theme() -> Theme {
     if e == ERROR_SUCCESS && light == 0 { DARK } else { LIGHT }
 }
 
-fn cref(c: u32) -> COLORREF {
+pub(crate) fn cref(c: u32) -> COLORREF {
     COLORREF((c & 0xFF) << 16 | (c & 0xFF00) | (c >> 16 & 0xFF))
 }
 
 /// Opaque GDI+ color.
-fn op(c: u32) -> u32 {
+pub(crate) fn op(c: u32) -> u32 {
     0xFF00_0000 | c
 }
 
 /// GDI+ color at `a` (0 to 1) opacity.
-fn alpha(c: u32, a: f32) -> u32 {
+pub(crate) fn alpha(c: u32, a: f32) -> u32 {
     ((a * 255.0).round() as u32) << 24 | c
 }
 
 /// `a` moved toward `b` by `f`.
-fn mix(a: u32, b: u32, f: f32) -> u32 {
+pub(crate) fn mix(a: u32, b: u32, f: f32) -> u32 {
     let ch = |s: u32| {
         let (x, y) = ((a >> s & 0xFF) as f32, (b >> s & 0xFF) as f32);
         ((x + (y - x) * f).round() as u32) << s
@@ -236,7 +236,7 @@ fn mix(a: u32, b: u32, f: f32) -> u32 {
 
 /// The fonts, as `F as usize` indexes.
 #[derive(Clone, Copy)]
-enum F {
+pub(crate) enum F {
     Body,
     Bold,
     Small,
@@ -244,12 +244,14 @@ enum F {
     Glyph,
     H1,
     H2,
+    Title, // the settings page's headings
+    Mono,  // setting names as the file spells them
 }
 
-/// Per F: display face, size in dip, weight.
-const FACES: [(bool, f32, i32); 7] = [(false, 14.0, 400), (false, 14.0, 600), (false, 12.0, 400), (false, 12.0, 600), (false, 14.0, 700), (true, 28.0, 600), (true, 16.0, 600)];
+/// Per F: face (0 text, 1 display, 2 mono), size in dip, weight.
+const FACES: [(u8, f32, i32); 9] = [(0, 14.0, 400), (0, 14.0, 600), (0, 12.0, 400), (0, 12.0, 600), (0, 14.0, 700), (1, 28.0, 600), (1, 16.0, 600), (1, 20.0, 600), (2, 12.0, 400)];
 
-struct Fonts([HFONT; 7]);
+pub(crate) struct Fonts([HFONT; 9]);
 
 thread_local! {
     static WIN: RefCell<Option<Win>> = const { RefCell::new(None) };
@@ -261,17 +263,18 @@ thread_local! {
 }
 
 impl Fonts {
-    fn new(scale: f32) -> Fonts {
+    pub(crate) fn new(scale: f32) -> Fonts {
         // A missing face is silently swapped for another font: check once, and use plain Segoe UI then.
         let variable = VARIABLE.get().unwrap_or_else(|| {
             let has = has_face(w!("Segoe UI Variable Text"));
             VARIABLE.set(Some(has));
             has
         });
-        Fonts(FACES.map(|(display, size, weight)| {
-            let face = match (variable, display) {
-                (true, true) => "Segoe UI Variable Display",
-                (true, false) => "Segoe UI Variable Text",
+        Fonts(FACES.map(|(kind, size, weight)| {
+            let face = match (variable, kind) {
+                (_, 2) => "Consolas",
+                (true, 1) => "Segoe UI Variable Display",
+                (true, _) => "Segoe UI Variable Text",
                 (false, _) => "Segoe UI",
             };
             // GDI fakes a 600 weight from the regular face (heavier and wider); the real
@@ -281,11 +284,11 @@ impl Fonts {
         }))
     }
 
-    fn get(&self, f: F) -> HFONT {
+    pub(crate) fn get(&self, f: F) -> HFONT {
         self.0[f as usize]
     }
 
-    fn delete(&self) {
+    pub(crate) fn delete(&self) {
         for f in self.0 {
             unsafe { let _ = DeleteObject(f.into()); }
         }
@@ -328,7 +331,7 @@ fn has_face(face: PCWSTR) -> bool {
 }
 
 /// GDI+ starts once, the first time the screen opens, and lives as long as pdesk.
-fn gdiplus() -> bool {
+pub(crate) fn gdiplus() -> bool {
     if let Some(ok) = GDIPLUS.get() {
         return ok;
     }
@@ -399,17 +402,17 @@ fn hwnd() -> Option<HWND> {
 }
 
 /// A box: x, y, width, height, in dip.
-type Bx = (f32, f32, f32, f32);
+pub(crate) type Bx = (f32, f32, f32, f32);
 /// A run of text: the text, its font and color.
 type Run<'a> = (&'a str, F, u32);
 
 /// Draws (or, without `draw`, only measures) in dip. Shapes go through GDI+, text through GDI.
-struct Canvas<'a> {
-    dc: HDC,
+pub(crate) struct Canvas<'a> {
+    pub(crate) dc: HDC,
     g: *mut gp::GpGraphics, // null: measuring, or GDI+ did not start
-    draw: bool,
-    s: f32,
-    t: Theme,
+    pub(crate) draw: bool,
+    pub(crate) s: f32,
+    pub(crate) t: Theme,
     fonts: &'a Fonts,
     places: Vec<Place>,
 }
@@ -423,7 +426,7 @@ impl Drop for Canvas<'_> {
 }
 
 impl<'a> Canvas<'a> {
-    fn new(dc: HDC, draw: bool, s: f32, t: Theme, fonts: &'a Fonts) -> Canvas<'a> {
+    pub(crate) fn new(dc: HDC, draw: bool, s: f32, t: Theme, fonts: &'a Fonts) -> Canvas<'a> {
         let mut g = std::ptr::null_mut();
         if draw && GDIPLUS.get() == Some(true) {
             unsafe {
@@ -437,7 +440,7 @@ impl<'a> Canvas<'a> {
         Canvas { dc, g, draw, s, t, fonts, places: vec![] }
     }
 
-    fn shapes(&self) -> bool {
+    pub(crate) fn shapes(&self) -> bool {
         self.draw && !self.g.is_null()
     }
 
@@ -453,7 +456,7 @@ impl<'a> Canvas<'a> {
         r
     }
 
-    fn width(&self, text: &str, f: F) -> f32 {
+    pub(crate) fn width(&self, text: &str, f: F) -> f32 {
         let wide: Vec<u16> = text.encode_utf16().collect();
         self.with_dc(|dc| unsafe {
             let old = SelectObject(dc, self.fonts.get(f).into());
@@ -465,7 +468,7 @@ impl<'a> Canvas<'a> {
     }
 
     /// One run of text, centered in a line box `lh` tall whose top is `y`.
-    fn text(&self, x: f32, y: f32, lh: f32, text: &str, f: F, color: u32) {
+    pub(crate) fn text(&self, x: f32, y: f32, lh: f32, text: &str, f: F, color: u32) {
         if !self.draw {
             return;
         }
@@ -484,7 +487,7 @@ impl<'a> Canvas<'a> {
 
     /// Wrapped text from runs (text, font, color) that flow on; breaks only at spaces.
     /// Returns its height.
-    fn para(&self, x: f32, y: f32, w: f32, lh: f32, runs: &[(&str, F, u32)]) -> f32 {
+    pub(crate) fn para(&self, x: f32, y: f32, w: f32, lh: f32, runs: &[(&str, F, u32)]) -> f32 {
         // Words glued to the one before (no space between) never break from it.
         let mut words: Vec<(bool, Vec<Run>)> = vec![];
         let mut space = false;
@@ -555,7 +558,7 @@ impl<'a> Canvas<'a> {
         p
     }
 
-    fn fill_rr(&self, (x, y, w, h): Bx, r: f32, argb: u32) {
+    pub(crate) fn fill_rr(&self, (x, y, w, h): Bx, r: f32, argb: u32) {
         if !self.shapes() || w <= 0.0 || h <= 0.0 {
             return;
         }
@@ -568,7 +571,7 @@ impl<'a> Canvas<'a> {
     }
 
     /// Stroked along the shape itself (half inside, half outside), like SVG.
-    fn stroke_rr(&self, (x, y, w, h): Bx, r: f32, width: f32, argb: u32) {
+    pub(crate) fn stroke_rr(&self, (x, y, w, h): Bx, r: f32, width: f32, argb: u32) {
         if !self.shapes() {
             return;
         }
@@ -581,7 +584,7 @@ impl<'a> Canvas<'a> {
     }
 
     /// A box with an optional one pixel border inside its edge, like CSS.
-    fn boxed(&self, (x, y, w, h): Bx, r: f32, fill: u32, edge: Option<u32>) {
+    pub(crate) fn boxed(&self, (x, y, w, h): Bx, r: f32, fill: u32, edge: Option<u32>) {
         match edge {
             Some(e) => {
                 let b = self.s.floor().max(1.0) / self.s;
@@ -592,7 +595,7 @@ impl<'a> Canvas<'a> {
         }
     }
 
-    fn circle(&self, cx: f32, cy: f32, r: f32, fill: Option<u32>, edge: Option<(u32, f32)>) {
+    pub(crate) fn circle(&self, cx: f32, cy: f32, r: f32, fill: Option<u32>, edge: Option<(u32, f32)>) {
         if !self.shapes() {
             return;
         }
@@ -612,7 +615,7 @@ impl<'a> Canvas<'a> {
         }
     }
 
-    fn lines(&self, pts: &[(f32, f32)], width: f32, argb: u32) {
+    pub(crate) fn lines(&self, pts: &[(f32, f32)], width: f32, argb: u32) {
         if !self.shapes() {
             return;
         }
@@ -624,7 +627,7 @@ impl<'a> Canvas<'a> {
         }
     }
 
-    fn gradient(&self, x: f32, y: f32, w: f32, h: f32, a: u32, b: u32) {
+    pub(crate) fn gradient(&self, x: f32, y: f32, w: f32, h: f32, a: u32, b: u32) {
         if !self.shapes() {
             return;
         }
@@ -640,12 +643,12 @@ impl<'a> Canvas<'a> {
     }
 
     /// A check mark in a `size` square at x, y.
-    fn check(&self, x: f32, y: f32, size: f32, width: f32, argb: u32) {
+    pub(crate) fn check(&self, x: f32, y: f32, size: f32, width: f32, argb: u32) {
         self.lines(&[(x, y + size * 0.55), (x + size * 0.36, y + size * 0.9), (x + size, y + size * 0.12)], width, argb);
     }
 
     /// The circled i of an information banner.
-    fn info(&self, cx: f32, cy: f32, argb: u32) {
+    pub(crate) fn info(&self, cx: f32, cy: f32, argb: u32) {
         self.circle(cx, cy, 6.5, None, Some((argb, 1.25)));
         self.circle(cx, cy - 3.0, 0.95, Some(argb), None);
         self.lines(&[(cx, cy - 0.75), (cx, cy + 3.25)], 1.4, argb);
@@ -665,7 +668,7 @@ impl<'a> Canvas<'a> {
 }
 
 /// Lays `f` out without drawing it, for a box that needs its height before its contents.
-fn measure(c: &mut Canvas, f: impl FnOnce(&mut Canvas) -> f32) -> f32 {
+pub(crate) fn measure(c: &mut Canvas, f: impl FnOnce(&mut Canvas) -> f32) -> f32 {
     let draw = std::mem::replace(&mut c.draw, false);
     let h = f(c);
     c.draw = draw;
@@ -926,7 +929,7 @@ fn banner(c: &mut Canvas, x: f32, y: f32, w: f32, warn: bool, title: &str, subs:
 }
 
 /// What pdesk does for this gesture: its once rule's label, and its twice rule's if any.
-fn does(fingers: usize, motion: Motion) -> String {
+pub(crate) fn does(fingers: usize, motion: Motion) -> String {
     let g = &crate::settings::get().gestures;
     let (once, twice) = crate::settings::rules_for(fingers, motion);
     let mut text = once.map_or("nothing".into(), |i| g[i].action.label());
@@ -1038,7 +1041,7 @@ fn paint_button(c: &Canvas, p: &Place, (x, y, w, h): Bx, pressed: bool, disabled
 }
 
 /// Paints into a back buffer `w` by `h` px, then copies it to `dc` at x, y in one step.
-fn buffered(dc: HDC, x: i32, y: i32, w: i32, h: i32, f: impl FnOnce(HDC)) {
+pub(crate) fn buffered(dc: HDC, x: i32, y: i32, w: i32, h: i32, f: impl FnOnce(HDC)) {
     unsafe {
         let mem = CreateCompatibleDC(Some(dc));
         let bmp = CreateCompatibleBitmap(dc, w.max(1), h.max(1));
@@ -1143,7 +1146,7 @@ pub fn key(msg: &MSG) -> bool {
     hwnd().is_some_and(|h| unsafe { IsDialogMessageW(h, msg) }.as_bool())
 }
 
-fn dark_title(h: HWND, t: &Theme) {
+pub(crate) fn dark_title(h: HWND, t: &Theme) {
     let on = BOOL(t.dark as i32);
     unsafe { let _ = DwmSetWindowAttribute(h, DWMWA_USE_IMMERSIVE_DARK_MODE, &on as *const BOOL as _, size_of::<BOOL>() as u32); }
 }

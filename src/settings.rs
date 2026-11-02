@@ -3,7 +3,7 @@
 // Not next to the exe: the installed exe lives in Program Files, where you cannot write (spec 0008).
 // A bad value resets just that setting. A file that is not TOML resets all of them at start,
 // but keeps the settings in effect on a live reload. pdesk always starts.
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::io::Write;
 use std::sync::LazyLock;
@@ -32,7 +32,7 @@ pub enum Labels {
     None,
 }
 
-const LABELS: &[(&str, Labels)] = &[("hover", Labels::Hover), ("always", Labels::Always), ("none", Labels::None)];
+pub const LABELS: &[(&str, Labels)] = &[("hover", Labels::Hover), ("always", Labels::Always), ("none", Labels::None)];
 
 /// How the overview opens and closes (spec 0010).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -41,7 +41,7 @@ pub enum Animation {
     Fade,
 }
 
-const ANIMATIONS: &[(&str, Animation)] = &[("off", Animation::Off), ("fade", Animation::Fade)];
+pub const ANIMATIONS: &[(&str, Animation)] = &[("off", Animation::Off), ("fade", Animation::Fade)];
 
 /// What three or four fingers did on the touchpad (spec 0011).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -364,6 +364,14 @@ static DEFAULTS: LazyLock<Settings> = LazyLock::new(Settings::default);
 thread_local! {
     // The file's write time when pdesk last read it. Main thread only (spec 0012, file watch).
     static SEEN: Cell<Option<SystemTime>> = const { Cell::new(None) };
+    // Why the file could not be read or is not TOML, until a read succeeds (AC-14). The page
+    // reads it to go read only, at start and after a live reload alike.
+    static PARSE_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// The last read or parse error, while the file is still broken. Main thread.
+pub fn parse_error() -> Option<String> {
+    PARSE_ERROR.with_borrow(Clone::clone)
 }
 
 fn current() -> Option<&'static Loaded> {
@@ -399,6 +407,7 @@ pub fn load() {
     SEEN.set(modified(&path));
     let (settings, problems) = match std::fs::read_to_string(&path) {
         Ok(text) => {
+            PARSE_ERROR.set(text.parse::<Table>().err().map(|e| not_toml(&e.to_string(), e.message())));
             let (settings, warnings) = parse(&text);
             for w in &warnings {
                 eprintln!("settings: {w}");
@@ -416,6 +425,7 @@ pub fn load() {
             (Settings::default(), Vec::new())
         }
         Err(e) => {
+            PARSE_ERROR.set(Some(format!("cannot read {} ({e})", path.display())));
             eprintln!("settings: cannot read {} ({e}), using all defaults", path.display());
             (Settings::default(), Vec::new())
         }
@@ -452,9 +462,12 @@ pub fn reload(source: Source) -> Result<Vec<&'static str>, String> {
         Ok(got) => got,
         Err(why) => {
             eprintln!("settings: {why}, keeping the settings in effect");
+            PARSE_ERROR.set(Some(why.clone()));
+            crate::settings_page::refresh();
             return Err(why);
         }
     };
+    PARSE_ERROR.set(None);
     let old = get();
     // Until step 4 of the settings page build resizes every screen live (AC-6), ws state stays
     // sized for the count pdesk started with, so a new count waits for the next start.
@@ -545,6 +558,17 @@ fn edit_text(text: &str, edit: &Edit) -> Result<String, String> {
         }
     }
     Ok(doc.to_string())
+}
+
+/// For the settings page's tests: the default file with one value changed.
+#[cfg(test)]
+pub fn edit_for_test(key: &'static str, value: toml_edit::Value) -> String {
+    edit_text(DEFAULT_FILE, &Edit::Value(key, value)).unwrap()
+}
+
+#[cfg(test)]
+pub fn parse_for_test(text: &str) -> (Settings, Vec<String>) {
+    parse(text)
 }
 
 /// Like parse(), but a file that is not TOML is an error instead of all defaults.
@@ -901,7 +925,7 @@ fn parse_mods(text: &str) -> Result<Option<u8>, String> {
     Ok(Some(mods))
 }
 
-fn mods_text(mods: Option<u8>) -> String {
+pub fn mods_text(mods: Option<u8>) -> String {
     let Some(mods) = mods else { return "off".into() };
     let names = [(WIN, "Win"), (CTRL, "Ctrl"), (ALT, "Alt"), (SHIFT, "Shift")];
     names.iter().filter(|(bit, _)| mods & bit != 0).map(|(_, name)| *name).collect::<Vec<_>>().join("+")
