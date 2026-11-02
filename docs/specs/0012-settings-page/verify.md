@@ -13,7 +13,7 @@ _Steps derived from spec 0012 acceptance criteria. You run the on screen steps; 
 - [ ] Change the 4 finger tap to Key combo… Ctrl+Shift+T, add a twice action to 3 finger tap → both work on the touchpad; the file has the full gesture list → AC-12
 - [ ] Welcome › Choose my own → the page opens at Touchpad; Touchpad setup on the page opens the welcome screen → AC-13
 - [ ] Put `hold_ms = "x"` in the file → the page shows 550 with the problem note; save a broken file → pdesk keeps working, the page is read only with the parser line → AC-14
-- [ ] Keyboard only through the page; Esc closes; switch light, dark and contrast themes; drag to another scale → AC-16
+- [ ] Keyboard only through the page: Tab between the side list and the settings, Up and Down row to row, Left and Right change values, Space flips a switch; Esc closes; switch light, dark and contrast themes; drag to another scale → AC-16
 
 ## Commands
 - [ ] `cargo test` → all pass, including the in place edit, gesture rewrite, clash and bad reload tests → AC-3, AC-9, AC-12, AC-14, AC-17

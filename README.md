@@ -120,9 +120,12 @@ stay exactly as they are.
 
 ## Settings
 
-Right click the tray icon → **Open settings**. The file is
-`%LOCALAPPDATA%\pdesk\settings.toml`, and every line has a comment saying what it does. Things
-you can change:
+Right click the tray icon → **Settings** to open the settings page. It shows every setting,
+says when each change takes effect, and saves each click to
+`%LOCALAPPDATA%\pdesk\settings.toml` at once. You can also edit that file by hand (the page's
+**Open settings.toml** opens it); every line has a comment saying what it does. On the page,
+Tab moves between the side list and the settings, Up and Down go row to row, and Left and Right
+change a value. Things you can change:
 
 - How many workspaces each screen has (2 to 9, default 4)
 - Every shortcut, or turn one off
@@ -133,9 +136,12 @@ you can change:
 - What each three and four finger gesture does, how far a swipe travels before it counts, or
   touchpad reading off altogether
 
-pdesk reads the file once at start, so after editing it run `install.ps1` again (or sign out
-and back in). If you type a bad value, only that one setting goes back to its default; the log
-says which.
+For now the page shows the workspace count, the shortcuts and the gestures but can't change
+them yet; change those in the file. pdesk checks the file once a second and applies changes
+right away, except the workspace count and restore, which apply from pdesk's next start (run
+`install.ps1` again, or sign out and back in). If you type a bad value, only that one setting
+goes back to its default; the page and the log say which. If the file can't be read at all,
+pdesk keeps the settings it had and the page turns read only until you fix it.
 
 ## Good to know
 

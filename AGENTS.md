@@ -18,12 +18,12 @@ Tracer Bullet: each feature is built completely, from shortcut to window behavio
 ```bash
 cargo build                    # debug build, keeps a console
 cargo run                      # dev run; Ctrl+C shows every hidden window and exits
-cargo test                     # unit tests (settings parsing)
+cargo test                     # unit tests (settings parsing, touchpad swipes, settings page steps)
 powershell -File install.ps1   # from a NORMAL terminal: release build as you, one UAC prompt, install to Program Files, logon task starts it as admin, restart it
 & "$env:ProgramFiles\pdesk\pdesk.exe" --quit   # clean stop from any terminal: shows every hidden window
 ```
 
-`cargo test` only covers settings parsing; everything else you verify by hand on real screens (Prototype workflow). Only one copy runs at a time: a second start prints `pdesk is already running` and exits, so stop the installed copy before `cargo run`. Release log and layout live in `%LOCALAPPDATA%\pdesk\` (`pdesk.log`, `state.txt`). `settings.toml` lives there too, one file shared by the installed copy and `cargo run` (spec 0008); it is read once at start.
+`cargo test` covers settings parsing, the touchpad swipe recognizer and the settings page's number steps; everything else you verify by hand on real screens (Prototype workflow). Only one copy runs at a time: a second start prints `pdesk is already running` and exits, so stop the installed copy before `cargo run`. Release log and layout live in `%LOCALAPPDATA%\pdesk\` (`pdesk.log`, `state.txt`). `settings.toml` lives there too, one file shared by the installed copy and `cargo run` (spec 0008). pdesk checks it once a second and applies changes live, except `workspaces` and Restore, which wait for the next start (spec 0012).
 
 ## Specs
 
@@ -34,12 +34,12 @@ Stored in `docs/specs/`. Format: `docs/specs/NNNN-title.md`. Feature plan: `docs
 - Raw COM vtable calls live only in `src/cloak.rs`. Before calling an undocumented slot, check the layout (`GetThumbnailWindow` must return the same hwnd) and refuse on mismatch. Create a fresh `Shell` per operation, since explorer can restart.
 - Only ever uncloak windows pdesk hid itself, tracked in `ws.rs` state. `DWMWA_CLOAKED == 2` looks the same for Windows' own desktops and suspended UWP windows.
 - Threads: the keyboard hook thread (`src/keys.rs`) does no slow work; it posts `WM_APP` messages to the main thread. All window changes, the indicator, and saving happen on the main thread.
-- The foreground win event hook (`on_foreground` in `src/main.rs`) runs on the main thread inside `GetMessageW` and only posts `WM_FOLLOW`; never touch `ws` state from a callback, its `Mutex` is not reentrant (spec 0002). Thread message ids: `WM_APP` switch, `WM_APP + 1` display change, `WM_APP + 2` follow, `WM_APP + 3` send (spec 0004), `WM_APP + 4` jump, `WM_APP + 5` send to (spec 0005).
+- The foreground win event hook (`on_foreground` in `src/main.rs`) runs on the main thread inside `GetMessageW` and only posts `WM_FOLLOW`; never touch `ws` state from a callback, its `Mutex` is not reentrant (spec 0002). Thread message ids: `WM_APP` switch, `WM_APP + 1` display change, `WM_APP + 2` follow, `WM_APP + 3` send (spec 0004), `WM_APP + 4` jump, `WM_APP + 5` send to (spec 0005), `WM_APP + 6` finder, `WM_APP + 7` overview, `WM_APP + 8` gesture and `WM_APP + 9` touchpads changed (spec 0011).
 - Every exit path shows all hidden windows: `--quit`, the panic hook, the console Ctrl+C handler. A hard kill keeps `state.txt` so the next start adopts the layout (`install.ps1` relies on this on purpose).
 - Hide windows bottom of z order first, show them top first. The reverse makes windows behind flash.
 - Per window failures are logged with `eprintln!` and skipped, never fatal. Ignored results use `let _ =`.
 - Input pdesk injects carries `MAGIC` in `dwExtraInfo` so the hook ignores it. Swallowed combos with Win or Alt send `VK_MASK` so neither the Start menu nor an app's menu bar opens.
-- Settings (`src/settings.rs`) load once in `main` before `ws::load` and `keys::spawn`; everything else only reads `settings::get()`. A bad value resets just that key with a log line, never the whole file (spec 0001).
+- Settings (`src/settings.rs`) load once in `main` before `ws::load` and `keys::spawn`; everything else only reads `settings::get()`. After that only the main thread changes them: its 1 s watch timer calls `settings::reload`, and the settings page saves through `settings::write`, which reloads (spec 0012). A bad value resets just that key with a log line, never the whole file (spec 0001).
 - Each file opens with a short comment saying what it owns; inline comments say why, not what.
 - The installed pdesk runs as admin (spec 0008). Message filters let in only `WM_CLOSE` (indicator) and `WM_TRAY` plus `TaskbarCreated` (tray) from normal programs, nothing else. Nothing in `%LOCALAPPDATA%\pdesk` may ever name a program to run or code to load, since anything running as you can write there. Files the tray opens go through explorer (`IShellDispatch2::ShellExecute` in `src/tray.rs`) so the editor runs as you.
 
