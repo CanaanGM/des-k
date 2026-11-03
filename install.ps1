@@ -1,9 +1,9 @@
-# Build release pdesk as you, install it to Program Files, register the logon task that
+# Build release des-k as you, install it to Program Files, register the logon task that
 # starts it as admin, and (re)start it. Run again from a normal terminal after every change.
-# From a release zip (no Cargo.toml beside it) it installs the pdesk.exe beside it instead.
+# From a release zip (no Cargo.toml beside it) it installs the des-k.exe beside it instead.
 # Admin so its keyboard hook still hears keys while an admin window has focus (spec 0008).
 #
-# The running copy is force-stopped ON PURPOSE: `pdesk --quit` would show every hidden
+# The running copy is force-stopped ON PURPOSE: `des-k --quit` would show every hidden
 # window, while a hard stop leaves state.txt behind so the new copy adopts the layout.
 param(
     [switch]$Elevated, # internal: the admin half, started by this script
@@ -11,24 +11,28 @@ param(
     [string]$Log       # internal: where the admin half writes what it did
 )
 $ErrorActionPreference = 'Stop'
-$dest = Join-Path $env:ProgramFiles 'pdesk'
-$exe = Join-Path $dest 'pdesk.exe'
+$dest = Join-Path $env:ProgramFiles 'des-k'
+$exe = Join-Path $dest 'des-k.exe'
 $fromSource = Test-Path (Join-Path $PSScriptRoot 'Cargo.toml')
-$src = if ($fromSource) { Join-Path $PSScriptRoot 'target\release\pdesk.exe' } else { Join-Path $PSScriptRoot 'pdesk.exe' }
+$src = if ($fromSource) { Join-Path $PSScriptRoot 'target\release\des-k.exe' } else { Join-Path $PSScriptRoot 'des-k.exe' }
 
 if ($Elevated) {
     function Say($msg) { Add-Content -LiteralPath $Log -Value $msg }
     try {
-        # Hard kill before ending the task: ending it first might close pdesk gently.
-        Get-Process pdesk -ErrorAction SilentlyContinue | Stop-Process -Force -PassThru | Wait-Process
-        Stop-ScheduledTask -TaskName pdesk -ErrorAction SilentlyContinue
+        # Hard kill before ending the task: ending it first might close des-k gently.
+        # pdesk is des-k's old name: stop it the same way and remove its task and folder, so only
+        # des-k starts at login. Its data folder moves to des-k's when des-k first starts.
+        Get-Process des-k, pdesk -ErrorAction SilentlyContinue | Stop-Process -Force -PassThru | Wait-Process
+        Stop-ScheduledTask -TaskName des-k -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName pdesk -Confirm:$false -ErrorAction SilentlyContinue
+        Remove-Item -Recurse (Join-Path $env:ProgramFiles 'pdesk') -ErrorAction SilentlyContinue
         New-Item -ItemType Directory -Force $dest | Out-Null
         Copy-Item $src $exe -Force
         # A downloaded zip marks its files as from the internet; you chose to install this one.
         Unblock-File $exe
 
         $task = @{
-            TaskName  = 'pdesk'
+            TaskName  = 'des-k'
             Action    = New-ScheduledTaskAction -Execute $exe
             Trigger   = New-ScheduledTaskTrigger -AtLogOn -User $User
             Principal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Highest
@@ -38,18 +42,18 @@ if ($Elevated) {
                 -ExecutionTimeLimit ([TimeSpan]::Zero) -Priority 4 -MultipleInstances IgnoreNew
         }
         Register-ScheduledTask @task -Force | Out-Null
-        Start-ScheduledTask -TaskName pdesk
+        Start-ScheduledTask -TaskName des-k
 
         # The copy can lose a race with the old process (scope feature F): say so, loudly.
         foreach ($i in 1..20) {
-            if (Get-Process pdesk -ErrorAction SilentlyContinue) { Say "pdesk started as admin from $exe"; exit 0 }
+            if (Get-Process des-k -ErrorAction SilentlyContinue) { Say "des-k started as admin from $exe"; exit 0 }
             Start-Sleep -Milliseconds 250
         }
-        Say "ERROR: pdesk is NOT running after install. Windows it hid stay hidden until it runs."
+        Say "ERROR: des-k is NOT running after install. Windows it hid stay hidden until it runs."
         exit 1
     } catch {
         Say "ERROR: $_"
-        Say "pdesk may not be running. Windows it hid stay hidden until it runs; run install.ps1 again."
+        Say "des-k may not be running. Windows it hid stay hidden until it runs; run install.ps1 again."
         exit 1
     }
 }
@@ -61,12 +65,12 @@ if ($fromSource) {
     cargo build --release --manifest-path (Join-Path $PSScriptRoot 'Cargo.toml')
     if ($LASTEXITCODE) { throw 'build failed' }
 } elseif (-not (Test-Path $src)) {
-    throw "no pdesk.exe next to install.ps1 ($src): unzip the whole release first"
+    throw "no des-k.exe next to install.ps1 ($src): unzip the whole release first"
 }
 
 # Read now, never after elevating: an admin prompt answered by another account would change it.
 $me = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-$log = Join-Path $env:TEMP 'pdesk-install.log'
+$log = Join-Path $env:TEMP 'des-k-install.log'
 Set-Content -LiteralPath $log -Value $null
 $shell = (Get-Process -Id $PID).Path
 $argv = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Elevated -User `"$me`" -Log `"$log`""
@@ -78,8 +82,8 @@ try {
 Get-Content -LiteralPath $log | Write-Host
 if ($p.ExitCode) { exit $p.ExitCode }
 
-# Exactly one way starts pdesk at login: the task. A leftover Run value could start a normal
-# copy first and win the single instance check.
+# Exactly one way starts des-k at login: the task. A leftover Run value or exe (both still named
+# pdesk, from before the rename) could start a normal copy first.
 Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name pdesk -ErrorAction SilentlyContinue
-Remove-Item (Join-Path $env:LOCALAPPDATA 'pdesk\pdesk.exe') -ErrorAction SilentlyContinue
-Write-Host "pdesk installed to $exe, starts as admin at login. Stop it with: & '$exe' --quit"
+Remove-Item (Join-Path $env:LOCALAPPDATA 'pdesk\pdesk.exe'), (Join-Path $env:LOCALAPPDATA 'des-k\pdesk.exe') -ErrorAction SilentlyContinue
+Write-Host "des-k installed to $exe, starts as admin at login. Stop it with: & '$exe' --quit"

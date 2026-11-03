@@ -4,7 +4,7 @@ Build spec: [index.md](index.md).
 
 ## Context
 
-pdesk moves between workspaces one step at a time: Win+Ctrl+Left/Right and the touchpad swipe switch a screen by one, and the spec 0004 sends move a window by one. With four workspaces, reaching the far one takes up to three presses, and you have to watch the indicator to know when to stop. You want to name the workspace instead: go to 4, or put this window on 4.
+des-k moves between workspaces one step at a time: Win+Ctrl+Left/Right and the touchpad swipe switch a screen by one, and the spec 0004 sends move a window by one. With four workspaces, reaching the far one takes up to three presses, and you have to watch the indicator to know when to stop. You want to name the workspace instead: go to 4, or put this window on 4.
 
 The pieces this needs already exist. A screen's current workspace is simply what is visible on it, `switch_to` can show any workspace, and spec 0004's `ws::send` already handles the hard parts of moving a window (dialogs, focus, the follow guard, the quick fix repeat, saving). What is missing is a way to say "workspace N" from the keyboard, and a send that takes an absolute target instead of a step.
 

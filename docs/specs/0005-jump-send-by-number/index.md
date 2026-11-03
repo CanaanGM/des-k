@@ -10,9 +10,9 @@ Three sets of number shortcuts let you reach any workspace directly instead of s
 ## Requirements
 
 **User stories**:
-- As the pdesk user, I want to jump straight to workspace 4 so that I don't have to scroll through 2 and 3 to get there.
-- As the pdesk user, I want to send the window I'm in to workspace 4 in one press, with or without going there myself.
-- As the pdesk user, I want a mistyped number fixed by simply pressing the right one, the same way the stay arrows work.
+- As the des-k user, I want to jump straight to workspace 4 so that I don't have to scroll through 2 and 3 to get there.
+- As the des-k user, I want to send the window I'm in to workspace 4 in one press, with or without going there myself.
+- As the des-k user, I want a mistyped number fixed by simply pressing the right one, the same way the stay arrows work.
 
 **Acceptance criteria** (N is a digit 1 to 9; "count" is `workspaces` in `settings.toml`):
 - **AC-1**: With the mouse on screen S, Win+N (N up to count) switches S straight to workspace N exactly as a switch does today: the windows of the old workspace are hidden, those of N are shown, focus follows today's switch rule, and the indicator shows N. Other screens keep their workspace.
@@ -23,7 +23,7 @@ Three sets of number shortcuts let you reach any workspace directly instead of s
 - **AC-6**: A stay press (numbered or arrow) within 1 second of the previous successful stay send acts on the window that send moved, not on the focused window: a numbered press moves it to N, an arrow press moves it one step. If it lands on the workspace S shows, it reappears on top with focus. Every such press restarts the 1 second. A stay press more than 1 second later, any follow press, and any stay press after a switch of any screen (a jump included) act on the focused window again. This is 0004 AC-5 with numbered presses added.
 - **AC-7**: Sends act on the focused window's own screen, jumps on the screen under the mouse. The pointer never moves. The rest of spec 0004 applies to numbered sends unchanged: a dialog sends its top owner (AC-7), nothing sendable in focus changes nothing and logs why (AC-8), a failed hide changes nothing (AC-9), `state.txt` records every send and survives a hard kill (AC-10), and the follow guard ignores the sent window for 1 second (AC-11).
 - **AC-8**: Holding a numbered send acts once; key repeats are swallowed until the key is released, even if a modifier is let go meanwhile. Holding a jump never switches past N (repeats only show the indicator again).
-- **AC-9**: Both the number row digits and the numpad digits (Num Lock on) count. With Shift held, Windows turns numpad digits into navigation keys (End, Down, and so on), so send and follow works from the number row only; pdesk does not match those navigation keys and they reach Windows untouched.
+- **AC-9**: Both the number row digits and the numpad digits (Num Lock on) count. With Shift held, Windows turns numpad digits into navigation keys (End, Down, and so on), so send and follow works from the number row only; des-k does not match those navigation keys and they reach Windows untouched.
 - **AC-10**: `settings.toml` `[shortcuts]` takes `jump`, `send_to` and `send_to_stay` as modifier strings, defaults `"Win"`, `"Win+Shift"`, `"Win+Ctrl"`. A missing key means its default. `""` turns that set off, and its digits reach Windows. A value with an unknown name, or with neither Win, Ctrl nor Alt (Shift alone would eat typed digits and symbols), is bad: only that key resets to its default, with a log line (spec 0001). If two keys name the same modifiers, the later one (in the order `jump`, `send_to`, `send_to_stay`) is turned off with a log line. A combo in `previous`, `next` or a `send_*` list that equals a set plus a digit keeps winning for that one digit, with a log line naming it; the set keeps its other digits. Win+Ctrl+Left/Right and the swipe are unchanged.
 
 ## Decision
@@ -123,7 +123,7 @@ The modifier names are parsed the same way `parse_combo` reads them (`Win`, `Ctr
 - Quick fix: Win+Ctrl+3 then within a second Win+Ctrl+4: the same window ends on 4, the window that got focus stays; Win+Ctrl+3 then Win+Ctrl+1 (the shown workspace) quickly: it is straight back, focused; Win+Ctrl+Alt+Right then Win+Ctrl+4 quickly: the same window ends on 4. Verifies **AC-6**.
 - Other screen: focus a window on screen A, mouse on screen B: Win+Ctrl+3 changes only A; Win+3 changes only B; the pointer never moves. Verifies **AC-7**.
 - Hold: hold Win+Shift+3 for two seconds, letting go of Shift first: one send, no jump. Verifies **AC-8**.
-- Numpad: on an external keyboard with Num Lock on, Win+Numpad 2 jumps and Win+Ctrl+Numpad 2 sends; Win+Shift+Numpad 2 does nothing in pdesk. Verifies **AC-9**.
+- Numpad: on an external keyboard with Num Lock on, Win+Numpad 2 jumps and Win+Ctrl+Numpad 2 sends; Win+Shift+Numpad 2 does nothing in des-k. Verifies **AC-9**.
 - Config: `jump = ""`, restart: Win+3 reaches Windows again; `send_to = "Shift"`: a log line, Win+Shift+3 still sends (default); `next = ["Win+2"]`: Win+2 switches next, a `skips digit 2` line, Win+3 still jumps. `cargo test` covers the default file, `""`, bad values and both clash rules. Verifies **AC-10**.
 
 ## Build plan
@@ -132,8 +132,8 @@ Tracer Bullet: the jump first, end to end from `settings.toml` to the screen, th
 
 1. [x] Jump end to end: the `jump` settings field with its default, parsing of a modifier string (`""` = off, bad value resets with a log line), `DEFAULT_FILE`, `SHORTCUT_KEYS`, `Display`; the explicit list clash log; digit matching in the hook (number row and numpad) posting `WM_JUMP`; the main loop arm; `ws::jump`. Unit tests: the default file still parses to the defaults, `""` turns it off, a value with only Shift or an unknown name resets only `jump`, an explicit list combo on a digit is logged. Satisfies **AC-1**, **AC-2**, **AC-3**, **AC-7**, **AC-8**, **AC-9**, **AC-10**.
 2. [x] Numbered sends: the `send_to` and `send_to_stay` fields, the same modifiers clash rule (later key turned off) with a test; the hook posting `WM_SEND_TO` with `SEND_HELD`; `ws::To` and the `ws::send` target change, the too high stop, and the first press `target == from` guard; the `WM_SEND` arm passing `To::Step`. Satisfies **AC-3**, **AC-4**, **AC-5**, **AC-6**, **AC-7**, **AC-8**, **AC-9**, **AC-10**.
-3. [x] Try every critical test scenario on your screens, then run `install.ps1` and confirm `pdesk.exe` is running afterward. Satisfies **AC-1** to **AC-10**.
-4. [x] Default keys changed to Win, Win+Shift, Win+Ctrl (2026-10-27, see rationale): `Settings::default()` and `DEFAULT_FILE`; update the two tests that relied on the old sets (the same modifiers clash test now needs a value that equals an earlier set, and the list on a digit test now expects the set that owns `Win+Ctrl`); `cargo test`, then `install.ps1` and confirm `pdesk.exe` is running. Your own `settings.toml` already uses these keys, so nothing changes on your screens. Satisfies **AC-10**.
+3. [x] Try every critical test scenario on your screens, then run `install.ps1` and confirm `des-k.exe` is running afterward. Satisfies **AC-1** to **AC-10**.
+4. [x] Default keys changed to Win, Win+Shift, Win+Ctrl (2026-10-27, see rationale): `Settings::default()` and `DEFAULT_FILE`; update the two tests that relied on the old sets (the same modifiers clash test now needs a value that equals an earlier set, and the list on a digit test now expects the set that owns `Win+Ctrl`); `cargo test`, then `install.ps1` and confirm `des-k.exe` is running. Your own `settings.toml` already uses these keys, so nothing changes on your screens. Satisfies **AC-10**.
 
 ## Consequences
 
@@ -144,7 +144,7 @@ Tracer Bullet: the jump first, end to end from `settings.toml` to the screen, th
 
 **Negative / tradeoffs**:
 - With the defaults, Windows' own taskbar shortcuts Win+N (open or switch to pinned app N), Win+Shift+N (open a new copy of app N) and Win+Ctrl+N (go to the last window of app N) stop working for all of 1 to 9, even digits past your workspace count. Setting a key to `""` gives them back.
-- Send and follow does not work from the numpad (Windows rewrites Shift plus numpad digits before pdesk sees them).
+- Send and follow does not work from the numpad (Windows rewrites Shift plus numpad digits before des-k sees them).
 - `ws::send` changes signature, so the existing `WM_SEND` arm changes too.
 
 **Neutral**:

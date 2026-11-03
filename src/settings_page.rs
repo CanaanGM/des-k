@@ -24,7 +24,7 @@ use windows::core::{HSTRING, PCWSTR, w};
 use crate::settings::{self, Action, Combo, Edit, Motion, Owner, Settings};
 use crate::welcome::{Bx, Canvas, F, Fonts, Theme, alpha, buffered, dark_title, mix, op, theme};
 
-const CLASS: PCWSTR = w!("pdesk-settings");
+const CLASS: PCWSTR = w!("des-k-settings");
 const STYLE: WINDOW_STYLE = WINDOW_STYLE(WS_OVERLAPPED.0 | WS_CAPTION.0 | WS_SYSMENU.0 | WS_MINIMIZEBOX.0);
 
 // The window's client area and its parts, in dip.
@@ -60,7 +60,7 @@ impl Section {
         }
     }
 
-    /// [restore] acts only when pdesk starts; everything else applies at once (AC-4).
+    /// [restore] acts only when des-k starts; everything else applies at once (AC-4).
     fn now(self) -> bool {
         self != Section::Restore
     }
@@ -68,9 +68,9 @@ impl Section {
     fn intro(self, s: &Settings) -> String {
         match self {
             Section::Workspaces => "Every screen has its own row of workspaces, all the same length.".into(),
-            Section::Shortcuts => "The combos pdesk listens for. Click a combo to record a new one in its place, or + Add for another. No combo means off.".into(),
+            Section::Shortcuts => "The combos des-k listens for. Click a combo to record a new one in its place, or + Add for another. No combo means off.".into(),
             Section::Indicator => "The dots that show which workspace you are on after a switch, a jump or a send.".into(),
-            Section::Restore => "pdesk reads these once, when it starts.".into(),
+            Section::Restore => "des-k reads these once, when it starts.".into(),
             Section::Overview => match s.overview.first() {
                 Some(c) => format!("What {c} shows: every workspace of every screen."),
                 None => "Every workspace of every screen at once. It has no combo now (Shortcuts).".into(),
@@ -712,7 +712,7 @@ impl Ctx<'_, '_> {
         let t = self.c.t;
         self.out.tops.push((Some(sec), y - self.top0));
         self.c.text(CX, y, 32.0, sec.name(), F::Title, t.text);
-        let (label, fill, fg) = if sec.now() { ("Applies now", t.chip_off, t.chip_off_fg) } else { ("Applies from pdesk's next start", t.chip_on, t.chip_on_fg) };
+        let (label, fill, fg) = if sec.now() { ("Applies now", t.chip_off, t.chip_off_fg) } else { ("Applies from des-k's next start", t.chip_on, t.chip_on_fg) };
         let x = CX + self.c.width(sec.name(), F::Title) + 12.0;
         let check = if sec.now() { 15.0 } else { 0.0 };
         let cw = self.c.width(label, F::SmallBold) + 20.0 + check;
@@ -724,7 +724,7 @@ impl Ctx<'_, '_> {
         let mut h = 36.0;
         h += self.c.para(CX, y + h, CW, 18.0, &[(&sec.intro(self.s), F::Small, t.dim)]);
         h += 12.0;
-        // Problems of this section that no row on the page owns, like a clash pdesk fixed.
+        // Problems of this section that no row on the page owns, like a clash des-k fixed.
         let notes: Vec<(String, F)> = settings::problems().iter().filter(|p| home(&p.key) == Some(sec) && !on_row(&p.key)).map(|p| (p.message.clone(), F::Small)).collect();
         if !notes.is_empty() {
             let title = if notes.len() == 1 { "A note about this section in settings.toml".to_string() } else { format!("{} notes about this section in settings.toml", notes.len()) };
@@ -1048,11 +1048,11 @@ impl Ctx<'_, '_> {
         } else if !st.enabled {
             (1, "No three or four finger gesture does anything now".into(), "Reading is off here, but Windows' own gestures are set to Nothing. Turn reading on, or give them back to Windows in Touchpad setup.")
         } else if st.rows.contains(&WinRow::CantRead) {
-            (1, "pdesk can't read one of Windows' gesture settings, so it waits".into(), "Touchpad setup shows which row.")
+            (1, "des-k can't read one of Windows' gesture settings, so it waits".into(), "Touchpad setup shows which row.")
         } else if let Some(i) = st.rows.iter().position(|r| *r == WinRow::StillOn) {
-            (1, format!("pdesk is waiting: Windows' own {} are still on", WIN_ROWS[i].0), "pdesk acts only when all of Windows' three and four finger gestures are Nothing, so one gesture never does two things.")
+            (1, format!("des-k is waiting: Windows' own {} are still on", WIN_ROWS[i].0), "des-k acts only when all of Windows' three and four finger gestures are Nothing, so one gesture never does two things.")
         } else {
-            (0, "pdesk reads your three and four finger gestures".into(), "Windows' own three and four finger gestures are all set to Nothing.")
+            (0, "des-k reads your three and four finger gestures".into(), "Windows' own three and four finger gestures are all set to Nothing.")
         };
         14.0 + self.note(CX + 16.0, y + 14.0, CW - 32.0, kind, &title, line, &[]) + 14.0
     }
@@ -1151,8 +1151,8 @@ impl Ctx<'_, '_> {
         }
         let (title, sub) = match rec {
             Rec::Digits(_) => ("Hold the keys you want, then press any digit 1 to 9.", "All nine digits get the same keys: with Win+Alt, Win+Alt+1 goes to workspace 1, and so on. Esc alone cancels."),
-            Rec::List(..) => ("Press the new shortcut.", "pdesk's own shortcuts are paused, and the keys reach no other program, until you finish. Esc alone or a click elsewhere cancels; Esc with Win, Ctrl, Alt or Shift held is recorded."),
-            Rec::Gesture(..) => ("Press the key combo this gesture should type.", "No clash check here: a gesture may type any combo, one of pdesk's own too. Esc alone or a click elsewhere cancels."),
+            Rec::List(..) => ("Press the new shortcut.", "des-k's own shortcuts are paused, and the keys reach no other program, until you finish. Esc alone or a click elsewhere cancels; Esc with Win, Ctrl, Alt or Shift held is recorded."),
+            Rec::Gesture(..) => ("Press the key combo this gesture should type.", "No clash check here: a gesture may type any combo, one of des-k's own too. Esc alone or a click elsewhere cancels."),
         };
         8.0 + self.note(x, y + 8.0, w, 0, title, sub, &stop)
     }
@@ -1372,7 +1372,7 @@ impl Ctx<'_, '_> {
             y += 40.0;
         }
         self.c.lines(&[(16.0, H - 104.0), (SIDE - 16.0, H - 104.0)], 1.0, op(t.card_edge));
-        self.c.text(16.0, H - 96.0, 18.0, "%LOCALAPPDATA%\\pdesk\\", F::Mono, t.dim);
+        self.c.text(16.0, H - 96.0, 18.0, "%LOCALAPPDATA%\\des-k\\", F::Mono, t.dim);
         self.c.text(16.0, H - 78.0, 18.0, "settings.toml", F::Mono, t.dim);
         self.button(Ctl::Open, 16.0, H - 50.0, Some(SIDE - 32.0), "Open settings.toml", 2);
     }
@@ -1391,7 +1391,7 @@ impl Ctx<'_, '_> {
             self.c.stroke_rr((dx, dy, 7.0, 7.0), 1.5, 1.4, op(t.on_band));
         }
         self.c.text(60.0, 5.0, 28.0, "Settings", F::Title, t.on_band);
-        self.c.text(60.0, 32.0, 16.0, "pdesk · every change saves to settings.toml at once; Restore applies from the next start", F::Small, t.on_band);
+        self.c.text(60.0, 32.0, 16.0, "des-k · every change saves to settings.toml at once; Restore applies from the next start", F::Small, t.on_band);
     }
 
     fn scrollbar(&self) {
@@ -1427,10 +1427,10 @@ fn compose(c: &mut Canvas, w: &Win) -> Out {
     let mut y = top0 + 20.0;
     if let Some(why) = parse_error {
         let lines = [
-            ("pdesk uses the settings shown below: the ones from before the file broke, or all the defaults if it was already broken when pdesk started. Fix the file and this page updates by itself.".to_string(), F::Small),
+            ("des-k uses the settings shown below: the ones from before the file broke, or all the defaults if it was already broken when des-k started. Fix the file and this page updates by itself.".to_string(), F::Small),
             (why, F::Mono),
         ];
-        y += x.banner(y, true, "pdesk can't read settings.toml, so nothing here can change.", &lines, None) + 16.0;
+        y += x.banner(y, true, "des-k can't read settings.toml, so nothing here can change.", &lines, None) + 16.0;
     }
     if let Some((what, why)) = &w.error {
         y += x.banner(y, true, what, &[(why.clone(), F::Mono)], Some((Ctl::Dismiss, "Dismiss"))) + 16.0;
@@ -1503,7 +1503,7 @@ fn layout() {
     repaint();
 }
 
-/// Shows what pdesk read back from the file. Called after every reload.
+/// Shows what des-k read back from the file. Called after every reload.
 pub fn refresh() {
     if hwnd().is_some() {
         update_pictures(true);
@@ -2007,7 +2007,7 @@ pub fn open(section: Option<Section>) {
         let _ = GetMonitorInfoW(mon, &mut mi);
         let work = mi.rcWork;
         // Made on the screen it opens on, so it starts at that screen's dpi.
-        let h = match CreateWindowExW(WINDOW_EX_STYLE(0), CLASS, w!("pdesk settings"), STYLE, work.left, work.top, 100, 100, None, None, Some(inst.into()), None) {
+        let h = match CreateWindowExW(WINDOW_EX_STYLE(0), CLASS, w!("des-k settings"), STYLE, work.left, work.top, 100, 100, None, None, Some(inst.into()), None) {
             Ok(h) => h,
             Err(e) => return eprintln!("settings page: no window: {e}"),
         };
@@ -2227,7 +2227,7 @@ mod tests {
     }
 
     // Every row writes a value the parser reads back as the same setting: a typo in a key or
-    // a word here would save something pdesk ignores.
+    // a word here would save something des-k ignores.
     #[test]
     fn every_row_round_trips_through_the_file() {
         for (_, row) in ROWS {

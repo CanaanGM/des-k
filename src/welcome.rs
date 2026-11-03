@@ -1,5 +1,5 @@
-// The welcome screen (spec 0011, 0011-first-run-setup, Welcome screen): what pdesk is, Windows'
-// three and four finger gestures row by row with what pdesk does for each, and the Use, Choose
+// The welcome screen (spec 0011, 0011-first-run-setup, Welcome screen): what des-k is, Windows'
+// three and four finger gestures row by row with what des-k does for each, and the Use, Choose
 // my own and Give back buttons, built to the approved H2 design
 // (pdesk-design/welcome/micro-suite-r4.html) plus its 2026-11-01 change. Lives on the main thread: its
 // messages come through main's loop, which passes them through IsDialogMessageW so Tab,
@@ -30,7 +30,7 @@ use windows::core::{BOOL, HSTRING, PCWSTR, w};
 use crate::settings::Motion;
 use crate::setup::{self, GaveBack, Row, State, Wrote};
 
-const CLASS: PCWSTR = w!("pdesk-welcome");
+const CLASS: PCWSTR = w!("des-k-welcome");
 const STYLE: WINDOW_STYLE = WINDOW_STYLE(WS_OVERLAPPED.0 | WS_CAPTION.0 | WS_SYSMENU.0 | WS_MINIMIZEBOX.0 | WS_CLIPCHILDREN.0);
 
 // The buttons, created in Tab order. Close is IDCANCEL, so Esc presses it.
@@ -255,7 +255,7 @@ pub(crate) struct Fonts([HFONT; 9]);
 
 thread_local! {
     static WIN: RefCell<Option<Win>> = const { RefCell::new(None) };
-    /// The last give back's result: kept until pdesk exits, a later give back replaces it, or
+    /// The last give back's result: kept until des-k exits, a later give back replaces it, or
     /// Windows' gestures read off again, so reopening the screen shows the same rows.
     static LAST: Cell<Option<GaveBack>> = const { Cell::new(None) };
     static GDIPLUS: Cell<Option<bool>> = const { Cell::new(None) };
@@ -330,7 +330,7 @@ fn has_face(face: PCWSTR) -> bool {
     }
 }
 
-/// GDI+ starts once, the first time the screen opens, and lives as long as pdesk.
+/// GDI+ starts once, the first time the screen opens, and lives as long as des-k.
 pub(crate) fn gdiplus() -> bool {
     if let Some(ok) = GDIPLUS.get() {
         return ok;
@@ -685,11 +685,11 @@ fn compose(c: &mut Canvas, v: &View) -> f32 {
     } else {
         c.gradient(0.0, 0.0, W, BAND, t.band_a, t.band_b);
     }
-    c.text(SIDE, 14.0, 36.0, "Welcome to pdesk!", F::H1, t.on_band);
+    c.text(SIDE, 14.0, 36.0, "Welcome to des-k!", F::H1, t.on_band);
     c.text(SIDE, 52.0, 20.0, "Every screen gets its own desktops.", F::Body, t.on_band);
     art(c, W - 18.0 - 172.0, BAND - 8.0 - 62.0, t.on_band);
     let mut y = BAND + 16.0;
-    let intro = "pdesk gives each of your screens its own set of workspaces. You switch the screen under your mouse, and your other screens stay where they are. pdesk never moves or resizes your windows. It only hides and shows them.";
+    let intro = "des-k gives each of your screens its own set of workspaces. You switch the screen under your mouse, and your other screens stay where they are. des-k never moves or resizes your windows. It only hides and shows them.";
     y += c.para(SIDE, y, IN, 20.0, &[(intro, F::Body, t.text)]) + 16.0;
     tiles(c, y);
     y += 56.0 + 16.0;
@@ -784,20 +784,20 @@ fn card(c: &mut Canvas, v: &View, x: f32, top: f32) -> f32 {
     let st = &v.st;
     let all = st.rows.iter().all(|r| *r == Row::Nothing);
     let mut y = top;
-    // Reading off wins over no touchpad: then pdesk runs nothing, so the rows would mislead.
+    // Reading off wins over no touchpad: then des-k runs nothing, so the rows would mislead.
     let (primary, open) = if !st.enabled {
         let sub = "Windows' three and four finger gestures are set to Nothing, so right now they do nothing. Turn reading back on with Choose my own, or set them back in Windows Settings.";
         let sub = st.off.then_some(sub);
-        y += banner(c, x, y, CARD_IN, st.off, "Touchpad reading is off in pdesk's settings.", sub.as_slice());
+        y += banner(c, x, y, CARD_IN, st.off, "Touchpad reading is off in des-k's settings.", sub.as_slice());
         (Some((USE, false)), st.off)
     } else {
         match v.back {
             Some(b) => {
                 let again = "Your saved values are kept, so you can try again. Settings is open if you want gestures now.";
                 let (warn, title, subs) = if !b.failed() {
-                    let mut subs = vec!["To have them now, set them in Settings (it's open). pdesk has stopped reading gestures.".to_string()];
+                    let mut subs = vec!["To have them now, set them in Settings (it's open). des-k has stopped reading gestures.".to_string()];
                     if !b.cleared {
-                        subs.push("pdesk couldn't clear its copy of your values (the log says why). Press Give gestures back again to clear it.".into());
+                        subs.push("des-k couldn't clear its copy of your values (the log says why). Press Give gestures back again to clear it.".into());
                     }
                     (false, "Your gestures come back at your next sign in.", subs)
                 } else if b.wrote.iter().all(|w| *w == Wrote::NotOne) {
@@ -817,7 +817,7 @@ fn card(c: &mut Canvas, v: &View, x: f32, top: f32) -> f32 {
             None => {
                 y += match st.rows.iter().position(|r| *r == Row::CantRead) {
                     Some(i) => {
-                        let text = format!("pdesk can't read the {} setting, so it leaves every gesture to Windows. The log has the details.", setup::ROWS[i].0);
+                        let text = format!("des-k can't read the {} setting, so it leaves every gesture to Windows. The log has the details.", setup::ROWS[i].0);
                         c.para(x, y, CARD_IN, 20.0, &[(&text, F::Body, t.text)])
                     }
                     None => c.para(
@@ -843,13 +843,13 @@ fn card(c: &mut Canvas, v: &View, x: f32, top: f32) -> f32 {
         y += 14.0;
         y += rows(c, v, x, y);
         if v.back.is_none() {
-            // Only while pdesk reads the touchpad: after a give back it runs nothing.
-            let edits = "What pdesk runs now. Choose my own changes them, and changes apply at once.";
+            // Only while des-k reads the touchpad: after a give back it runs nothing.
+            let edits = "What des-k runs now. Choose my own changes them, and changes apply at once.";
             y += 12.0 + c.para(x, y + 12.0, CARD_IN, 16.0, &[(edits, F::Small, t.dim)]);
             let after = match all {
                 _ if !st.pad => None,
                 true => (!st.saved).then_some("You set them to Nothing yourself, so Quit has nothing to give back."),
-                false => Some("pdesk runs them once all four are off, even over admin windows. After that, quitting pdesk gives them back from your next sign in."),
+                false => Some("des-k runs them once all four are off, even over admin windows. After that, quitting des-k gives them back from your next sign in."),
             };
             if let Some(a) = after {
                 y += 6.0 + c.para(x, y + 6.0, CARD_IN, 16.0, &[(a, F::Small, t.dim)]);
@@ -885,7 +885,7 @@ fn card(c: &mut Canvas, v: &View, x: f32, top: f32) -> f32 {
     y + 32.0 - top
 }
 
-/// "pdesk runs these gestures", with a big check. Returns its height.
+/// "des-k runs these gestures", with a big check. Returns its height.
 fn ok_block(c: &mut Canvas, x: f32, y: f32) -> f32 {
     let t = c.t;
     let (tx, tw) = (x + 42.0, CARD_IN - 42.0);
@@ -899,7 +899,7 @@ fn ok_block(c: &mut Canvas, x: f32, y: f32) -> f32 {
     }
     c.check(x + 9.5, cy - 6.0, 13.0, 2.0, op(t.chip_off_fg));
     let ty = y + (h - th) / 2.0;
-    c.text(tx, ty, 20.0, "pdesk runs these gestures.", F::Bold, t.text);
+    c.text(tx, ty, 20.0, "des-k runs these gestures.", F::Bold, t.text);
     c.para(tx, ty + 20.0, tw, 16.0, &[(line, F::Small, t.dim)]);
     h
 }
@@ -928,7 +928,7 @@ fn banner(c: &mut Canvas, x: f32, y: f32, w: f32, warn: bool, title: &str, subs:
     h
 }
 
-/// What pdesk does for this gesture: its once rule's label, and its twice rule's if any.
+/// What des-k does for this gesture: its once rule's label, and its twice rule's if any.
 pub(crate) fn does(fingers: usize, motion: Motion) -> String {
     let g = &crate::settings::get().gestures;
     let (once, twice) = crate::settings::rules_for(fingers, motion);
@@ -939,7 +939,7 @@ pub(crate) fn does(fingers: usize, motion: Motion) -> String {
     text
 }
 
-/// The four rows: each one's name and chip, then what pdesk does for it (swipes two per
+/// The four rows: each one's name and chip, then what des-k does for it (swipes two per
 /// line). Returns their height.
 fn rows(c: &Canvas, v: &View, x: f32, top: f32) -> f32 {
     let t = c.t;
@@ -1007,7 +1007,7 @@ fn foot(c: &mut Canvas, v: &View, top: f32) -> f32 {
             let line = "Gives back what you had the first time you chose Use, from your next sign in.";
             h += c.para(SIDE, y + h, 300.0, 16.0, &[(line, F::Small, t.dim)]);
         } else if v.first {
-            let runs = [("You can open this again in pdesk's settings, under Touchpad: ", F::Small, t.dim), ("Touchpad setup", F::SmallBold, t.dim), (".", F::Small, t.dim)];
+            let runs = [("You can open this again in des-k's settings, under Touchpad: ", F::Small, t.dim), ("Touchpad setup", F::SmallBold, t.dim), (".", F::Small, t.dim)];
             h += c.para(SIDE, y, 300.0, 16.0, &runs);
         }
         h
@@ -1179,7 +1179,7 @@ pub fn show(first: bool) {
         let _ = GetMonitorInfoW(mon, &mut mi);
         let work = mi.rcWork;
         // Made on the screen it opens on, so it starts at that screen's dpi.
-        let h = match CreateWindowExW(WINDOW_EX_STYLE(0), CLASS, w!("pdesk"), STYLE, work.left, work.top, 100, 100, None, None, Some(inst.into()), None) {
+        let h = match CreateWindowExW(WINDOW_EX_STYLE(0), CLASS, w!("des-k"), STYLE, work.left, work.top, 100, 100, None, None, Some(inst.into()), None) {
             Ok(h) => h,
             Err(e) => return eprintln!("welcome: no window: {e}"),
         };

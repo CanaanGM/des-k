@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>pdesk Guide</title>
+<title>des-k Guide</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Ubuntu:ital,wght@0,400;0,500;0,700;1,400&family=Ubuntu+Mono:wght@400;700&family=Kaushan+Script&display=swap">
@@ -503,29 +503,29 @@ footer .footnote:empty { display: none; }
 </head>
 <body>
 <div class="progress" aria-hidden="true"></div>
-<div class="page" data-link="https://canaangm.github.io/pdesk/">
+<div class="page" data-link="https://canaangm.github.io/des-k/">
   <header class="hero">
     <div class="hero-top">
-      <span class="eyebrow">pdesk · for Windows 11</span>
+      <span class="eyebrow">des-k · for Windows 11</span>
       <button class="theme-toggle" type="button">
         <span class="sun" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4.5" fill="currentColor"/><path d="M12 1.5v2.5M12 20v2.5M4.6 4.6l1.8 1.8M17.6 17.6l1.8 1.8M1.5 12H4M20 12h2.5M4.6 19.4l1.8-1.8M17.6 6.4l1.8-1.8"/></svg></span>
         <span class="moon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg></span>
       </button>
     </div>
     <h1>Every screen gets its <em>own</em> desktops</h1>
-    <p>pdesk lets each monitor switch its own workspaces. The other screens stay where they are. This page shows how to install it, use it and remove it.</p>
+    <p>des-k lets each monitor switch its own workspaces. The other screens stay where they are. This page shows how to install it, use it and remove it.</p>
     <div class="pills"><span class="pill">Runs on <b>Windows 11</b></span><span class="pill">Built with <b>Rust</b></span><span class="pill">Windows stay <b>floating</b></span></div>
     <p class="meta"><span class="chip sage">Reviewed</span><span>Updated <time datetime="2026-11-02">2 Nov 2026</time></span><span>7 min read</span></p>
   </header>
-  <aside class="related" aria-label="Related"><p class="toc-title">Related</p><ul><li><a href="https://github.com/CanaanGM/pdesk">The code on GitHub</a></li><li><a href="https://github.com/CanaanGM/pdesk#readme">The README</a></li></ul></aside>
+  <aside class="related" aria-label="Related"><p class="toc-title">Related</p><ul><li><a href="https://github.com/CanaanGM/des-k">The code on GitHub</a></li><li><a href="https://github.com/CanaanGM/des-k#readme">The README</a></li></ul></aside>
   <main class="sections">
 <section class="card">
   <p class="kicker">Read first</p>
-  <h2>What pdesk does</h2>
-  <p>Windows already has virtual desktops. But one switch changes <strong>every</strong> screen at once. pdesk gives each screen its own set of workspaces. You switch only the screen under your mouse.</p>
-  <div class="legend"><span class="key coral">Windows' own desktops</span><span class="key teal">pdesk</span></div>
+  <h2>What des-k does</h2>
+  <p>Windows already has virtual desktops. But one switch changes <strong>every</strong> screen at once. des-k gives each screen its own set of workspaces. You switch only the screen under your mouse.</p>
+  <div class="legend"><span class="key coral">Windows' own desktops</span><span class="key teal">des-k</span></div>
   <figure class="pic">
-    <svg viewBox="0 0 760 290" role="img" aria-label="With Windows' desktops one switch changes all three screens. With pdesk only the screen under the mouse switches.">
+    <svg viewBox="0 0 760 290" role="img" aria-label="With Windows' desktops one switch changes all three screens. With des-k only the screen under the mouse switches.">
       <text class="t" x="20" y="24">Windows: one switch changes every screen</text>
       <rect class="coral" x="20" y="40" width="220" height="80" rx="10"/>
       <text class="tb" x="130" y="74" text-anchor="middle">Screen 1</text>
@@ -536,7 +536,7 @@ footer .footnote:empty { display: none; }
       <rect class="coral" x="520" y="40" width="220" height="80" rx="10"/>
       <text class="tb" x="630" y="74" text-anchor="middle">Screen 3</text>
       <text class="ts" x="630" y="98" text-anchor="middle">now desktop 2</text>
-      <text class="t" x="20" y="174">pdesk: only the screen under the mouse switches</text>
+      <text class="t" x="20" y="174">des-k: only the screen under the mouse switches</text>
       <rect class="box" x="20" y="190" width="220" height="80" rx="10"/>
       <text class="tb" x="130" y="224" text-anchor="middle">Screen 1</text>
       <text class="ts" x="130" y="248" text-anchor="middle">stays on 1</text>
@@ -547,12 +547,12 @@ footer .footnote:empty { display: none; }
       <text class="tb" x="630" y="224" text-anchor="middle">Screen 3</text>
       <text class="ts" x="630" y="248" text-anchor="middle">stays on 1</text>
     </svg>
-    <figcaption>Windows switches all screens together. pdesk switches one screen and leaves the others alone.</figcaption>
+    <figcaption>Windows switches all screens together. des-k switches one screen and leaves the others alone.</figcaption>
   </figure>
   <ul>
-    <li>Windows stay floating, as they normally are. pdesk never tiles or moves them around.</li>
+    <li>Windows stay floating, as they normally are. des-k never tiles or moves them around.</li>
     <li>It only hides and shows windows. Nothing is closed when you switch.</li>
-    <li>Your layout is saved, so a restart of pdesk keeps every window on its workspace.</li>
+    <li>Your layout is saved, so a restart of des-k keeps every window on its workspace.</li>
   </ul>
 </section>
 
@@ -563,7 +563,7 @@ footer .footnote:empty { display: none; }
     <div><strong>Hidden window</strong><p>A window on a workspace you are not looking at. It still runs; you just cannot see it.</p></div>
     <div><strong>Tray</strong><p>The small icons at the right end of the taskbar, near the clock.</p></div>
     <div><strong>UAC prompt</strong><p>The Windows box that asks "Do you want to allow this app to make changes?".</p></div>
-    <div><strong>Rust</strong><p>The programming language pdesk is written in. You need it to build pdesk.</p></div>
+    <div><strong>Rust</strong><p>The programming language des-k is written in. You need it to build des-k.</p></div>
   </div>
 </section>
 
@@ -572,43 +572,43 @@ footer .footnote:empty { display: none; }
   <h2>How do I install it?</h2>
   <p>The easy way needs nothing but Windows 11:</p>
   <ol class="steps">
-    <li>Download the newest <code>pdesk-…-setup.exe</code> from <a href="https://github.com/CanaanGM/pdesk/releases/latest">Releases</a> and run it.</li>
-    <li>pdesk is not signed yet, so Windows may say "Windows protected your PC". Click <strong>More info</strong>, then <strong>Run anyway</strong>.</li>
-    <li>Say <strong>Yes</strong> to the UAC prompt. When the pdesk icon shows in the tray, pdesk is running.</li>
+    <li>Download the newest <code>des-k-…-setup.exe</code> from <a href="https://github.com/CanaanGM/des-k/releases/latest">Releases</a> and run it.</li>
+    <li>des-k is not signed yet, so Windows may say "Windows protected your PC". Click <strong>More info</strong>, then <strong>Run anyway</strong>.</li>
+    <li>Say <strong>Yes</strong> to the UAC prompt. When the des-k icon shows in the tray, des-k is running.</li>
   </ol>
   <p>To update, run the newer setup the same way. Your workspaces are kept.</p>
-  <p>The release also has a zip with the same <code>pdesk.exe</code> and <code>install.ps1</code>, if you would rather use a script. Unzip it, open a terminal in that folder and run:</p>
+  <p>The release also has a zip with the same <code>des-k.exe</code> and <code>install.ps1</code>, if you would rather use a script. Unzip it, open a terminal in that folder and run:</p>
   <pre data-lang="powershell"><code>powershell -ExecutionPolicy Bypass -File install.ps1</code></pre>
   <h3>Or build it yourself</h3>
-  <p>You build pdesk on your own PC, then the same script installs it. You need three things:</p>
+  <p>You build des-k on your own PC, then the same script installs it. You need three things:</p>
   <div class="table-wrap"><table>
     <thead><tr><th>You need</th><th>Why</th><th>Where to get it</th></tr></thead>
     <tbody>
-      <tr><td>Windows 11</td><td>pdesk uses parts of Windows 11. It is tested on 25H2.</td><td>You have it</td></tr>
-      <tr><td>Rust</td><td>To build pdesk from the code</td><td><a href="https://rustup.rs">rustup.rs</a></td></tr>
+      <tr><td>Windows 11</td><td>des-k uses parts of Windows 11. It is tested on 25H2.</td><td>You have it</td></tr>
+      <tr><td>Rust</td><td>To build des-k from the code</td><td><a href="https://rustup.rs">rustup.rs</a></td></tr>
       <tr><td>Git</td><td>To download the code</td><td><a href="https://git-scm.com">git-scm.com</a></td></tr>
     </tbody>
   </table></div>
   <ol class="steps">
     <li>Open a <strong>normal</strong> terminal. Do not use "Run as administrator".</li>
     <li>Download the code:
-      <pre data-lang="powershell"><code>git clone https://github.com/CanaanGM/pdesk
-cd pdesk</code></pre></li>
+      <pre data-lang="powershell"><code>git clone https://github.com/CanaanGM/des-k
+cd des-k</code></pre></li>
     <li>Run the install script:
       <pre data-lang="powershell"><code>powershell -ExecutionPolicy Bypass -File install.ps1</code></pre></li>
     <li>Say <strong>Yes</strong> to the UAC prompt.</li>
-    <li>Look for the pdesk icon in the tray. When you see it, pdesk is running.</li>
+    <li>Look for the des-k icon in the tray. When you see it, des-k is running.</li>
   </ol>
   <p>The script does these steps for you:</p>
   <ol class="flow">
-    <li>Build pdesk</li>
+    <li>Build des-k</li>
     <li>Ask for admin once</li>
     <li>Copy to Program Files</li>
     <li>Start at every sign in</li>
     <li>Start it now</li>
   </ol>
-  <div class="callout note"><strong>Why does it need admin?</strong> When an admin window (like Task Manager) is in front, Windows stops normal apps from hearing the keyboard. As admin, pdesk hears its shortcuts everywhere.</div>
-  <p>To update pdesk later, get the new code with <code>git pull</code> and run the same install command again. Your workspaces are kept.</p>
+  <div class="callout note"><strong>Why does it need admin?</strong> When an admin window (like Task Manager) is in front, Windows stops normal apps from hearing the keyboard. As admin, des-k hears its shortcuts everywhere.</div>
+  <p>To update des-k later, get the new code with <code>git pull</code> and run the same install command again. Your workspaces are kept.</p>
 </section>
 
 <section class="card">
@@ -630,7 +630,7 @@ cd pdesk</code></pre></li>
     </tbody>
   </table></div>
   <p>After each switch, a small row of dots shows for a moment. It tells you which workspace you are on.</p>
-  <div class="callout watch"><strong>pdesk takes two Windows shortcuts.</strong> <code>Win+Tab</code> no longer opens Task View. <code>Win+1</code> … <code>9</code> no longer open taskbar apps. You can change this in the <a href="#settings">settings</a>.</div>
+  <div class="callout watch"><strong>des-k takes two Windows shortcuts.</strong> <code>Win+Tab</code> no longer opens Task View. <code>Win+1</code> … <code>9</code> no longer open taskbar apps. You can change this in the <a href="#settings">settings</a>.</div>
 </section>
 
 <section class="card">
@@ -650,7 +650,7 @@ cd pdesk</code></pre></li>
 <section class="card">
   <h2>See everything at once</h2>
   <p>Press <code>Win+Tab</code>. Every screen shows all its workspaces at the same time, with live pictures of the windows.</p>
-  <div class="legend"><span class="key teal">pdesk</span></div>
+  <div class="legend"><span class="key teal">des-k</span></div>
   <figure class="pic">
     <svg viewBox="0 0 760 330" role="img" aria-label="One screen in the overview: four numbered tiles at the top, one per workspace, and the shown workspace's windows spread out below.">
       <rect class="box" x="20" y="20" width="520" height="290" rx="12"/>
@@ -698,7 +698,7 @@ cd pdesk</code></pre></li>
 <section class="card">
   <p class="kicker">Steps</p>
   <h2>Switch with the touchpad</h2>
-  <p>A four finger swipe can switch pdesk's workspaces. You set it up once in Windows:</p>
+  <p>A four finger swipe can switch des-k's workspaces. You set it up once in Windows:</p>
   <ol class="steps">
     <li>Open <strong>Settings → Bluetooth &amp; devices → Touchpad → Advanced gestures</strong>.</li>
     <li>Set the four finger swipe left to the custom shortcut <code>Win+Ctrl+Right</code>.</li>
@@ -710,7 +710,7 @@ cd pdesk</code></pre></li>
 <section class="card">
   <p class="kicker">Reference</p>
   <h2>Settings</h2>
-  <p>Right click the pdesk icon in the tray, then <strong>Open settings</strong>. The file is <code>%LOCALAPPDATA%\pdesk\settings.toml</code>. Each line has a comment that says what it does.</p>
+  <p>Right click the des-k icon in the tray, then <strong>Open settings</strong>. The file is <code>%LOCALAPPDATA%\des-k\settings.toml</code>. Each line has a comment that says what it does.</p>
   <div class="table-wrap"><table>
     <thead><tr><th>Setting</th><th>Default</th><th>Allowed</th><th>What it changes</th></tr></thead>
     <tbody>
@@ -728,39 +728,39 @@ cd pdesk</code></pre></li>
       <tr><td><code>[overview] live</code></td><td>true</td><td>true, false</td><td>The overview updates as windows open and close</td></tr>
     </tbody>
   </table></div>
-  <p>pdesk reads the file once, when it starts. After you edit it, run <code>install.ps1</code> again, or sign out and back in.</p>
-  <div class="callout tip"><strong>A typo cannot break pdesk.</strong> A bad value only sets that one setting back to its default. The log says which one.</div>
+  <p>des-k reads the file once, when it starts. After you edit it, run <code>install.ps1</code> again, or sign out and back in.</p>
+  <div class="callout tip"><strong>A typo cannot break des-k.</strong> A bad value only sets that one setting back to its default. The log says which one.</div>
 </section>
 
 <section class="card">
   <h2>Good to know</h2>
   <ul>
     <li>A hidden window leaves the taskbar and Alt+Tab, so each screen shows only what is on it. Admin windows, like Task Manager, still show in Alt+Tab.</li>
-    <li>When a hidden window comes to the front by itself, pdesk switches its screen to that workspace.</li>
-    <li>After a restart of the PC, pdesk puts reopened windows back where they were, for the first 3 minutes after sign in.</li>
+    <li>When a hidden window comes to the front by itself, des-k switches its screen to that workspace.</li>
+    <li>After a restart of the PC, des-k puts reopened windows back where they were, for the first 3 minutes after sign in.</li>
     <li>The tray icon menu has <strong>Open settings</strong>, <strong>Open log</strong> and <strong>Quit</strong>.</li>
   </ul>
 </section>
 
 <section class="card">
   <p class="kicker">Steps</p>
-  <h2>Stop or remove pdesk</h2>
-  <p>To stop it, click <strong>Quit</strong> in the tray menu. Every hidden window comes back, so nothing is lost. pdesk also forgets which window was on which workspace.</p>
-  <p>To remove it completely, uninstall <strong>pdesk</strong> from <strong>Settings → Apps → Installed apps</strong>. The uninstaller quits pdesk first, so every hidden window comes back.</p>
+  <h2>Stop or remove des-k</h2>
+  <p>To stop it, click <strong>Quit</strong> in the tray menu. Every hidden window comes back, so nothing is lost. des-k also forgets which window was on which workspace.</p>
+  <p>To remove it completely, uninstall <strong>des-k</strong> from <strong>Settings → Apps → Installed apps</strong>. The uninstaller quits des-k first, so every hidden window comes back.</p>
   <p>If you installed with <code>install.ps1</code> instead:</p>
   <ol class="steps">
-    <li>Quit pdesk from the tray.</li>
+    <li>Quit des-k from the tray.</li>
     <li>Open a terminal <strong>as administrator</strong> and run:
-      <pre data-lang="powershell"><code>Unregister-ScheduledTask -TaskName pdesk -Confirm:$false
-Remove-Item -Recurse "$env:ProgramFiles\pdesk"</code></pre></li>
+      <pre data-lang="powershell"><code>Unregister-ScheduledTask -TaskName des-k -Confirm:$false
+Remove-Item -Recurse "$env:ProgramFiles\des-k"</code></pre></li>
   </ol>
-  <p>Either way, your settings and log stay in <code>%LOCALAPPDATA%\pdesk</code>. Delete that folder too if you want them gone.</p>
+  <p>Either way, your settings and log stay in <code>%LOCALAPPDATA%\des-k</code>. Delete that folder too if you want them gone.</p>
 </section>
 
 <section class="card">
   <p class="kicker">For developers</p>
   <h2>Build and run from the code</h2>
-  <p>Only one pdesk runs at a time. Quit the installed one first, or the second one says <code>pdesk is already running</code> and stops.</p>
+  <p>Only one des-k runs at a time. Quit the installed one first, or the second one says <code>des-k is already running</code> and stops.</p>
   <div class="table-wrap"><table>
     <thead><tr><th>Command</th><th>What it does</th></tr></thead>
     <tbody>
@@ -780,18 +780,18 @@ Remove-Item -Recurse "$env:ProgramFiles\pdesk"</code></pre></li>
     <thead><tr><th>When</th><th>Do this</th></tr></thead>
     <tbody>
       <tr><td>A window seems lost</td><td>Press <code>Win+F</code> and search for it, or open the overview with <code>Win+Tab</code>.</td></tr>
-      <tr><td>The shortcuts do nothing</td><td>Check the pdesk icon is in the tray. If it is not, run the setup again (or <code>install.ps1</code>).</td></tr>
+      <tr><td>The shortcuts do nothing</td><td>Check the des-k icon is in the tray. If it is not, run the setup again (or <code>install.ps1</code>).</td></tr>
       <tr><td><code>install.ps1</code> says scripts are blocked</td><td>Use the full command with <code>-ExecutionPolicy Bypass</code>, as in the install steps.</td></tr>
       <tr><td>Everything looks wrong</td><td>Click <strong>Quit</strong> in the tray. Every window comes back. Then run the setup again (or <code>install.ps1</code>).</td></tr>
-      <tr><td>You want to know why something happened</td><td>Tray → <strong>Open log</strong>. The log says what pdesk did and why.</td></tr>
+      <tr><td>You want to know why something happened</td><td>Tray → <strong>Open log</strong>. The log says what des-k did and why.</td></tr>
     </tbody>
   </table></div>
-  <div class="callout watch"><strong>pdesk uses a hidden part of Windows</strong> to hide windows. It works on Windows 11 25H2, but a big Windows update could change that.</div>
+  <div class="callout watch"><strong>des-k uses a hidden part of Windows</strong> to hide windows. It works on Windows 11 25H2, but a big Windows update could change that.</div>
 </section>
   </main>
 
   <footer>
-    <span class="footnote">pdesk is free software by CanaanGM, under the <a href="https://github.com/CanaanGM/pdesk/blob/main/LICENSE">GNU GPL 3.0 or later</a>. Copyright (C) 2026 CanaanGM.</span>
+    <span class="footnote">des-k is free software by CanaanGM, under the <a href="https://github.com/CanaanGM/des-k/blob/main/LICENSE">GNU GPL 3.0 or later</a>. Copyright (C) 2026 CanaanGM.</span>
     <span class="signature">written by claude directed by kanaan~!</span>
   </footer>
 </div>

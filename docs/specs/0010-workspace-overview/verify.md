@@ -16,7 +16,7 @@ Build step 3 (mini windows, placement, cards, labels). Passed on your screens 20
 - [x] Hover a spread window → its title shows under it, cut with … when long, and goes when you move away → AC-5
 - [x] Click a tiny window inside another workspace's tile, or on another screen → you land on it → AC-6
 - [ ] (optional check, not confirmed yet) `[overview] labels = "always"` → icon and title under every spread window; `"none"` → no text; `"sometimes"` → hover, plus one log line → AC-5, AC-14
-- [ ] A window Windows draws nothing for shows as a dark card with its icon and title (rare: step 1 found DWM draws pdesk's hidden windows; check whenever one turns up) → AC-4
+- [ ] A window Windows draws nothing for shows as a dark card with its icon and title (rare: step 1 found DWM draws des-k's hidden windows; check whenever one turns up) → AC-4
 
 Build step 4 (keys, selection, closing). Close paths passed on your screens 2026-10-29; the Tab rework waits on more than one screen.
 - [x] Hover a spread window → an X shows on its top right; click it → the window closes and drops out, the overview stays open → AC-9
@@ -41,7 +41,7 @@ Build step 6 (live refresh). Passed on your screen 2026-10-30.
 - [x] With the overview open, start Character Map → it shows in the spread within about a quarter second, and the others move over → AC-10
 - [x] With the overview open, close a spread window from outside (its taskbar entry, or a script) → it drops out and the spread rearranges → AC-10
 - [x] Set `live = false` under `[overview]`, rerun `install.ps1`, open the overview, start Character Map → it does not show; close a window from outside → it drops out and the rest stay put → AC-10, AC-14
-- [x] Leave the overview open and idle for a minute → it stays open (nothing closes it but you, a pdesk shortcut or a screen change) → AC-10, AC-12
+- [x] Leave the overview open and idle for a minute → it stays open (nothing closes it but you, a des-k shortcut or a screen change) → AC-10, AC-12
 - [ ] Close Settings (a Store app) from the overview → it leaves the spread at once, with no stretched picture first (fix 2026-10-30) → AC-9
 - [ ] Close an unsaved Notepad from the overview → it leaves, then comes back about 2 s later while it asks to save, and one `is still open` log line → AC-9
 
@@ -56,7 +56,7 @@ Build step 7 (animation). Built 2026-10-30, not tried yet. Set the style under `
 
 ## Commands
 - [x] `cargo test` → all pass (46 on 2026-10-30) → AC-2, AC-3, AC-7, AC-8, AC-14
-- [x] `install.ps1` → log shows `shortcuts.overview=[Win+Tab]`, `overview.labels=hover` and `pdesk running` → AC-1, AC-14
+- [x] `install.ps1` → log shows `shortcuts.overview=[Win+Tab]`, `overview.labels=hover` and `des-k running` → AC-1, AC-14
 - [x] `cargo test` → all pass (50 on 2026-10-30, including `a_bad_overview_animation_only_resets_itself` and `an_animation_eases_out_and_ends_exactly_in_place`) → AC-11, AC-14
 - [x] `install.ps1` → log shows `overview.animation=off overview.labels=hover overview.live=true` → AC-14
 - [ ] `live = "no"` or `animation = "slide"`, rerun `install.ps1` → one `overview.live:` or `overview.animation:` log line, that key back to its default, the rest kept → AC-14

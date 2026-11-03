@@ -29,7 +29,7 @@ use crate::indicator::ACCENT;
 use crate::restore;
 use crate::ws::{self, Miss};
 
-const CLASS: PCWSTR = w!("pdesk-finder");
+const CLASS: PCWSTR = w!("des-k-finder");
 const CLOSING_TIMER: usize = 1;
 const CLOSING_POLL_MS: u32 = 200;
 const ICON_WAIT_MS: u32 = 50; // a frozen app must not stall the finder
@@ -723,7 +723,7 @@ fn window() -> Option<(HWND, HWND)> {
         let wc = WNDCLASSW { lpfnWndProc: Some(wndproc), hInstance: inst.into(), lpszClassName: CLASS, hCursor: LoadCursorW(None, IDC_ARROW).ok()?, ..Default::default() };
         RegisterClassW(&wc);
         // Tool window: never in Alt+Tab or the taskbar, and never in ws lists. It must take focus, so no WS_EX_NOACTIVATE.
-        let popup = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, CLASS, w!("pdesk finder"), WS_POPUP | WS_CLIPCHILDREN, 0, 0, 0, 0, None, None, Some(inst.into()), None).ok()?;
+        let popup = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, CLASS, w!("des-k finder"), WS_POPUP | WS_CLIPCHILDREN, 0, 0, 0, 0, None, None, Some(inst.into()), None).ok()?;
         let round = DWMWCP_ROUND;
         let _ = DwmSetWindowAttribute(popup, DWMWA_WINDOW_CORNER_PREFERENCE, &round as *const _ as _, size_of_val(&round) as u32);
         let edit = CreateWindowExW(WINDOW_EX_STYLE(0), w!("EDIT"), w!(""), WS_CHILD | WS_VISIBLE | WINDOW_STYLE(ES_AUTOHSCROLL as u32), 0, 0, 0, 0, Some(popup), None, Some(inst.into()), None).ok()?;

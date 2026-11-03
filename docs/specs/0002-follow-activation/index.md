@@ -5,32 +5,32 @@
 
 ## Summary
 
-When an app brings back a window that pdesk hid (Notepad opening a file as a tab in its hidden window, Alt+Tab, a dialog popping up), pdesk now switches that window's screen to the workspace it lives on. Without this, the window has keyboard focus while invisible, so you type into nothing. pdesk listens for the Windows "foreground changed" event (the signal sent whenever a different window becomes the active one). It only reacts to windows it hid itself, and it ignores a second jump on the same screen within one second. Apps that can open a new window instead of reusing an old one (Notepad, VS Code) are best set to do so in their own settings. pdesk cannot spawn a new copy for them.
+When an app brings back a window that des-k hid (Notepad opening a file as a tab in its hidden window, Alt+Tab, a dialog popping up), des-k now switches that window's screen to the workspace it lives on. Without this, the window has keyboard focus while invisible, so you type into nothing. des-k listens for the Windows "foreground changed" event (the signal sent whenever a different window becomes the active one). It only reacts to windows it hid itself, and it ignores a second jump on the same screen within one second. Apps that can open a new window instead of reusing an old one (Notepad, VS Code) are best set to do so in their own settings. des-k cannot spawn a new copy for them.
 
 ## Requirements
 
 **User stories**:
-- As the pdesk user, I want a hidden window that comes to the front to bring its workspace with it, so that I never type into a window I cannot see.
-- As the pdesk user, I want to switch the behavior off in `settings.toml`, so that a misbehaving app cannot keep moving my screens.
+- As the des-k user, I want a hidden window that comes to the front to bring its workspace with it, so that I never type into a window I cannot see.
+- As the des-k user, I want to switch the behavior off in `settings.toml`, so that a misbehaving app cannot keep moving my screens.
 
 **Acceptance criteria**:
 - **AC-1**: With Notepad (set to open files in its existing window) hidden on workspace 1 of a screen that shows workspace 2, opening a `.txt` file from Explorer switches that screen to workspace 1, and Notepad is visible, on top, and has keyboard focus.
 - **AC-2**: The indicator pops up on the screen that jumped, showing the new workspace.
 - **AC-3**: Only the hidden window's screen switches. The other screens keep their workspace, and the mouse pointer does not move.
 - **AC-4**: Any way of bringing a hidden window to the front triggers the same jump, including Alt+Tab when it lists the hidden window.
-- **AC-5**: When a dialog owned by a hidden window (for example a "save changes?" prompt) becomes the active window, its screen jumps to the owner's workspace, so the owner shows behind its dialog. (pdesk never hides owned dialogs, so the dialog itself was visible all along.)
+- **AC-5**: When a dialog owned by a hidden window (for example a "save changes?" prompt) becomes the active window, its screen jumps to the owner's workspace, so the owner shows behind its dialog. (des-k never hides owned dialogs, so the dialog itself was visible all along.)
 - **AC-6**: A hidden window that only flashes (asks for attention without becoming the active window) causes no switch.
 - **AC-7**: After a follow jump on a screen, any further follow trigger on that same screen within 1 second is ignored with a log line. A trigger after the second has passed jumps normally. Other screens are not affected by this cooldown.
-- **AC-8**: Switching by shortcut or swipe still lands on the workspace you asked for. pdesk's own focus changes never cause a follow jump back, and for 1 second after any switch on a screen, a follow that would take that screen back to the workspace it just left is ignored with a log line.
+- **AC-8**: Switching by shortcut or swipe still lands on the workspace you asked for. des-k's own focus changes never cause a follow jump back, and for 1 second after any switch on a screen, a follow that would take that screen back to the workspace it just left is ignored with a log line.
 - **AC-9**: `follow_activation = false` in `settings.toml` turns the feature off after a restart. A missing key means on. A bad value (say `"yes"`) falls back to on with a log line, following spec 0001.
 - **AC-10**: After a follow jump, `state.txt` records the new active workspace and the windows the jump hid, so a restart keeps the layout.
-- **AC-11**: Windows pdesk did not hide (on another Windows virtual desktop, suspended UWP windows, never hidden windows) never trigger a jump.
+- **AC-11**: Windows des-k did not hide (on another Windows virtual desktop, suspended UWP windows, never hidden windows) never trigger a jump.
 
 ## Decision
 
 **Chosen option**: Option 1: Foreground win event hook, posted into the main loop.
 
-When a window pdesk hid (or a dialog it owns) becomes the foreground window, pdesk switches that window's screen straight to the window's workspace, gives it focus, shows the indicator, and saves, with a one second per screen cooldown and an on/off setting.
+When a window des-k hid (or a dialog it owns) becomes the foreground window, des-k switches that window's screen straight to the window's workspace, gives it focus, shows the indicator, and saves, with a one second per screen cooldown and an on/off setting.
 
 **Implementation skills**: `ferris-windows` (`mcapricorns/ferris-skills`, `.claude/skills/ferris-windows/`) · `rust-best-practices` (`apollographql/skills`, `.claude/skills/rust-best-practices/`)
 
@@ -70,9 +70,9 @@ follow_activation = true    # switch to a hidden window's workspace when it come
 | `ws::follow(hwnd)` | new, public | the activated window | a jump, or nothing | main | not ours, stale, cooldown, bounce, screen gone: see Value sourcing for which ones log |
 | `on_foreground` | win event callback in `main.rs` | event hwnd, object id, child id | posts `WM_FOLLOW` with `PostThreadMessageW` to the main thread id, for a non null hwnd with `OBJID_WINDOW` / `CHILDID_SELF` only | main (out of context) | none |
 | `WM_FOLLOW` | `WM_APP + 2` (`WM_APP` is the switch, `WM_APP + 1` the display change), thread message | `wParam` = hwnd | main loop calls `ws::follow` | main | none |
-| `SetWinEventHook` install | in `main` after `ws::load()`, before the loop, only if `follow_activation`: `SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, None, Some(on_foreground), 0, 0, WINEVENT_OUTOFCONTEXT \| WINEVENT_SKIPOWNPROCESS)` | | the handle is a local in `main`, kept until the process exits and never unhooked (the hook dies with the process) | main | null handle: log `follow: hook not installed`, pdesk runs without the feature |
+| `SetWinEventHook` install | in `main` after `ws::load()`, before the loop, only if `follow_activation`: `SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, None, Some(on_foreground), 0, 0, WINEVENT_OUTOFCONTEXT \| WINEVENT_SKIPOWNPROCESS)` | | the handle is a local in `main`, kept until the process exits and never unhooked (the hook dies with the process) | main | null handle: log `follow: hook not installed`, des-k runs without the feature |
 
-`WINEVENT_SKIPOWNPROCESS` is what keeps pdesk's own `SetForegroundWindow` calls (and the indicator) from ever reaching `follow`. That is the main reason AC-8 holds; the stale check and the bounce guard cover what Windows does on its own while pdesk hides windows.
+`WINEVENT_SKIPOWNPROCESS` is what keeps des-k's own `SetForegroundWindow` calls (and the indicator) from ever reaching `follow`. That is the main reason AC-8 holds; the stale check and the bounce guard cover what Windows does on its own while des-k hides windows.
 
 Focus inside `switch_to`: when `focus` is `Some(h)`, after showing the target workspace, check `GetForegroundWindow()`. If it is already `h` (the normal case), do nothing. Otherwise call `SetForegroundWindow(h)` once, and if `h` still is not the foreground window, log `follow: could not focus "<title>"`. For an owned dialog, `h` is the dialog; the owner is only uncloaked, never focused. When `focus` is `None`, today's "first shown window" rule applies unchanged.
 
@@ -99,7 +99,7 @@ Focus inside `switch_to`: when `focus` is `Some(h)`, after showing the target wo
 | log | cooldown line | `follow: <device> cooling down, ignored "<window title>"` |
 | log | bounce line | `follow: <device> just left workspace <n>, ignored "<window title>"` |
 | log | screen gone line | `follow: <device> not found, ignored "<window title>"` |
-| log | silent drops | not pdesk's window, no longer foreground, no longer cloaked: no log line (they happen on every focus change) |
+| log | silent drops | not des-k's window, no longer foreground, no longer cloaked: no log line (they happen on every focus change) |
 
 **Key invariants**:
 - A follow jump only ever uncloaks windows listed in `ws.rs` state; it never acts on a window it did not hide.
@@ -108,7 +108,7 @@ Focus inside `switch_to`: when `focus` is `Some(h)`, after showing the target wo
 - `state.txt` is saved after every follow jump, same as after a shortcut switch.
 - `Monitor.last_follow` is set only by a successful follow jump; `Monitor.last_switch` by every successful switch. A dropped trigger changes neither.
 
-**Security model**: no new data and no new privileges. The hook is out of context, so nothing is injected into other processes, and it only receives window handles. It sees the same windows medium integrity pdesk already enumerates, and it acts only on windows pdesk hid.
+**Security model**: no new data and no new privileges. The hook is out of context, so nothing is injected into other processes, and it only receives window handles. It sees the same windows medium integrity des-k already enumerates, and it acts only on windows des-k hid.
 
 **Configuration required**: no environment variables or credentials. One new `settings.toml` key, `follow_activation`. An existing settings file is never rewritten, so the key only appears in the file if you add it yourself; missing means on.
 
@@ -118,9 +118,9 @@ Focus inside `switch_to`: when `focus` is `Some(h)`, after showing the target wo
 - Failure case: type in a Notepad tab, switch away, then close Notepad from the taskbar preview or with `taskkill /im notepad.exe` (no `/f`) so its "save changes?" dialog appears: the screen jumps to Notepad's workspace with the dialog in front. Verifies AC-5.
 - Failure case: with a window focused on the screen you swipe, swipe back and forth quickly ten times on a screen with several windows: every swipe lands where you asked and nothing bounces; any `just left workspace` log line shows the guard caught a bounce. Verifies AC-8.
 - Failure case: trigger two follow jumps on the same screen within a second (open two `.txt` files from Explorer at once while Notepad is hidden): one jump, one `cooling down` log line. Verifies AC-7.
-- Failure case: a window on another Windows virtual desktop gets activated by Windows: pdesk does nothing. Verifies AC-11.
+- Failure case: a window on another Windows virtual desktop gets activated by Windows: des-k does nothing. Verifies AC-11.
 - Config: `follow_activation = false`, restart: the Notepad case no longer jumps; `follow_activation = "yes"`: it jumps and the log has a settings line. Verifies AC-9.
-- Restart: after a follow jump, hard kill pdesk (`taskkill /f /im pdesk.exe`, not `--quit`, which shows everything) and start it again: each screen comes back on the workspace you saw, with the same windows hidden. Verifies AC-10.
+- Restart: after a follow jump, hard kill des-k (`taskkill /f /im des-k.exe`, not `--quit`, which shows everything) and start it again: each screen comes back on the workspace you saw, with the same windows hidden. Verifies AC-10.
 - AC-6 has no reliable manual trigger. It holds by construction (only the foreground event is hooked, never flash), and the review checks that.
 
 ## Build plan
@@ -142,7 +142,7 @@ Tracer Bullet: the first two tasks already give a working end to end jump, from 
 
 **Negative / tradeoffs**:
 - An app that brings itself forward on its own (some chat or update dialogs do) will now move your screen. The cooldown limits ping pong, and `follow_activation = false` is the escape. There is no per app exclusion list yet.
-- A reused window still means a jump away from where you are. Avoiding that depends on each app's "open in new window" setting, outside pdesk's control.
+- A reused window still means a jump away from where you are. Avoiding that depends on each app's "open in new window" setting, outside des-k's control.
 - Two more pieces of hidden machinery (a global hook and a posted message) to keep in mind when debugging focus issues. The log lines are the only trace.
 - The scope's Photos example cannot exercise this feature on your machine, because Photos opens new windows. Notepad replaces it.
 
@@ -155,4 +155,4 @@ Tracer Bullet: the first two tasks already give a working end to end jump, from 
 - [ ] Set Windows Notepad to open files in a new window (Notepad Settings, Opening files) once AC-1 is verified, if you'd rather get a new window where you are than jump. Do the same for any other app that offers it.
 - [x] Update scope feature 3's "Done when" to use Notepad instead of Photos.
 - [ ] If an app turns out to steal focus repeatedly, decide on a per app exclusion list in `settings.toml` (new `/architect` decision; on the scope's Deferred list).
-- [ ] Dialogs owned by a hidden window are never cloaked by pdesk today (`app_windows_on` skips owned windows), so they float over the wrong workspace. Worth checking when building feature 4 (on the scope's Deferred list).
+- [ ] Dialogs owned by a hidden window are never cloaked by des-k today (`app_windows_on` skips owned windows), so they float over the wrong workspace. Worth checking when building feature 4 (on the scope's Deferred list).

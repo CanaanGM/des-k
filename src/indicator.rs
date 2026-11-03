@@ -19,8 +19,8 @@ use windows::core::w;
 
 use crate::settings;
 
-/// Also how `--quit` and the single-instance check find the running pdesk.
-pub const CLASS: windows::core::PCWSTR = w!("pdesk-indicator");
+/// Also how `--quit` and the single-instance check find the running des-k.
+pub const CLASS: windows::core::PCWSTR = w!("des-k-indicator");
 /// Posted to the main loop on WM_DISPLAYCHANGE (handled there, never inside a sent message).
 pub const WM_DISPLAY_CHANGED: u32 = WM_APP + 1;
 
@@ -115,10 +115,10 @@ fn window() -> Option<HWND> {
         let inst = GetModuleHandleW(None).ok()?;
         let wc = WNDCLASSW { lpfnWndProc: Some(wndproc), hInstance: inst.into(), lpszClassName: CLASS, ..Default::default() };
         RegisterClassW(&wc);
-        // Tool window + no-activate: never in Alt+Tab, never managed by pdesk, never steals focus.
+        // Tool window + no-activate: never in Alt+Tab, never managed by des-k, never steals focus.
         let ex = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT;
         let h = CreateWindowExW(ex, CLASS, w!(""), WS_POPUP, 0, 0, 0, 0, None, None, Some(inst.into()), None).ok()?;
-        // An admin pdesk would drop `pdesk --quit` from a normal terminal otherwise (spec 0008).
+        // An admin des-k would drop `des-k --quit` from a normal terminal otherwise (spec 0008).
         if let Err(e) = ChangeWindowMessageFilterEx(h, WM_CLOSE, MSGFLT_ALLOW, None) {
             eprintln!("indicator: WM_CLOSE not let in from normal programs: {e}");
         }

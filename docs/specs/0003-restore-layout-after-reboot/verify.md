@@ -1,12 +1,12 @@
 # Verify: Restore layout after reboot · spec 0003 · updated 2026-10-26
 _Steps derived from spec 0003 acceptance criteria. `/check verify` runs these; `/test` locks the durable ones._
 
-First, you may want to run `install.ps1` and confirm `pdesk.exe` is running (`Get-Process pdesk`). Then switch once so `state.txt` gets the new format (an `L` line, tabs on `W` lines, `V` lines). Every result shows up in `%LOCALAPPDATA%\pdesk\pdesk.log`, in lines that start with `restore:`.
+First, you may want to run `install.ps1` and confirm `des-k.exe` is running (`Get-Process des-k`). Then switch once so `state.txt` gets the new format (an `L` line, tabs on `W` lines, `V` lines). Every result shows up in `%LOCALAPPDATA%\des-k\des-k.log`, in lines that start with `restore:`.
 
 ## UI / manual
 - [ ] Hide Notepad on workspace 3 of the laptop screen, then reboot with "restart apps" on → Notepad reopens and vanishes within a second, and switching to workspace 3 shows it → AC-1
 - [ ] Before the reboot, leave screens on different workspaces → each present screen comes back on the same one → AC-2
-- [ ] Hide an app that starts at login (it opens before pdesk does) → it still goes back to its workspace → AC-3
+- [ ] Hide an app that starts at login (it opens before des-k does) → it still goes back to its workspace → AC-3
 - [ ] Use three Edge windows with different titles: two hidden on workspaces 2 and 4, one visible. Reboot → each one goes back where it was → AC-4, AC-5
 - [ ] Use two saved Edge windows whose titles changed completely → both stay visible, and the log shows `unclear match` once for each → AC-4, AC-11
 - [ ] Open Notepad by hand 5 minutes after you sign in → it stays visible, and the log shows `restore: done` before that → AC-6
@@ -19,9 +19,9 @@ First, you may want to run `install.ps1` and confirm `pdesk.exe` is running (`Ge
 - [ ] Reboot again within the restore period → the unmatched entries are still in `state.txt` (`W ... 0 0` lines) and get matched after the second boot → AC-12
 - [ ] Shut down with Fast Startup on, and separately sign out and back in → matching runs both times → AC-13
 - [ ] The first start of the new build on an old `state.txt` → loads with no errors → AC-14
-- [ ] Hard kill pdesk (`Stop-Process -Name pdesk -Force`), change the id in the `L` line, then start pdesk more than 5 minutes after you signed in → the log shows `restore: signed in N min ago, skipped` → AC-15
+- [ ] Hard kill des-k (`Stop-Process -Name des-k -Force`), change the id in the `L` line, then start des-k more than 5 minutes after you signed in → the log shows `restore: signed in N min ago, skipped` → AC-15
 - [ ] Run `install.ps1` one minute after you sign in → the log shows `restore: resuming,` and the remaining entries get matched → AC-16
-- [ ] Sign out with windows hidden. Before pdesk starts again (or from the log right after), `state.txt` still has its `W` lines → AC-17
+- [ ] Sign out with windows hidden. Before des-k starts again (or from the log right after), `state.txt` still has its `W` lines → AC-17
 
 ## Value sourcing
 - [ ] Logon session id: after a sign out and back in, the hex id in the `L` line changes → new sign in detected

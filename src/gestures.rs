@@ -9,9 +9,9 @@ pub fn run(rule: usize) {
         return;
     };
     // The last input was the touchpad's, so Windows would refuse the focus change an action
-    // makes; pdesk's own harmless key makes pdesk the source of it (spec 0011 check step).
+    // makes; des-k's own harmless key makes des-k the source of it (spec 0011 check step).
     keys::mask();
-    // pdesk's own moves do exactly what their keys do, the finder and overview included (spec 0010 AC-12).
+    // des-k's own moves do exactly what their keys do, the finder and overview included (spec 0010 AC-12).
     match g.action {
         Action::Switch(dir) => {
             close();

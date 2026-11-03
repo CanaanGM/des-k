@@ -2,25 +2,25 @@
 
 ## Context
 
-Every pdesk setting lives in `settings.toml` (spec 0001). Changing one means opening the file, knowing its format, and restarting pdesk, because settings are read once at start. Spec 0011 added about 25 gesture lines, and the welcome screen's "Choose my own" sends you straight into that file. You asked for a page for all settings, not only the touchpad.
+Every des-k setting lives in `settings.toml` (spec 0001). Changing one means opening the file, knowing its format, and restarting des-k, because settings are read once at start. Spec 0011 added about 25 gesture lines, and the welcome screen's "Choose my own" sends you straight into that file. You asked for a page for all settings, not only the touchpad.
 
 Forces that shaped the design:
-- pdesk runs as admin. Nothing in `%LOCALAPPDATA%\pdesk` may name a program to run, and anything running as you can write that folder.
+- des-k runs as admin. Nothing in `%LOCALAPPDATA%\des-k` may name a program to run, and anything running as you can write that folder.
 - Every comment in the default file explains a setting, and you may have added your own.
 - Readers of settings are spread across the hook thread and the main thread, all through `settings::get() -> &'static Settings`.
 - The workspace count sizes per monitor state in `ws.rs`. Shrinking it with hidden windows is the one change that can lose windows.
-- There's no text editing anywhere in pdesk's custom drawn windows, and building it is a lot of code.
+- There's no text editing anywhere in des-k's custom drawn windows, and building it is a lot of code.
 - You prefer designs that show all state rather than hide it, and the welcome screen set a look through a design pass.
 
 ## Options considered
 
 ### Option 1: Live settings, in place edits, custom drawn page (chosen)
-Page edits values in the file with `toml_edit`; pdesk reloads on save and on file change, and swaps settings behind an atomic pointer.
+Page edits values in the file with `toml_edit`; des-k reloads on save and on file change, and swaps settings behind an atomic pointer.
 - **Pros**: one source of truth; changes felt at once; comments kept; no reader changes.
 - **Cons**: new crate; live workspace shrink is risky; leaked old settings.
 
-### Option 2: Page writes the file, pdesk restarts itself
-Save, then pdesk relaunches and adopts its layout.
+### Option 2: Page writes the file, des-k restarts itself
+Save, then des-k relaunches and adopts its layout.
 - **Pros**: no live apply logic; settings stay read once.
 - **Cons**: a blink and tray icon churn on every click; a self relaunch from an admin process has to keep the single instance rule and the layout handoff right.
 
@@ -30,7 +30,7 @@ Save, then pdesk relaunches and adopts its layout.
 
 ### Option 4: Standard Win32 controls (edit, combo box, check box)
 - **Pros**: text entry and accessibility for free.
-- **Cons**: they don't follow pdesk's dark theme or its welcome look; mixing them with custom paint looks broken.
+- **Cons**: they don't follow des-k's dark theme or its welcome look; mixing them with custom paint looks broken.
 
 ## Rationale
 

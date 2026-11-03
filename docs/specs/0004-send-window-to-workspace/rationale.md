@@ -4,12 +4,12 @@ _Decision record for [spec 0004](index.md): why this design was chosen._
 
 ## Context
 
-Today pdesk has no way to move one window to another workspace. A switch hides everything visible on the screen at once, so a window ends up on whatever workspace was active when it was opened or dragged onto that screen. To regroup windows you'd have to minimize the others, or drag a window to another screen and back. The scope lists this as feature 4, leaving the "follow or stay" behavior to this spec.
+Today des-k has no way to move one window to another workspace. A switch hides everything visible on the screen at once, so a window ends up on whatever workspace was active when it was opened or dragged onto that screen. To regroup windows you'd have to minimize the others, or drag a window to another screen and back. The scope lists this as feature 4, leaving the "follow or stay" behavior to this spec.
 
 Forces:
-- pdesk tracks windows only by what it hid. A workspace is "whatever is visible" on the active one and a list of hidden handles on the others (`ws.rs`). Moving a window means moving its handle between those lists, and cloaking or uncloaking it.
+- des-k tracks windows only by what it hid. A workspace is "whatever is visible" on the active one and a list of hidden handles on the others (`ws.rs`). Moving a window means moving its handle between those lists, and cloaking or uncloaking it.
 - AGENTS.md threading rule: the keyboard hook thread does no slow work and only posts `WM_APP` messages. Cloaking, focus, the indicator, and saving happen on the main thread.
-- AGENTS.md safety rule: only ever uncloak windows pdesk hid itself. A window pdesk would not hide on a switch (tool windows, owned windows, untitled windows) must not become hidden by a send either, or nothing would ever show it again.
+- AGENTS.md safety rule: only ever uncloak windows des-k hid itself. A window des-k would not hide on a switch (tool windows, owned windows, untitled windows) must not become hidden by a send either, or nothing would ever show it again.
 - Follow activation (spec 0002) jumps a screen to a hidden window when that window comes to the front. Windows sometimes hands focus to a window mid cloak, so a window you just pushed away could pull the screen after it.
 - Shortcuts are configurable (spec 0001). A combo bound to two actions makes a key do two things.
 - One person, Prototype workflow: verified by hand on your three screens, `cargo test` covers settings parsing only.
@@ -23,7 +23,7 @@ A new `WM_SEND` message carries direction and follow. Follow calls `switch_to` w
 **Pros**:
 - Reuses the switch machinery (hide order, focus, bounce guard, indicator, save) for follow, with a single new parameter.
 - The window you send never flickers: in follow mode it is never cloaked at all.
-- Stays inside pdesk's own model (its lists, its cloak), so restart, undock, and quit already handle sent windows.
+- Stays inside des-k's own model (its lists, its cloak), so restart, undock, and quit already handle sent windows.
 
 **Cons**:
 - `switch_to` gains a parameter that only sends use.
@@ -50,14 +50,14 @@ Use the public `IVirtualDesktopManager::MoveWindowToDesktop` and Windows' virtua
 - Documented API, no cloak call.
 
 **Cons**:
-- Windows desktops switch every screen at once. That is the exact problem pdesk exists to avoid (approach A ignores them).
-- pdesk's state would no longer describe where windows are.
+- Windows desktops switch every screen at once. That is the exact problem des-k exists to avoid (approach A ignores them).
+- des-k's state would no longer describe where windows are.
 
 ## Rationale
 
 Option 1 keeps the one thing a send must not do, flash or bounce the window you are working in, out of reach by construction. In follow mode the window is never cloaked, so neither the foreground hook nor the taskbar ever sees it change. Option 2 is less code on paper, but it makes the most common action (follow) depend on spec 0002's guards behaving perfectly, and those guards were built for a different case. Option 3 contradicts the project's founding decision.
 
-Both modes work only on windows already in pdesk's model. A send accepts a window only when `app_windows()` (the switch filter) does. That way a sent window is always one that switching, quitting, undocking, and restarting already know how to show again, and the AGENTS.md safety rule holds without any new case.
+Both modes work only on windows already in des-k's model. A send accepts a window only when `app_windows()` (the switch filter) does. That way a sent window is always one that switching, quitting, undocking, and restarting already know how to show again, and the AGENTS.md safety rule holds without any new case.
 
 ### Choices you made in the interview
 

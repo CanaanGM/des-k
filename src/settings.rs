@@ -1,8 +1,8 @@
-// settings.toml in %LOCALAPPDATA%\pdesk (docs/specs/0001-settings-file/index.md), read at start
+// settings.toml in %LOCALAPPDATA%\des-k (docs/specs/0001-settings-file/index.md), read at start
 // and again whenever the settings page saves it or its write time changes (spec 0012).
 // Not next to the exe: the installed exe lives in Program Files, where you cannot write (spec 0008).
 // A bad value resets just that setting. A file that is not TOML resets all of them at start,
-// but keeps the settings in effect on a live reload. pdesk always starts.
+// but keeps the settings in effect on a live reload. des-k always starts.
 use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::io::Write;
@@ -73,10 +73,10 @@ pub enum Action {
     ShowDesktop,
     AppNext,
     AppPrevious,
-    Keys(&'static [u16]), // typed as pdesk's own input, straight to Windows
+    Keys(&'static [u16]), // typed as des-k's own input, straight to Windows
     MiddleClick,
     Nothing,
-    Combo(Combo), // typed as if you pressed it, so pdesk's own shortcuts see it
+    Combo(Combo), // typed as if you pressed it, so des-k's own shortcuts see it
 }
 
 const ACTIONS: &[(&str, Action)] = &[
@@ -222,7 +222,7 @@ impl Default for Settings {
 }
 
 /// Written verbatim when the file is missing. Must parse to `Settings::default()` (tested).
-const DEFAULT_FILE: &str = r#"# pdesk settings. A saved change applies within two seconds; [restore] acts at the next start.
+const DEFAULT_FILE: &str = r#"# des-k settings. A saved change applies within two seconds; [restore] acts at the next start.
 
 workspaces = 4              # 2 to 9, every screen
 copilot_as_right_ctrl = true
@@ -261,7 +261,7 @@ labels = "hover"            # "hover", "always" or "none"
 live = true                 # false: the list is taken when the overview opens
 
 [touchpad]
-# pdesk reads three and four finger gestures itself, so they work over admin windows too.
+# des-k reads three and four finger gestures itself, so they work over admin windows too.
 # It acts only while Windows' own three and four finger gestures are all set to Nothing, so one
 # gesture never does two things. Touchpad setup, on the settings page, helps you set them.
 enabled = true
@@ -362,7 +362,7 @@ static CURRENT: AtomicPtr<Loaded> = AtomicPtr::new(std::ptr::null_mut());
 static DEFAULTS: LazyLock<Settings> = LazyLock::new(Settings::default);
 
 thread_local! {
-    // The file's write time when pdesk last read it. Main thread only (spec 0012, file watch).
+    // The file's write time when des-k last read it. Main thread only (spec 0012, file watch).
     static SEEN: Cell<Option<SystemTime>> = const { Cell::new(None) };
     // Why the file could not be read or is not TOML, until a read succeeds (AC-14). The page
     // reads it to go read only, at start and after a live reload alike.
@@ -1140,7 +1140,7 @@ fn parse_combo(text: &str) -> Result<Combo, String> {
         } else if vk.is_some() {
             return Err("has more than one key".into());
         } else {
-            vk = Some(vk_of(part).ok_or_else(|| format!("has \"{part}\", which is not a key pdesk knows"))?);
+            vk = Some(vk_of(part).ok_or_else(|| format!("has \"{part}\", which is not a key des-k knows"))?);
         }
     }
     let vk = vk.ok_or("has no key")?;
@@ -1272,7 +1272,7 @@ impl fmt::Display for Settings {
 mod tests {
     use super::*;
 
-    // The file pdesk writes for you and the values it falls back to are two copies of the
+    // The file des-k writes for you and the values it falls back to are two copies of the
     // defaults. If they drift, a fresh install behaves differently from a broken file.
     #[test]
     fn default_file_is_the_defaults() {

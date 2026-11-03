@@ -2,7 +2,7 @@
 
 ## Summary
 
-`settings.toml` gets a `[touchpad]` section with three keys and a list of `[[gesture]]` rules. Each rule says which gesture runs which action. Actions are pdesk's own moves, media and volume keys, Windows things pdesk redoes itself, or any key combo you write.
+`settings.toml` gets a `[touchpad]` section with three keys and a list of `[[gesture]]` rules. Each rule says which gesture runs which action. Actions are des-k's own moves, media and volume keys, Windows things des-k redoes itself, or any key combo you write.
 
 ## Settings
 
@@ -54,9 +54,9 @@ do = "next"
 | `play_pause`, `next_track`, `previous_track` | the media keys (with `MAGIC`) |
 | `volume_up`, `volume_down`, `mute` | the volume keys (with `MAGIC`) |
 | `none` | nothing (useful to switch off one default gesture) |
-| a combo, e.g. `"Ctrl+Shift+T"` | types its modifiers down, the key down and up, the modifiers up, **without** `MAGIC`, so pdesk's keyboard hook sees it like a real press: a combo that is a pdesk shortcut runs that shortcut. Win or Alt combos end with `VK_MASK` as the hook does, so no Start menu or menu bar opens. |
+| a combo, e.g. `"Ctrl+Shift+T"` | types its modifiers down, the key down and up, the modifiers up, **without** `MAGIC`, so des-k's keyboard hook sees it like a real press: a combo that is a des-k shortcut runs that shortcut. Win or Alt combos end with `VK_MASK` as the hook does, so no Start menu or menu bar opens. |
 
-- Any pdesk action while the overview or finder is open behaves exactly as its key would (spec 0010 AC-12).
+- Any des-k action while the overview or finder is open behaves exactly as its key would (spec 0010 AC-12).
 - Focus (`app_*`, the `show_desktop` restore) goes through the same helper `ws` already uses to focus a window after a switch, so it gets the same foreground handling. The check step (index.md Build plan step 1) also tries `app_next` focus from a gesture. Follow activation needs no change: these windows are all on the shown workspace, so it has nothing to follow.
 - A combo while you hold a key yourself (say Shift) combines with it, as a real press would. Windows never lets a program type `Ctrl+Alt+Del`, and `Win+L` is blocked the same way; such a combo does nothing (logged at settings load).
 - A gesture made while a menu (the tray menu) or a window drag is open is dropped, as keys are today, because thread messages are lost in those loops.
@@ -81,4 +81,4 @@ do = "next"
 
 ## Short rationale
 
-A list of rules leaves room for `times = 2` now and new gesture kinds later without new key names, and matches TOML's array of tables. Action names reuse the `[shortcuts]` names so one vocabulary covers keys and gestures. `show_desktop` minimizes per screen because pdesk's workspaces are per screen; minimizing (not hiding) keeps those windows on the taskbar, so you can bring one back by hand. `app_next` and `app_previous` rotate the window stack, so repeated swipes visit every window in a fixed order, where most recently used order would bounce between two. Runner up for the format: nested `[gestures.four]` keys, rejected because "twice" would need new key names for every gesture.
+A list of rules leaves room for `times = 2` now and new gesture kinds later without new key names, and matches TOML's array of tables. Action names reuse the `[shortcuts]` names so one vocabulary covers keys and gestures. `show_desktop` minimizes per screen because des-k's workspaces are per screen; minimizing (not hiding) keeps those windows on the taskbar, so you can bring one back by hand. `app_next` and `app_previous` rotate the window stack, so repeated swipes visit every window in a fixed order, where most recently used order would bounce between two. Runner up for the format: nested `[gestures.four]` keys, rejected because "twice" would need new key names for every gesture.

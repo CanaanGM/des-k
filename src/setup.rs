@@ -1,8 +1,8 @@
 // Windows' own touchpad gestures and touchpad.txt (spec 0011, 0011-first-run-setup): whether
-// Windows' three and four finger gestures all read off in the registry (pdesk acts on a
+// Windows' three and four finger gestures all read off in the registry (des-k acts on a
 // gesture only then), your saved values, and the state and actions the welcome screen
-// (src/welcome.rs) shows. pdesk cannot switch Windows' gestures live, so you set them in
-// Settings and pdesk follows what the registry says.
+// (src/welcome.rs) shows. des-k cannot switch Windows' gestures live, so you set them in
+// Settings and des-k follows what the registry says.
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use windows::Win32::{
@@ -82,7 +82,7 @@ pub struct State {
     pub pad: bool,     // a precision touchpad is there
     pub enabled: bool, // `[touchpad] enabled`
     pub rows: [Row; 4],
-    pub off: bool,   // windows_off(): pdesk runs the gestures
+    pub off: bool,   // windows_off(): des-k runs the gestures
     pub saved: bool, // touchpad.txt holds your values
 }
 
@@ -100,7 +100,7 @@ type Saved = [Option<u32>; 13];
 /// What touchpad.txt holds.
 #[derive(Default, PartialEq, Debug)]
 struct File {
-    saved: Option<Saved>, // all 13 or none, so pdesk never writes back half of your settings
+    saved: Option<Saved>, // all 13 or none, so des-k never writes back half of your settings
     restored: Option<u64>,
 }
 
@@ -208,13 +208,13 @@ fn wrote(failed: &[usize]) -> [Wrote; 4] {
     })
 }
 
-/// Your values as they are now, to save; a value pdesk could not write back stops the save.
+/// Your values as they are now, to save; a value des-k could not write back stops the save.
 fn to_saved(reads: &[Read; 13]) -> Result<Saved, String> {
     let mut saved = [None; 13];
     for (((name, _), r), s) in VALUES.iter().zip(reads).zip(&mut saved) {
         *s = match r {
             Read::Dword(v) if *v <= MAX => Some(*v),
-            Read::Dword(v) => return Err(format!("{name} is {v:#x}, more than pdesk saves")),
+            Read::Dword(v) => return Err(format!("{name} is {v:#x}, more than des-k saves")),
             Read::Missing => None,
             Read::Other(why) => return Err(format!("{name} {why}")),
         };
@@ -250,7 +250,7 @@ fn parse(text: &str) -> (File, Vec<String>) {
             continue;
         }
         let Some(i) = VALUES.iter().position(|(name, _)| *name == k) else {
-            warn.push(format!("skipped \"{line}\": not a gesture value pdesk knows"));
+            warn.push(format!("skipped \"{line}\": not a gesture value des-k knows"));
             continue;
         };
         named = true;
@@ -264,7 +264,7 @@ fn parse(text: &str) -> (File, Vec<String>) {
     let saved = match saved.iter().all(Option::is_some) {
         true => Some(saved.map(Option::unwrap_or_default)),
         false if named => {
-            warn.push("the saved gesture values are incomplete, so none are kept (pdesk never writes back half of them)".into());
+            warn.push("the saved gesture values are incomplete, so none are kept (des-k never writes back half of them)".into());
             None
         }
         false => None,
@@ -481,7 +481,7 @@ mod tests {
         ALL_OFF.map(Read::Dword)
     }
 
-    // The gate: pdesk acts only when Windows does nothing, or one gesture does two things.
+    // The gate: des-k acts only when Windows does nothing, or one gesture does two things.
     #[test]
     fn only_all_thirteen_off_is_off() {
         assert_eq!(first_not_off(&off_reads()), Ok(()));
@@ -494,7 +494,7 @@ mod tests {
         assert!(first_not_off(&r).is_err());
     }
 
-    // Absent is Windows' default, which is on; a read error must not let pdesk act.
+    // Absent is Windows' default, which is on; a read error must not let des-k act.
     #[test]
     fn missing_or_unreadable_is_not_off() {
         let mut r = off_reads();
@@ -527,7 +527,7 @@ mod tests {
     }
 
     // The same sign in rewrite sets gestures off again only over exactly what Quit wrote: any
-    // other value means you changed them in Settings, and pdesk must leave that alone.
+    // other value means you changed them in Settings, and des-k must leave that alone.
     #[test]
     fn only_the_values_quit_wrote_count_as_unchanged() {
         let saved = [None, None, None, None, None, None, None, None, None, Some(2), Some(3), Some(0xffff), Some(0xffff)];
@@ -566,7 +566,7 @@ mod tests {
         assert_eq!(seen, [1; 13]);
     }
 
-    // A row says Nothing only when Windows does nothing for that control; a value pdesk cannot
+    // A row says Nothing only when Windows does nothing for that control; a value des-k cannot
     // read must never look like Nothing, and an absent one is Windows' default, which is on.
     #[test]
     fn a_row_is_nothing_only_when_all_its_values_read_off() {
@@ -593,9 +593,9 @@ mod tests {
         assert!(GaveBack { wrote: [Wrote::All, Wrote::Part, Wrote::All, Wrote::All], cleared: false }.failed());
     }
 
-    // Only a value pdesk can write back as it was is saved.
+    // Only a value des-k can write back as it was is saved.
     #[test]
-    fn a_value_pdesk_cannot_write_back_stops_the_save() {
+    fn a_value_des_k_cannot_write_back_stops_the_save() {
         let mut r = off_reads();
         r[0] = Read::Missing;
         assert_eq!(to_saved(&r).unwrap()[0], None);

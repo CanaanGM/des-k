@@ -10,9 +10,9 @@ Two new shortcut pairs move the focused window to the previous or next workspace
 ## Requirements
 
 **User stories**:
-- As the pdesk user, I want to take the window I'm working in to another workspace and go with it, so that I can rearrange my workspaces without dragging anything.
-- As the pdesk user, I want to push a window off to another workspace and stay where I am, so that I can clear a screen quickly.
-- As the pdesk user, I want a quick double press to move one window two steps, so that I never hide a second window by accident.
+- As the des-k user, I want to take the window I'm working in to another workspace and go with it, so that I can rearrange my workspaces without dragging anything.
+- As the des-k user, I want to push a window off to another workspace and stay where I am, so that I can clear a screen quickly.
+- As the des-k user, I want a quick double press to move one window two steps, so that I never hide a second window by accident.
 
 **Acceptance criteria**:
 - **AC-1**: With a window focused on screen S, which shows workspace n, Win+Ctrl+Shift+Right (Left) switches S to workspace n+1 (n-1). The window is visible there, on top, and keeps keyboard focus, its position and its size. The other windows of n are hidden, and the indicator shows the new workspace.
@@ -22,7 +22,7 @@ Two new shortcut pairs move the focused window to the previous or next workspace
 - **AC-5**: A stay press within 1 second of the previous stay press moves the window that press sent one more step in the new press's direction (so Right then Left undoes the move), wrapping, instead of the focused window. Each repeat restarts the 1 second. If that step lands on the workspace S is showing, the window reappears on top with focus. A stay press more than 1 second later, any follow press, and any stay press after a switch of any screen act on the focused window again.
 - **AC-6**: Holding a send shortcut down acts once. Key repeats are swallowed and do nothing until the key is released, even if a modifier is let go meanwhile (so a held Win+Ctrl+Shift+Left never turns into Win+Ctrl+Left switches).
 - **AC-7**: When the focused window is a dialog (an owned window), its top owner is sent. Owned windows stay visible where they are, exactly as on a switch today.
-- **AC-8**: When there is nothing sendable in focus (the desktop, the taskbar, no window, or a window pdesk would not hide on a switch: tool windows, untitled windows, already hidden ones), nothing changes and the log says why. The shortcut is still swallowed.
+- **AC-8**: When there is nothing sendable in focus (the desktop, the taskbar, no window, or a window des-k would not hide on a switch: tool windows, untitled windows, already hidden ones), nothing changes and the log says why. The shortcut is still swallowed.
 - **AC-9**: If hiding the window fails, nothing changes: the window stays visible and focused, and the log has a line.
 - **AC-10**: After any send, `state.txt` records the window on its new workspace. A hard kill (`taskkill /f`) and a restart keep it there.
 - **AC-11**: For 1 second after a stay send, the sent window getting focus causes no follow jump (spec 0002), and the log says so. After that second, follow activation treats it like any other hidden window.
@@ -100,7 +100,7 @@ Clash check: today's `previous` / `next` check runs first, unchanged. Then each 
 7. **Stay, repeat**: remove `h` from `hidden[from]`. If `target == active`, `shell.hide(h, false)` and `SetForegroundWindow(h)`; on an uncloak error put it back in `hidden[from]`, log and stop. Otherwise insert it at the front of `hidden[target]` (it stays cloaked, no shell call).
 8. **Stay, both**: set `State.sent = Some((h, now))`, `indicator::show(mon, active, count, Some(target))` (or `None` when it landed on `active`), `save`, log.
 
-Focus uses plain `SetForegroundWindow`, as `switch_to` does today (pdesk just received the key press, so Windows allows it). AC-9 covers the stay path; in a follow send, a window that fails to hide is logged and skipped by `switch_to` as on any switch.
+Focus uses plain `SetForegroundWindow`, as `switch_to` does today (des-k just received the key press, so Windows allows it). AC-9 covers the stay path; in a follow send, a window that fails to hide is logged and skipped by `switch_to` as on any switch.
 
 **Value sourcing**:
 
@@ -128,7 +128,7 @@ Focus uses plain `SetForegroundWindow`, as `switch_to` does today (pdesk just re
 | log | clash | `shortcuts: <combo> is in both <a> and <b>, <b> turned off` |
 
 **Key invariants**:
-- A send only ever cloaks a window a switch would also hide (`app_windows()`), and only ever uncloaks a window that is in pdesk's own lists.
+- A send only ever cloaks a window a switch would also hide (`app_windows()`), and only ever uncloaks a window that is in des-k's own lists.
 - A window is in at most one hidden list at any time, and never in one while visible.
 - A send changes exactly one screen: the window's own.
 - `state.txt` is saved after every successful send.
@@ -150,7 +150,7 @@ Focus uses plain `SetForegroundWindow`, as `switch_to` does today (pdesk just re
 - Dialog: open Notepad's Save As dialog, send with the stay pair: Notepad goes, and the dialog stays visible (if Windows hides it along with its owner instead, note it in the log and the deferred item). Verifies AC-7.
 - Failure case: click the desktop, press a send shortcut: nothing moves, a `nothing to send` line, no Start menu. Verifies AC-8.
 - Failure case: AC-9 has no reliable manual trigger (a brand new window fails to cloak only for a moment); the review checks the error path changes no list.
-- Restart: send a window with stay, `taskkill /f /im pdesk.exe`, start again, switch to the target workspace: the window is there. Verifies AC-10.
+- Restart: send a window with stay, `taskkill /f /im des-k.exe`, start again, switch to the target workspace: the window is there. Verifies AC-10.
 - Follow guard: send with stay and watch the log for a few sends: any `just sent` line means the guard caught a focus bounce, and the screen never jumped after the window. Verifies AC-11.
 - Config: change `send_next` to `["Win+Alt+N"]`, restart: it sends, Win+Ctrl+Shift+Right does nothing; set `send_next_stay = ["Win+Ctrl+Right"]`: a `turned off` log line, Win+Ctrl+Right still switches, the other send shortcuts still work. `cargo test` covers the default file and the clash rules. Verifies AC-12.
 
@@ -161,7 +161,7 @@ Tracer Bullet: task 1 is a working follow send from key press to saved layout. T
 1. [x] Follow send end to end: the `send_previous` / `send_next` settings fields with their defaults, `DEFAULT_FILE`, `SHORTCUT_KEYS`, `Display`, and the six list clash check; the hook matching them and posting `WM_SEND` (`lParam` 1); the main loop arm; `ws::send` steps 2 to 5 with wrap; the `keep` parameter on `switch_to`. Extend the unit tests: the default file still parses to the defaults, a send list clashing with `previous` or `next` is turned off while the switch lists are kept, a bad send entry resets only its list. Satisfies **AC-1**, **AC-3**, **AC-4**, **AC-7**, **AC-8**, **AC-10**, **AC-12**.
 2. [x] Stay send: the two `_stay` settings fields (with a test that a stay list clashing with a follow list is turned off), the hook posting `lParam` 0, `ws::send` step 6 with the focus move, the cloak failure path, and `State.sent` with the follow guard in `ws::follow`. Satisfies **AC-2**, **AC-9**, **AC-11**, **AC-12**.
 3. [x] Finer rules: the stay repeat (steps 1, 7, 8), `send_held` in `keys.rs`, and the accent dot (`sent` parameter on `indicator::show`, every existing caller passing `None`). Satisfies **AC-2**, **AC-5**, **AC-6**.
-4. Try every critical test scenario on your screens, then run `install.ps1` and confirm `pdesk.exe` is running afterward. Satisfies **AC-1** to **AC-12**.
+4. Try every critical test scenario on your screens, then run `install.ps1` and confirm `des-k.exe` is running afterward. Satisfies **AC-1** to **AC-12**.
 
 ## Consequences
 
@@ -171,7 +171,7 @@ Tracer Bullet: task 1 is a working follow send from key press to saved layout. T
 - The accent dot gives the indicator a second state, which the deferred redesign can build on.
 
 **Negative / tradeoffs**:
-- Four more global shortcuts. Win+Ctrl+Alt+Left/Right is now taken system wide, and an app that uses it loses it while pdesk runs (change it in `settings.toml`).
+- Four more global shortcuts. Win+Ctrl+Alt+Left/Right is now taken system wide, and an app that uses it loses it while des-k runs (change it in `settings.toml`).
 - Sending wraps but switching clamps. You chose this on purpose, so the two shortcut families behave differently at the ends.
 - Owned dialogs and tool palettes stay behind on the old workspace, as on a switch. Sending a window while its Save As dialog is open leaves the dialog floating.
 - Like switching, the shortcuts most likely do nothing while an elevated (admin) window has focus: a normal process's keyboard hook doesn't see keys meant for an admin window. Not designed around. The verify step confirms it.

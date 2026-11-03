@@ -237,7 +237,7 @@ mod tests {
         assert_eq!(pick(&saved, &[0], &fp(EDGE, WIN, "inbox"), 1), Pick::Take(0));
     }
 
-    // A process pdesk could not open has no app; matching on class and title alone is a guess.
+    // A process des-k could not open has no app; matching on class and title alone is a guess.
     #[test]
     fn an_empty_app_never_matches() {
         let saved = [hidden("DISPLAY1", 2, fp("", WIN, "Inbox"))];

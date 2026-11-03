@@ -1,13 +1,13 @@
-// pdesk: per-monitor virtual desktops for Windows.
+// des-k: per-monitor virtual desktops for Windows.
 // Win+Ctrl+Left/Right switches the workspace of the monitor under the mouse.
 // Win+Ctrl+Shift/Alt+Left/Right sends the focused window over, with or without you.
 // Win+Ctrl(+Shift/Alt)+1..9 does the same straight to workspace N.
 // Win+F opens the window finder: search every window on every screen and workspace.
 // Win+Tab opens the workspace overview on every screen: every workspace and its windows.
-// Three and four finger touchpad gestures run what settings.toml maps them to, read by pdesk itself (spec 0011).
-// The Copilot key acts as Right Ctrl. `pdesk --quit` (or Ctrl+C in a console) shows
+// Three and four finger touchpad gestures run what settings.toml maps them to, read by des-k itself (spec 0011).
+// The Copilot key acts as Right Ctrl. `des-k --quit` (or Ctrl+C in a console) shows
 // every hidden window again and exits. Release builds have no console and log to
-// %LOCALAPPDATA%\pdesk\pdesk.log.
+// %LOCALAPPDATA%\des-k\des-k.log.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod cloak;
@@ -60,7 +60,7 @@ unsafe extern "system" fn on_console_close(event: u32) -> BOOL {
     // Runs on a fresh thread: needs its own COM.
     unsafe { let _ = CoInitializeEx(None, COINIT_MULTITHREADED); }
     ws::restore_all();
-    // pdesk starts again at sign in, so a sign out or shutdown must not give Windows its gestures back.
+    // des-k starts again at sign in, so a sign out or shutdown must not give Windows its gestures back.
     if !matches!(event, CTRL_LOGOFF_EVENT | CTRL_SHUTDOWN_EVENT) {
         setup::write_back();
     }
@@ -73,7 +73,7 @@ fn log_to_file_without_console() {
     if !unsafe { GetConsoleWindow() }.is_invalid() {
         return;
     }
-    if let Ok(f) = std::fs::File::create(ws::data_dir().join("pdesk.log")) {
+    if let Ok(f) = std::fs::File::create(ws::data_dir().join("des-k.log")) {
         let h = HANDLE(f.into_raw_handle());
         unsafe {
             let _ = SetStdHandle(STD_OUTPUT_HANDLE, h);
@@ -82,7 +82,7 @@ fn log_to_file_without_console() {
     }
 }
 
-/// Whether pdesk's own token is elevated. Without it, Windows (UIPI) keeps every key away
+/// Whether des-k's own token is elevated. Without it, Windows (UIPI) keeps every key away
 /// from the hook while an admin window has focus (spec 0008).
 fn elevated() -> windows::core::Result<bool> {
     unsafe {
@@ -101,20 +101,20 @@ fn main() -> windows::core::Result<()> {
     if std::env::args().nth(1).as_deref() == Some("--quit") {
         match running {
             Some(h) => unsafe { PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0))? },
-            None => println!("pdesk is not running"),
+            None => println!("des-k is not running"),
         }
         return Ok(());
     }
     if running.is_some() {
         // Two keyboard hooks would switch twice per key press.
-        println!("pdesk is already running");
+        println!("des-k is already running");
         return Ok(());
     }
     log_to_file_without_console(); // only now: a second copy must not truncate the running one's log
     match elevated() {
-        Ok(true) => println!("pdesk runs as admin: its keys work whatever window has focus"),
-        Ok(false) => println!("pdesk runs without admin: its keys stop while an admin window (Task Manager, an admin terminal) has focus"),
-        Err(e) => eprintln!("cannot tell whether pdesk runs as admin: {e}"),
+        Ok(true) => println!("des-k runs as admin: its keys work whatever window has focus"),
+        Ok(false) => println!("des-k runs without admin: its keys stop while an admin window (Task Manager, an admin terminal) has focus"),
+        Err(e) => eprintln!("cannot tell whether des-k runs as admin: {e}"),
     }
 
     // Real pixels on scaled monitors, so the indicator is sharp and correctly placed.
@@ -124,7 +124,7 @@ fn main() -> windows::core::Result<()> {
     settings::load(); // before anything that reads it: ws, keys, the indicator
     let restoring = ws::load();
     // Always on: the finder's recency needs it even with follow_activation off (spec 0007).
-    // Skipping our own process keeps pdesk's own focus changes from triggering a follow.
+    // Skipping our own process keeps des-k's own focus changes from triggering a follow.
     // Never unhooked: the hook dies with the process.
     let hook = unsafe {
         SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, None, Some(on_foreground), 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS)
@@ -148,7 +148,7 @@ fn main() -> windows::core::Result<()> {
     if first_start {
         welcome::show(true);
     }
-    println!("pdesk running: the shortcuts switch the monitor under the mouse ({} workspaces each).", settings::get().workspaces);
+    println!("des-k running: the shortcuts switch the monitor under the mouse ({} workspaces each).", settings::get().workspaces);
 
     // Only now, with every exit path in place, may restore hide anything. The first tick
     // runs at once, so windows already open are matched like later ones (spec 0003).
@@ -212,7 +212,7 @@ fn main() -> windows::core::Result<()> {
                 settings::watch();
                 settings_page::tick();
             }
-            WM_CLOSE => break, // posted by `pdesk --quit` and the tray's Quit
+            WM_CLOSE => break, // posted by `des-k --quit` and the tray's Quit
             // Indicator, tray, finder, overview, welcome screen and settings page messages.
             // TranslateMessage makes the finder's typed characters and IME input; the finder and the
             // overview take their own keys before that, and the welcome screen's go through
@@ -227,6 +227,6 @@ fn main() -> windows::core::Result<()> {
     ws::restore_all();
     setup::write_back(); // Quit and --quit
     tray::remove();
-    println!("pdesk stopped, all windows shown");
+    println!("des-k stopped, all windows shown");
     Ok(())
 }

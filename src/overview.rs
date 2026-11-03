@@ -1,6 +1,6 @@
 // Workspace overview (spec 0010): Win+Tab opens a popup on every screen at once, with a
 // strip of that screen's workspaces along the top and the windows of the workspace it shows
-// spread out below. Windows draws every preview (DWM thumbnails); pdesk paints only the
+// spread out below. Windows draws every preview (DWM thumbnails); des-k paints only the
 // background, the tiles and the text. Lives on the main thread; where a window lives only
 // ever changes through `ws`, and the overview never cloaks anything itself.
 use std::cell::{Cell, RefCell};
@@ -25,9 +25,9 @@ use crate::indicator::ACCENT;
 use crate::settings::{self, Animation, Labels};
 use crate::ws::{self, Miss};
 
-const CLASS: PCWSTR = w!("pdesk-overview");
-const CLOSE_CLASS: PCWSTR = w!("pdesk-overview-close");
-const GHOST_CLASS: PCWSTR = w!("pdesk-overview-ghost");
+const CLASS: PCWSTR = w!("des-k-overview");
+const CLOSE_CLASS: PCWSTR = w!("des-k-overview-close");
+const GHOST_CLASS: PCWSTR = w!("des-k-overview-ghost");
 const TILE_BG: COLORREF = COLORREF(0x0034_3434); // the finder's line grey
 const CLOSING_TIMER: usize = 1;
 const CLOSING_POLL_MS: u32 = 200; // as the finder's
@@ -519,7 +519,7 @@ fn popup(r: RECT, layered: bool) -> Option<HWND> {
             let cursor = LoadCursorW(None, IDC_ARROW).ok()?;
             RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(wndproc), hInstance: inst.into(), lpszClassName: CLASS, hCursor: cursor, ..Default::default() });
             RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(close_wndproc), hInstance: inst.into(), lpszClassName: CLOSE_CLASS, hCursor: cursor, ..Default::default() });
-            // The class brush lives as long as pdesk; it is what a card ghost shows.
+            // The class brush lives as long as des-k; it is what a card ghost shows.
             let card = CreateSolidBrush(TILE_BG);
             RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(ghost_wndproc), hInstance: inst.into(), lpszClassName: GHOST_CLASS, hCursor: cursor, hbrBackground: card, ..Default::default() });
             REGISTERED.set(true);
@@ -528,7 +528,7 @@ fn popup(r: RECT, layered: bool) -> Option<HWND> {
         // takes focus for the keys, so no WS_EX_NOACTIVATE. Layered only to animate, since
         // it shows nothing until its alpha is set.
         let ex = if layered { WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED } else { WS_EX_TOPMOST | WS_EX_TOOLWINDOW };
-        let h = CreateWindowExW(ex, CLASS, w!("pdesk overview"), WS_POPUP, r.left, r.top, r.right - r.left, r.bottom - r.top, None, None, Some(inst.into()), None).ok()?;
+        let h = CreateWindowExW(ex, CLASS, w!("des-k overview"), WS_POPUP, r.left, r.top, r.right - r.left, r.bottom - r.top, None, None, Some(inst.into()), None).ok()?;
         if layered {
             let _ = SetLayeredWindowAttributes(h, COLORREF(0), 0, LWA_ALPHA);
         }
@@ -543,7 +543,7 @@ fn close_button(owner: HWND, scale: f32) -> Option<HWND> {
     unsafe {
         let inst = GetModuleHandleW(None).ok()?;
         let d = (CLOSE_BTN * scale).round() as i32;
-        let h = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, CLOSE_CLASS, w!("pdesk overview close"), WS_POPUP, 0, 0, d, d, Some(owner), None, Some(inst.into()), None).ok()?;
+        let h = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, CLOSE_CLASS, w!("des-k overview close"), WS_POPUP, 0, 0, d, d, Some(owner), None, Some(inst.into()), None).ok()?;
         // Windows owns the region from here on.
         let _ = SetWindowRgn(h, Some(CreateEllipticRgn(0, 0, d + 1, d + 1)), false);
         Some(h)
@@ -557,7 +557,7 @@ fn ghost(src: HWND, scale: f32) -> Option<Ghost> {
     let h = ((w as i64 * (real.bottom - real.top).max(1) as i64) / (real.right - real.left).max(1) as i64) as i32;
     let hwnd = unsafe {
         let inst = GetModuleHandleW(None).ok()?;
-        CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, GHOST_CLASS, w!("pdesk overview drag"), WS_POPUP, 0, 0, w, h, None, None, Some(inst.into()), None).ok()?
+        CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, GHOST_CLASS, w!("des-k overview drag"), WS_POPUP, 0, 0, w, h, None, None, Some(inst.into()), None).ok()?
     };
     let full = RECT { left: 0, top: 0, right: w, bottom: h };
     Some(Ghost { hwnd, size: (w, h), thumb: thumb(hwnd, src, full, full) })

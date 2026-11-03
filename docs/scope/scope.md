@@ -1,6 +1,6 @@
-# Scope: pdesk
+# Scope: des-k
 
-pdesk gives Windows 11 per screen virtual desktops like macOS and GNOME: each screen switches its own workspaces, and the other screens stay put. It is a personal tool for one person on a laptop with external screens.
+des-k gives Windows 11 per screen virtual desktops like macOS and GNOME: each screen switches its own workspaces, and the other screens stay put. It is a personal tool for one person on a laptop with external screens.
 
 **Build approach:** Tracer Bullet (each feature is built completely, from shortcut to window behavior to saved layout, and works before the next one starts).
 **Workflow:** Prototype (nothing runs after `/develop`; you try each feature on your own screens). The project default level of rigor. `/architect` is the recommended first stop for a feature with a real decision, but skippable when you already know the build. Any feature can carry its own tag (e.g. `· Alpha`) to do more or less.
@@ -61,7 +61,7 @@ Saves each screen's workspace and every hidden window, and adopts them on start.
 ## Foundations
 
 ### 1. Coding standards and AGENTS.md · done
-Capture how pdesk is built (raw COM vtable calls, the main thread vs hook thread split, never un-hide windows pdesk did not hide) so later features follow the same rules.
+Capture how des-k is built (raw COM vtable calls, the main thread vs hook thread split, never un-hide windows des-k did not hide) so later features follow the same rules.
 **Done when:** a root `AGENTS.md` describes the modules, the threading rules, and the safety rules the code already follows.
 - [x] Capture conventions: `/audit`
 
@@ -104,7 +104,7 @@ spec [0004](../specs/0004-send-window-to-workspace/index.md) · code in `src/ws.
 ### 5. Send window to screen · done
 Move the focused window to another screen, landing on that screen's current workspace with a sensible size across different scaling.
 **Done when:** a window sent between your 150% laptop screen and an external screen keeps a sensible size and position, and maximized windows stay maximized.
-spec [0006](../specs/0006-send-window-to-screen.md) · no code: Windows' own Win+Shift+Left/Right does it, pdesk keeps that combo free
+spec [0006](../specs/0006-send-window-to-screen.md) · no code: Windows' own Win+Shift+Left/Right does it, des-k keeps that combo free
 - [x] Design it (spec): `/architect send window to screen`
 - [x] Tried on your screens (2026-10-28)
 
@@ -136,12 +136,12 @@ spec [0007](../specs/0007-window-finder/index.md) · code in `src/finder.rs`, `s
 
 ### 7. Alt+Tab per workspace · done
 Alt+Tab only lists windows on the workspaces you can see right now.
-**Done when:** hidden windows do not appear in Alt+Tab, and they come back to Alt+Tab when their workspace is shown again or pdesk quits.
+**Done when:** hidden windows do not appear in Alt+Tab, and they come back to Alt+Tab when their workspace is shown again or des-k quits.
 spec [0009](../specs/0009-alt-tab-per-workspace.md) · no code: explorer already leaves cloaked windows out of Alt+Tab and Task View; hidden admin windows still show, and picking one follows to its workspace
 - [x] Design it (spec): `/architect alt tab per workspace`
 
 ### 8. Tray icon · done
-An icon near the clock showing pdesk is running, with Quit and Open log (and Open settings once the settings file exists).
+An icon near the clock showing des-k is running, with Quit and Open log (and Open settings once the settings file exists).
 **Done when:** the icon appears at start, Quit shows every window and exits, and the icon survives an explorer restart.
 code in `src/tray.rs`, `src/main.rs`
 - [x] Build it: `/develop tray icon`
@@ -149,8 +149,8 @@ code in `src/tray.rs`, `src/main.rs`
   - [x] Still to try: Quit shows every window and exits, icon comes back after an explorer restart (2026-10-28, as admin)
 
 ### 10. Restore layout after reboot · in-progress
-After a reboot or a sign out every window gets a new handle; pdesk matches reopened windows to their saved fingerprint (program, class, title) and puts them back on their workspaces for the first few minutes after you sign in.
-**Done when:** after a reboot, windows that reopen land back on their saved workspaces, a window pdesk is unsure about stays visible, and the log says what was restored.
+After a reboot or a sign out every window gets a new handle; des-k matches reopened windows to their saved fingerprint (program, class, title) and puts them back on their workspaces for the first few minutes after you sign in.
+**Done when:** after a reboot, windows that reopen land back on their saved workspaces, a window des-k is unsure about stays visible, and the log says what was restored.
 spec [0003](../specs/0003-restore-layout-after-reboot/index.md) · code in `src/restore.rs`, `src/ws.rs`, `src/settings.rs`
 - [x] Design it (spec): `/architect restore layout after reboot`
 - [ ] Build it: `/develop restore layout after reboot`
@@ -159,12 +159,12 @@ spec [0003](../specs/0003-restore-layout-after-reboot/index.md) · code in `src/
   - [ ] Tried on your screens after a reboot, then installed (all ACs)
 
 ### 12. Keys work over admin windows · in-progress · from spec 0008
-pdesk runs as admin from a logon task, so an admin window with focus (Task Manager, an admin terminal) no longer stops its shortcuts, and Win+Ctrl+Right never falls through to Windows' own desktops.
-**Done when:** with Task Manager focused, Win+Ctrl+Right switches pdesk's workspace, pdesk starts as admin at login with no prompt, and the exe lives in Program Files.
-spec [0008](../specs/0008-run-pdesk-as-admin/index.md) · code in `install.ps1`, `src/main.rs`, `src/tray.rs`, `src/indicator.rs`, `src/settings.rs`
+des-k runs as admin from a logon task, so an admin window with focus (Task Manager, an admin terminal) no longer stops its shortcuts, and Win+Ctrl+Right never falls through to Windows' own desktops.
+**Done when:** with Task Manager focused, Win+Ctrl+Right switches des-k's workspace, des-k starts as admin at login with no prompt, and the exe lives in Program Files.
+spec [0008](../specs/0008-run-des-k-as-admin/index.md) · code in `install.ps1`, `src/main.rs`, `src/tray.rs`, `src/indicator.rs`, `src/settings.rs`
 - [x] Design it (spec): `/architect admin windows`
 - [ ] Build it: `/develop keys work over admin windows`
-  - [x] Admin pdesk by hand: start log line, message filters, settings in the data folder, tried from an admin terminal (AC-1, AC-2, AC-5, AC-6, AC-7, AC-9)
+  - [x] Admin des-k by hand: start log line, message filters, settings in the data folder, tried from an admin terminal (AC-1, AC-2, AC-5, AC-6, AC-7, AC-9)
   - [x] Install as admin: Program Files, logon task, one UAC prompt, cleanup, running check (AC-3, AC-4, AC-5, AC-10)
   - [ ] Editor opens as you, then tried on your screens after a sign out (AC-8, all ACs)
 
@@ -186,21 +186,21 @@ spec [0010](../specs/0010-workspace-overview/index.md) · code in `src/overview.
 ## Slice 6: Touchpad
 
 ### 13. Touchpad gestures · in-progress
-pdesk reads three and four finger swipes and taps itself through Raw Input and runs the action your `settings.toml` map names, over every window (the Windows shortcut route dies over Task Manager). A welcome screen turns Windows' own gestures off; Quit gives them back.
-**Done when:** with Task Manager focused, a four finger swipe switches pdesk's workspace, every gesture in the map runs its action, and Quit gives Windows its gestures back.
+des-k reads three and four finger swipes and taps itself through Raw Input and runs the action your `settings.toml` map names, over every window (the Windows shortcut route dies over Task Manager). A welcome screen turns Windows' own gestures off; Quit gives them back.
+**Done when:** with Task Manager focused, a four finger swipe switches des-k's workspace, every gesture in the map runs its action, and Quit gives Windows its gestures back.
 spec [0011](../specs/0011-touchpad-gestures/index.md) · code in `src/touchpad.rs`, `src/gestures.rs`, `src/settings.rs`, `src/setup.rs`, `src/main.rs`, `src/tray.rs`, `src/welcome.rs`
 - [x] Design it (spec): `/architect native touchpad gestures`
 - [ ] Build it: `/develop touchpad gestures`
   - [x] Check step on your touchpad, then the thin thread: four finger left and right over Task Manager (AC-1, AC-11, AC-13)
   - [x] The map: `[touchpad]`, `[[gesture]]` rules, twice, every action (AC-2 to AC-7)
   - [x] Setup logic: registry gate, save, write back on Quit and same sign in rewrite, Touchpad setup entry (moved from the tray to the settings page, 2026-11-02) (AC-6, AC-8, AC-9, AC-10)
-  - [x] Welcome screen to the approved H2 design: Q1 check first, then the window, four rows, give back results; plus the 2026-11-01 change (what pdesk is, the map in each row, Use these gestures or Choose my own) (AC-8, AC-9, AC-11)
+  - [x] Welcome screen to the approved H2 design: Q1 check first, then the window, four rows, give back results; plus the 2026-11-01 change (what des-k is, the map in each row, Use these gestures or Choose my own) (AC-8, AC-9, AC-11)
   - [ ] Hot plug, README, installed and tried on your screens (AC-12, all ACs)
 
 ## Slice 7: Settings page
 
 ### 14. Settings page · in-progress
-A pdesk window where you change every setting by clicking, instead of editing `settings.toml` by hand: workspaces, shortcuts, the indicator, restore, the overview and touchpad gestures. It opens from the tray and from the welcome screen's "Choose my own".
+A des-k window where you change every setting by clicking, instead of editing `settings.toml` by hand: workspaces, shortcuts, the indicator, restore, the overview and touchpad gestures. It opens from the tray and from the welcome screen's "Choose my own".
 **Done when:** every setting in `settings.toml` can be changed from the page, the tray opens it, "Choose my own" opens it at the gestures, and the page says when each change takes effect.
 spec [0012](../specs/0012-settings-page/index.md) · code in `src/settings_page.rs`, `src/settings.rs`, `src/main.rs`, `src/tray.rs`, `src/keys.rs`, `src/welcome.rs`
 - [x] Design it (spec): `/architect settings page`
@@ -215,9 +215,9 @@ spec [0012](../specs/0012-settings-page/index.md) · code in `src/settings_page.
 ## Slice 8: Distribution
 
 ### 15. Setup exe installer · in-progress · from spec 0013
-pdesk installs from a double clicked `pdesk-vX.Y.Z-setup.exe` instead of a PowerShell command, and uninstalls from Settings, Apps, giving every hidden window back first.
+des-k installs from a double clicked `des-k-vX.Y.Z-setup.exe` instead of a PowerShell command, and uninstalls from Settings, Apps, giving every hidden window back first.
 **Done when:** the setup installs, updates keeping the layout, and uninstalls on your machine, and a tagged release carries the setup exe and its checksum.
-spec [0013](../specs/0013-setup-exe-installer.md) · code in `pdesk.iss`, `.github/workflows/build.yml`, `README.md`
+spec [0013](../specs/0013-setup-exe-installer.md) · code in `des-k.iss`, `.github/workflows/build.yml`, `README.md`
 - [x] Design it (spec): `/architect setup exe installer`
 - [ ] Build it: `/develop setup exe installer`
   - [x] Installer, uninstaller, release job and README built (AC-1 to AC-9)
@@ -237,10 +237,10 @@ Out of scope for the current build pass, kept so the plan stays honest.
 - **Per app follow exclusions**: a `settings.toml` list of apps that never trigger follow activation, only if one keeps stealing focus (from spec 0002) · needs a decision
 - **Dimmed wallpaper behind the overview**: draw your wallpaper instead of solid dark (from spec 0010) · needs a decision
 - **Mouse wheel in the window finder**: scroll the finder's list with the wheel, only if the keys feel slow with many windows (from spec 0007) · needs a decision
-- **Owned dialogs on hidden workspaces**: pdesk never hides a hidden window's dialogs, so they float over the wrong workspace; check when building feature 4 (from spec 0002) · needs a decision
+- **Owned dialogs on hidden workspaces**: des-k never hides a hidden window's dialogs, so they float over the wrong workspace; check when building feature 4 (from spec 0002) · needs a decision
 - **Relaunch apps after a reboot**: start apps that don't reopen their own windows, so restore has something to match (from spec 0003) · needs a decision
 - **Stable screen names**: `DISPLAY1` and `DISPLAY2` can swap after a reboot or a dock change; key saved screens by something stable, only if they get mixed up (from spec 0003) · needs a decision
-- **Code signing**: sign the setup exe and `pdesk.exe` so SmartScreen stops warning (SignPath Foundation, Azure Trusted Signing, Certum open source, plus a winget manifest), put off for now (from spec 0013) · needs a decision
+- **Code signing**: sign the setup exe and `des-k.exe` so SmartScreen stops warning (SignPath Foundation, Azure Trusted Signing, Certum open source, plus a winget manifest), put off for now (from spec 0013) · needs a decision
 
 ## Legend
 

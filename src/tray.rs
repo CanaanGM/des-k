@@ -1,4 +1,4 @@
-// Tray icon near the clock: shows pdesk is running, with Settings, Open log and Quit.
+// Tray icon near the clock: shows des-k is running, with Settings, Open log and Quit.
 // Lives on the main thread (its messages come through main's loop) and adds itself again
 // whenever explorer restarts.
 use std::cell::Cell;
@@ -22,7 +22,7 @@ use windows::Win32::{
 };
 use windows::core::{BOOL, BSTR, HSTRING, Interface, PCWSTR, w};
 
-const CLASS: PCWSTR = w!("pdesk-tray");
+const CLASS: PCWSTR = w!("des-k-tray");
 /// Window message (not a thread message): the shell's callback for clicks on the icon.
 const WM_TRAY: u32 = WM_APP + 3;
 const ID_SETTINGS: usize = 1;
@@ -53,16 +53,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
 }
 
 /// A hidden top level window, since TaskbarCreated never reaches message only windows.
-/// Tool window, so pdesk never manages it.
+/// Tool window, so des-k never manages it.
 pub fn init() {
     unsafe {
         let Ok(inst) = GetModuleHandleW(None) else { return };
         TASKBAR_CREATED.set(RegisterWindowMessageW(w!("TaskbarCreated")));
         let wc = WNDCLASSW { lpfnWndProc: Some(wndproc), hInstance: inst.into(), lpszClassName: CLASS, ..Default::default() };
         RegisterClassW(&wc);
-        match CreateWindowExW(WS_EX_TOOLWINDOW, CLASS, w!("pdesk"), WS_POPUP, 0, 0, 0, 0, None, None, Some(inst.into()), None) {
+        match CreateWindowExW(WS_EX_TOOLWINDOW, CLASS, w!("des-k"), WS_POPUP, 0, 0, 0, 0, None, None, Some(inst.into()), None) {
             Ok(h) => {
-                // Explorer runs without admin; an admin pdesk would never hear its clicks or
+                // Explorer runs without admin; an admin des-k would never hear its clicks or
                 // its restart otherwise (spec 0008). Only these two, nothing else.
                 for m in [WM_TRAY, TASKBAR_CREATED.get()] {
                     if let Err(e) = ChangeWindowMessageFilterEx(h, m, MSGFLT_ALLOW, None) {
@@ -98,7 +98,7 @@ fn add(hwnd: HWND) {
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_TRAY;
     nid.hIcon = ICON.get().unwrap_or_default();
-    for (d, s) in nid.szTip.iter_mut().zip("pdesk".encode_utf16()) {
+    for (d, s) in nid.szTip.iter_mut().zip("des-k".encode_utf16()) {
         *d = s;
     }
     unsafe {
@@ -109,11 +109,18 @@ fn add(hwnd: HWND) {
     }
 }
 
-/// Four rounded squares, dark with a light rim, so the icon reads on light and dark taskbars.
+/// Four rounded squares in one blend, purple at the bottom left to red at the top right.
+/// Both colors are strong enough to read on light and dark taskbars.
 fn draw_icon() -> Option<HICON> {
-    const FILL: u32 = 0xFF20_2020; // 0xAARRGGBB
-    const RIM: u32 = 0xFFE0_E0E0;
+    const PURPLE: [u32; 3] = [0x8E, 0x3F, 0xD9];
+    const RED: [u32; 3] = [0xE5, 0x39, 0x35];
     let s = unsafe { GetSystemMetrics(SM_CXSMICON) }.max(16);
+    let span = (2 * (s - 1)) as u32;
+    let blend = |x: i32, y: i32| {
+        let t = (x + s - 1 - y) as u32; // 0 at the bottom left, span at the top right
+        let c = |i: usize| (PURPLE[i] * (span - t) + RED[i] * t) / span;
+        0xFF00_0000 | c(0) << 16 | c(1) << 8 | c(2) // 0xAARRGGBB
+    };
     let gap = (s / 8).max(2);
     let q = (s - gap) / 2;
     let off = (s - 2 * q - gap) / 2;
@@ -126,7 +133,7 @@ fn draw_icon() -> Option<HICON> {
                     if ex && ey {
                         continue; // corner pixel: rounds the square
                     }
-                    px[((oy + dy) * s + ox + dx) as usize] = if ex || ey { RIM } else { FILL };
+                    px[((oy + dy) * s + ox + dx) as usize] = blend(ox + dx, oy + dy);
                 }
             }
         }
@@ -145,7 +152,7 @@ fn draw_icon() -> Option<HICON> {
 }
 
 fn menu(hwnd: HWND) {
-    let log = crate::ws::data_dir().join("pdesk.log");
+    let log = crate::ws::data_dir().join("des-k.log");
     let flag = |ok: bool| if ok { MF_STRING } else { MF_GRAYED };
     unsafe {
         let Ok(m) = CreatePopupMenu() else { return };
@@ -163,19 +170,19 @@ fn menu(hwnd: HWND) {
         match cmd.0 as usize {
             ID_SETTINGS => crate::settings_page::open(None),
             ID_LOG => open(&log),
-            // Main's loop breaks on WM_CLOSE, the same path as `pdesk --quit`.
+            // Main's loop breaks on WM_CLOSE, the same path as `des-k --quit`.
             ID_QUIT => { let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)); }
             _ => {}
         }
     }
 }
 
-/// Opened by explorer, so the editor runs as you even when pdesk runs as admin (spec 0008).
-/// Any failure falls back to opening it from pdesk, with pdesk's rights. Also takes a
+/// Opened by explorer, so the editor runs as you even when des-k runs as admin (spec 0008).
+/// Any failure falls back to opening it from des-k, with des-k's rights. Also takes a
 /// settings page like `ms-settings:devices-touchpad`.
 pub fn open(path: &Path) {
     if let Err(e) = unsafe { open_by_explorer(path) } {
-        eprintln!("tray: explorer did not open {} ({e}), opening it from pdesk", path.display());
+        eprintln!("tray: explorer did not open {} ({e}), opening it from des-k", path.display());
         open_here(path);
     }
 }

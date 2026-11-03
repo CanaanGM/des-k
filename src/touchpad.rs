@@ -21,7 +21,7 @@ use crate::settings::{self, Motion};
 pub const WM_GESTURE: u32 = WM_APP + 8;
 /// Thread message to the main thread: a touchpad came or went, so an open welcome screen refreshes.
 pub const WM_TOUCHPADS_CHANGED: u32 = WM_APP + 9;
-const CLASS: PCWSTR = w!("pdesk-touchpad");
+const CLASS: PCWSTR = w!("des-k-touchpad");
 // A tap: every finger up this soon after the first one landed, having moved no more than this.
 const TAP_TIME: Duration = Duration::from_millis(250);
 const TAP_DRIFT_MM: f64 = 3.0;
@@ -446,7 +446,7 @@ pub fn drop_pending() {
 }
 
 /// Starts the reader thread, once. A failure here costs the gestures only, logged, never
-/// pdesk: a panic on this thread would show every hidden window.
+/// des-k: a panic on this thread would show every hidden window.
 pub fn start() {
     if STARTED.swap(true, Ordering::Relaxed) {
         return;

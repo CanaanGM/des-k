@@ -101,7 +101,13 @@ fn state() -> MutexGuard<'static, State> {
 }
 
 pub fn data_dir() -> std::path::PathBuf {
-    let dir = std::path::PathBuf::from(std::env::var("LOCALAPPDATA").unwrap_or(".".into())).join("pdesk");
+    let base = std::path::PathBuf::from(std::env::var("LOCALAPPDATA").unwrap_or(".".into()));
+    let dir = base.join("des-k");
+    // Before the rename it was pdesk: carry its settings, layout and saved gestures over once.
+    let old = base.join("pdesk");
+    if !dir.exists() && old.is_dir() && let Err(e) = std::fs::rename(&old, &dir) {
+        eprintln!("could not move {} to {}: {e}", old.display(), dir.display());
+    }
     let _ = std::fs::create_dir_all(&dir);
     dir
 }
@@ -282,7 +288,7 @@ pub fn jump(index: usize) {
 /// Jump a hidden window's screen to its workspace when the window comes to the front,
 /// so keyboard focus never sits in a window you cannot see (spec 0002).
 pub fn follow(hwnd: HWND) {
-    // pdesk's own switch may have moved focus on since the event fired.
+    // des-k's own switch may have moved focus on since the event fired.
     if unsafe { GetForegroundWindow() } != hwnd {
         return;
     }
@@ -506,7 +512,7 @@ pub struct Place {
     pub on_screen: bool,
 }
 
-/// Every listed window on screen (front to back), then every live window pdesk hid, by
+/// Every listed window on screen (front to back), then every live window des-k hid, by
 /// screen, workspace and saved order.
 pub fn windows() -> Vec<Place> {
     windows_in(&mut state())
@@ -1074,7 +1080,7 @@ pub fn load() -> bool {
     let count = st.workspaces;
     let (mut saved_logon, mut adopt, mut hidden, mut visible) = (None, Vec::new(), Vec::new(), Vec::new());
     for line in text.lines() {
-        // The fingerprint follows the first tab; a W line without one is from an older pdesk.
+        // The fingerprint follows the first tab; a W line without one is from an older des-k.
         let (head, fp) = match line.split_once('\t') {
             Some((head, tail)) => match tail.splitn(3, '\t').collect::<Vec<_>>().as_slice() {
                 [app, class, title] => (head, Some(Fp { app: app.to_string(), class: class.to_string(), title: title.to_string() })),

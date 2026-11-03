@@ -4,11 +4,11 @@ _Decision record for [spec 0001](index.md): why this design was chosen._
 
 ## Context
 
-Every tunable in pdesk is a constant in the code: `WORKSPACES = 4` (`src/ws.rs`), the Win+Ctrl+Left/Right match (`src/keys.rs`), `HOLD_MS` and the fade step (`src/indicator.rs`), and the Copilot remap is always on. Changing any of them means a rebuild and a run of `install.ps1`.
+Every tunable in des-k is a constant in the code: `WORKSPACES = 4` (`src/ws.rs`), the Win+Ctrl+Left/Right match (`src/keys.rs`), `HOLD_MS` and the fade step (`src/indicator.rs`), and the Copilot remap is always on. Changing any of them means a rebuild and a run of `install.ps1`.
 
 Forces:
 - The file is edited by hand by one person, so comments and readable errors matter more than machine friendliness.
-- The release build has no console. The only feedback channel is `pdesk.log`, so every problem has to land there with enough detail to fix it.
+- The release build has no console. The only feedback channel is `des-k.log`, so every problem has to land there with enough detail to fix it.
 - The keyboard hook runs on its own thread and must stay fast (AGENTS.md threading rule), so it can only read settings, never load them.
 - `ws.rs` stores hidden windows in a fixed size array `[Vec<isize>; WORKSPACES]`. `state.txt` from an earlier run can hold workspace numbers that a smaller count no longer has, and today's loader skips those lines, which would leave the windows cloaked (hidden) forever.
 - The touchpad swipe is a Windows Settings gesture that sends Win+Ctrl+Left/Right. Changing the shortcut without keeping that combo breaks the swipe.
@@ -27,7 +27,7 @@ Parse the text with the `toml` crate into a generic table, then read each known 
 
 ### Option 3: Hand parsed `key = value` lines, like `state.txt`
 - **Pros**: no new crates.
-- **Cons**: shortcut lists, quoting and comments become a grammar pdesk invents, documents and debugs itself; errors have no line numbers unless written by hand.
+- **Cons**: shortcut lists, quoting and comments become a grammar des-k invents, documents and debugs itself; errors have no line numbers unless written by hand.
 
 ### Option 4: Keep the constants, rebuild to change
 - **Pros**: zero work.
@@ -35,7 +35,7 @@ Parse the text with the `toml` crate into a generic table, then read each known 
 
 ## Rationale
 
-The file is hand edited and its only feedback channel is a log you read after the fact. So the costly failure is a small typo silently undoing all your other changes. Option 2 does exactly that, which is why the rust-serde skill's advice (fail the whole read, deny unknown keys) is deliberately not followed here: it fits machine input, and this is a human's file (AGENTS.md: project rules win over skills). Option 3 saves one dependency but makes pdesk own a config grammar, which is a worse trade than adding the most common config crate in Rust. You picked TOML and the next to exe location; for the installed copy that is `%LOCALAPPDATA%\pdesk\`, the same folder as the log and layout. Update 2026-10-28: spec 0008 moved the exe to Program Files, so the file now always lives in `%LOCALAPPDATA%\pdesk`, for the installed copy and `cargo run` alike.
+The file is hand edited and its only feedback channel is a log you read after the fact. So the costly failure is a small typo silently undoing all your other changes. Option 2 does exactly that, which is why the rust-serde skill's advice (fail the whole read, deny unknown keys) is deliberately not followed here: it fits machine input, and this is a human's file (AGENTS.md: project rules win over skills). Option 3 saves one dependency but makes des-k own a config grammar, which is a worse trade than adding the most common config crate in Rust. You picked TOML and the next to exe location; for the installed copy that is `%LOCALAPPDATA%\des-k\`, the same folder as the log and layout. Update 2026-10-28: spec 0008 moved the exe to Program Files, so the file now always lives in `%LOCALAPPDATA%\des-k`, for the installed copy and `cargo run` alike.
 
 Recommended calls made in this spec (runner up in brackets):
 - Hard coded defaults in `impl Default for Settings`, with the default file text written from the same values and a unit test proving they agree [derive defaults by parsing the default file text, which makes the fallback circular].

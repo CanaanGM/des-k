@@ -15,10 +15,10 @@ _Steps derived from spec 0005 acceptance criteria. `/check verify` runs these; `
 - [ ] Focus a window on screen A, mouse on screen B: Win+Ctrl+3 changes only A; Win+3 changes only B; the pointer never moves → AC-7
 - [ ] Send a dialog with Win+Ctrl+3 → its top owner moves → AC-7
 - [ ] Focus the desktop, press Win+Ctrl+3 → nothing changes, a log line says why → AC-7
-- [ ] After a numbered send, hard kill pdesk and start it → `state.txt` kept the window on its new workspace → AC-7
+- [ ] After a numbered send, hard kill des-k and start it → `state.txt` kept the window on its new workspace → AC-7
 - [ ] Hold Win+Shift+3 for two seconds, letting go of Shift first → one send, no jump → AC-8
 - [ ] Hold Win+3 → the screen stays on 3, repeats only show the indicator again → AC-8
-- [ ] External keyboard, Num Lock on: Win+Numpad 2 jumps, Win+Ctrl+Numpad 2 sends, Win+Shift+Numpad 2 does nothing in pdesk → AC-9
+- [ ] External keyboard, Num Lock on: Win+Numpad 2 jumps, Win+Ctrl+Numpad 2 sends, Win+Shift+Numpad 2 does nothing in des-k → AC-9
 - [ ] `jump = ""`, restart → Win+3 reaches the taskbar again (opens pinned app 3) → AC-10
 - [ ] `send_to = "Shift"`, restart → a log line, Win+Shift+3 still sends and follows (default) → AC-10
 - [ ] `next = ["Win+2"]`, restart → Win+2 switches next, a `skips digit 2` log line, Win+3 still jumps → AC-10
@@ -39,7 +39,7 @@ _Steps derived from spec 0005 acceptance criteria. `/check verify` runs these; `
 
 ## Commands
 - [ ] `cargo test` → 24 passed (default file is the defaults, `""` off, bad values, both clash rules, list on a digit) → AC-10
-- [ ] `powershell -File install.ps1`, then `Get-Process pdesk` → pdesk.exe is running → AC-1 to AC-10
+- [ ] `powershell -File install.ps1`, then `Get-Process des-k` → des-k.exe is running → AC-1 to AC-10
 
 ## Acceptance-criteria coverage
 - AC-1 jump, index · AC-2 same workspace · AC-3 too high, workspace count · AC-4 send and follow · AC-5 send and stay, already there · AC-6 quick fix · AC-7 screens, dialogs, nothing focused, `state.txt` · AC-8 hold · AC-9 numpad · AC-10 settings, defaults, `cargo test`

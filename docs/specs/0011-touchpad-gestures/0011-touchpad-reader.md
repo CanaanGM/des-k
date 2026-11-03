@@ -7,13 +7,13 @@ A new thread asks Windows for the raw reports of every precision touchpad (the t
 ## Design
 
 **Thread** (new file `src/touchpad.rs`, owns the reader and the recognizer):
-- `touchpad::spawn(main_thread)` is called in `main` next to `keys::spawn`, after `settings::load()`. It starts a thread that creates a message only window (`HWND_MESSAGE` parent, class `pdesk-touchpad`) and calls `RegisterRawInputDevices` with usage page `0x0D` (digitizer), usage `0x05` (touchpad), flags `RIDEV_INPUTSINK | RIDEV_DEVNOTIFY`, target that window. It then runs its own `GetMessageW` loop.
+- `touchpad::spawn(main_thread)` is called in `main` next to `keys::spawn`, after `settings::load()`. It starts a thread that creates a message only window (`HWND_MESSAGE` parent, class `des-k-touchpad`) and calls `RegisterRawInputDevices` with usage page `0x0D` (digitizer), usage `0x05` (touchpad), flags `RIDEV_INPUTSINK | RIDEV_DEVNOTIFY`, target that window. It then runs its own `GetMessageW` loop.
 - It adds no message filter. `WM_INPUT` and `WM_INPUT_DEVICE_CHANGE` come from the system.
 - If `[touchpad] enabled` is false at start, the thread is not started (log line).
 - A recognized gesture is matched against the map only while `windows_off()` (0011-first-run-setup) is true, read from the registry right then: 13 small reads once per gesture, never per report, before any twice wait. Otherwise it logs `gesture 4 left → skipped, Windows' FourFingerLeft is on` and posts nothing.
 - After handling `WM_INPUT`, always call `DefWindowProcW`, which frees the input data (with `RIDEV_INPUTSINK` skipping it leaks).
 - On `WM_INPUT_DEVICE_CHANGE`, besides refreshing the device cache, post `WM_TOUCHPADS_CHANGED` (`WM_APP + 9`) to the main thread so an open welcome screen refreshes.
-- If a touchpad driver sends no raw reports at all (found by the check step or seen on some machine), pdesk logs it once after the first minute of touchpad use and you stay on the Windows key route ("Give gestures back").
+- If a touchpad driver sends no raw reports at all (found by the check step or seen on some machine), des-k logs it once after the first minute of touchpad use and you stay on the Windows key route ("Give gestures back").
 
 **Reading a report**:
 - On `WM_INPUT`: `GetRawInputData(RID_INPUT)` into a buffer reused by the thread; the `RAWHID` part holds `dwCount` reports of `dwSizeHid` bytes each.
@@ -53,4 +53,4 @@ A new thread asks Windows for the raw reports of every precision touchpad (the t
 
 ## Short rationale
 
-Raw Input is the documented way to read a precision touchpad's HID reports (HID: the standard format USB and Bluetooth input devices report in), and `HidP_*` parses them from the device's own description, so no touchpad specific byte layouts are hard coded. An elevated pdesk gets these reports whatever window has focus (the check step confirms it). Its own thread matches the keyboard hook's rule: frames arrive about 125 times a second and must not queue behind a slow switch on the main thread. Firing a swipe at the distance rather than at lift makes it feel as quick as Windows'. Runner up: reading on the main thread, rejected because a busy main thread would make swipes late.
+Raw Input is the documented way to read a precision touchpad's HID reports (HID: the standard format USB and Bluetooth input devices report in), and `HidP_*` parses them from the device's own description, so no touchpad specific byte layouts are hard coded. An elevated des-k gets these reports whatever window has focus (the check step confirms it). Its own thread matches the keyboard hook's rule: frames arrive about 125 times a second and must not queue behind a slow switch on the main thread. Firing a swipe at the distance rather than at lift makes it feel as quick as Windows'. Runner up: reading on the main thread, rejected because a busy main thread would make swipes late.

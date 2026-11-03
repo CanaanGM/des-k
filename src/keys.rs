@@ -116,7 +116,7 @@ fn route(vk: u16, up: bool) -> bool {
     shortcut(vk, up)
 }
 
-/// One key event; `extra` is MAGIC for pdesk's own input, 0 for a combo the hook should see.
+/// One key event; `extra` is MAGIC for des-k's own input, 0 for a combo the hook should see.
 fn key(vk: u16, up: bool, extra: usize) -> INPUT {
     let mut flags = if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) };
     // Without it the arrows and friends arrive as their numpad twins.
@@ -137,13 +137,13 @@ fn send(keys: &[(u16, bool)]) {
     unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
 }
 
-/// Types VK_MASK, a key no app uses. Windows then counts pdesk as the source of the last
+/// Types VK_MASK, a key no app uses. Windows then counts des-k as the source of the last
 /// input and lets it move focus, which after a touchpad gesture it does not (spec 0011).
 pub fn mask() {
     send(&[(VK_MASK, false), (VK_MASK, true)]);
 }
 
-/// Presses `vks` in order and lets them go in reverse, as pdesk's own input, so it goes
+/// Presses `vks` in order and lets them go in reverse, as des-k's own input, so it goes
 /// straight to Windows: Win+S, the media keys (spec 0011).
 pub fn tap(vks: &[u16]) {
     let keys: Vec<(u16, bool)> = vks.iter().map(|&vk| (vk, false)).chain(vks.iter().rev().map(|&vk| (vk, true))).collect();
@@ -151,7 +151,7 @@ pub fn tap(vks: &[u16]) {
 }
 
 /// Types a combo as if you pressed it: untagged, so this hook sees it and a combo that is a
-/// pdesk shortcut runs that shortcut (spec 0011). Win or Alt ones get VK_MASK before the
+/// des-k shortcut runs that shortcut (spec 0011). Win or Alt ones get VK_MASK before the
 /// modifiers go up, as the hook does, so neither Start nor a menu bar opens.
 pub fn combo(c: Combo) {
     let mods: Vec<u16> = [(WIN, VK_LWIN), (CTRL, VK_LCONTROL), (ALT, VK_LMENU), (SHIFT, VK_LSHIFT)]

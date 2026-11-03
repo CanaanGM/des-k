@@ -5,14 +5,14 @@ _Steps derived from spec 0012 acceptance criteria. You run the on screen steps; 
 - [ ] Tray › Settings → the page opens on the screen under the mouse; Settings again brings it to the front; the tray has no "Open settings" → AC-1
 - [ ] Every setting from settings.toml is on the page; each side list name jumps to its section → AC-2
 - [ ] Turn the dots off → the file changed on that one line, comments intact; the next switch shows no dots, no restart → AC-3, AC-4
-- [ ] Restore says "applies from pdesk's next start", the other sections "applies now" → AC-4
+- [ ] Restore says "applies from des-k's next start", the other sections "applies now" → AC-4
 - [ ] Put a window on workspace 4, set `workspaces = 3` by hand in the file → within 2 s it's on workspace 3; the page shows 3; the log says `file` → AC-5, AC-6, AC-15
 - [ ] Record a shortcut for next: Win+Ctrl+N → nothing fires and Start doesn't open while recording; the chip shows it; Esc cancels a recording → AC-7, AC-8
 - [ ] Record Win+F on next → the prompt names Finder; Move it here → Finder has no chip; Cancel → nothing changes → AC-9
 - [ ] Step hold_ms up and down with − + and arrow keys; it stops at 0 and 5000; "default: 550" and reset show when changed → AC-10, AC-11
 - [ ] Change the 4 finger tap to Key combo… Ctrl+Shift+T, add a twice action to 3 finger tap → both work on the touchpad; the file has the full gesture list → AC-12
 - [ ] Welcome › Choose my own → the page opens at Touchpad; Touchpad setup on the page opens the welcome screen → AC-13
-- [ ] Put `hold_ms = "x"` in the file → the page shows 550 with the problem note; save a broken file → pdesk keeps working, the page is read only with the parser line → AC-14
+- [ ] Put `hold_ms = "x"` in the file → the page shows 550 with the problem note; save a broken file → des-k keeps working, the page is read only with the parser line → AC-14
 - [ ] Keyboard only through the page: Tab between the side list and the settings, Up and Down row to row, Left and Right change values, Space flips a switch; Esc closes; switch light, dark and contrast themes; drag to another scale → AC-16
 
 ## Commands
@@ -42,8 +42,8 @@ _Steps derived from spec 0012 acceptance criteria. You run the on screen steps; 
 - [ ] With 6 workspaces, hover or focus Reset → the note says Reset removes workspaces 5 to 6 and what moves → AC-6, AC-11
 - [ ] Set `workspaces = 3` in settings.toml by hand with the page open → a banner "settings.toml changed at HH:MM and is in use:" lists workspaces 4 → 3 and the move lines; Dismiss hides it; a change made on the page shows no banner → AC-5, AC-20
 - [ ] Indicator › Play → the real dots show on the page's screen with your hold and fade; with the dots off, Play is greyed and does nothing → AC-19
-- [ ] Touchpad opens with a status: all of Windows' gestures Nothing and reading on → "pdesk reads your three and four finger gestures"; turn on a 3 finger swipe in Windows' Settings → within about 1 s "pdesk is waiting: Windows' own 3-finger swipes are still on" → AC-20
-- [ ] Turn Read touchpad gestures off → swipes do nothing and the status says reading is off; turn it on → swipes work again, no restart (also when pdesk started with it off) → AC-4, AC-20
+- [ ] Touchpad opens with a status: all of Windows' gestures Nothing and reading on → "des-k reads your three and four finger gestures"; turn on a 3 finger swipe in Windows' Settings → within about 1 s "des-k is waiting: Windows' own 3-finger swipes are still on" → AC-20
+- [ ] Turn Read touchpad gestures off → swipes do nothing and the status says reading is off; turn it on → swipes work again, no restart (also when des-k started with it off) → AC-4, AC-20
 - [ ] The other touchpad states: reading off and Windows' gestures Nothing → "No three or four finger gesture does anything now"; reading off and a Windows gesture back on → "Reading is off here, and Windows' own gestures are on". (No touchpad and "can't read a setting" are hard to reach on the laptop; skip them unless you have a way.) → AC-20
 - [ ] Shortcuts shows three scenes (Switch, Send and go, Send and stay) with your combos under them; change one → its scene shows the new combo → AC-21
 - [ ] Overview's picture: pick Always, On hover, None → the names in the picture follow; the line under it says at once or fades in → AC-21

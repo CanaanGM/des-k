@@ -1,7 +1,7 @@
 # Verify: Send window to workspace · spec 0004 · updated 2026-10-27
 _Steps derived from spec 0004 acceptance criteria. `/check verify` runs these; `/test` locks the durable ones._
 
-Before you start: stop the installed copy (`& "$env:LOCALAPPDATA\pdesk\pdesk.exe" --quit`), then `cargo run` so the log prints in the console. Have Notepad and one or two other windows open on one screen.
+Before you start: stop the installed copy (`& "$env:LOCALAPPDATA\des-k\des-k.exe" --quit`), then `cargo run` so the log prints in the console. Have Notepad and one or two other windows open on one screen.
 
 ## UI / manual
 - [ ] Notepad focused on workspace 1, Win+Ctrl+Shift+Right → the screen shows 2, Notepad is on top, focused, same size and place, the other windows of 1 are gone, the indicator shows 2; log has `send: "..." DISPLAYn workspace 1/4 -> 2/4, follow` → AC-1
@@ -17,7 +17,7 @@ Before you start: stop the installed copy (`& "$env:LOCALAPPDATA\pdesk\pdesk.exe
 - [ ] Notepad's Save As dialog open, Win+Ctrl+Alt+Right → Notepad goes, the dialog stays visible (if Windows hides it with its owner, note it in the deferred owned dialogs item) → AC-7
 - [ ] Click the desktop, press each send shortcut → nothing moves, `send: nothing to send ("...", Progman)` (or `WorkerW`), no Start menu; same on the taskbar (`Shell_TrayWnd`) → AC-8
 - [ ] AC-9 has no reliable manual trigger: check in review that the failure path in `ws::send` changes no list and undoes a half done cloak → AC-9
-- [ ] Stay send a window, `taskkill /f /im pdesk.exe`, start again, switch to the target workspace → the window is there; `state.txt` had a `W` line for it → AC-10
+- [ ] Stay send a window, `taskkill /f /im des-k.exe`, start again, switch to the target workspace → the window is there; `state.txt` had a `W` line for it → AC-10
 - [ ] A few stay sends in a row, watch the log → any `follow: just sent "...", ignored` line means the guard caught a focus bounce, and the screen never jumped after the window → AC-11
 - [ ] Set `send_next = ["Win+Alt+N"]` in `target\debug\settings.toml`, restart → Win+Alt+N sends with follow, Win+Ctrl+Shift+Right does nothing → AC-12
 - [ ] Set `send_next_stay = ["Win+Ctrl+Right"]`, restart → log has `shortcuts: Win+Ctrl+Right is in both next and send_next_stay, send_next_stay turned off`, Win+Ctrl+Right and the swipe still switch, the other send shortcuts still work → AC-12
@@ -32,7 +32,7 @@ Before you start: stop the installed copy (`& "$env:LOCALAPPDATA\pdesk\pdesk.exe
 
 ## Commands
 - [ ] `cargo test` → all pass, including `a_send_list_clashing_with_a_switch_list_is_turned_off`, `a_switch_list_beats_a_default_send_list`, `a_stay_list_clashing_with_a_follow_list_is_turned_off`, `a_bad_send_entry_only_resets_its_list`, `default_file_is_the_defaults` → AC-12
-- [ ] `powershell -File install.ps1`, then `tasklist /fi "imagename eq pdesk.exe"` → pdesk.exe is running (the install race from feature F) → build plan task 4
+- [ ] `powershell -File install.ps1`, then `tasklist /fi "imagename eq des-k.exe"` → des-k.exe is running (the install race from feature F) → build plan task 4
 
 ## Acceptance-criteria coverage
 - AC-1 steps 1, 2 · AC-2 step 3 · AC-3 step 4 · AC-4 step 5 · AC-5 steps 6 to 9 · AC-6 step 10 · AC-7 step 11 · AC-8 step 12 · AC-9 step 13 (review) · AC-10 step 14 · AC-11 step 15 · AC-12 steps 16, 17 and `cargo test`
