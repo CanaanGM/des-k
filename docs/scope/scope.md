@@ -26,12 +26,14 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 6 | Window finder | Slice 3 | done |
 | 7 | Alt+Tab per workspace | Slice 4 | done |
 | 8 | Tray icon | Slice 4 | done |
-| 9 | Workspace overview | Slice 5 | in-progress |
+| 9 | Workspace overview | Slice 5 | done |
 | 10 | Restore layout after reboot | Slice 4 | in-progress |
 | 11 | Jump and send by number | Slice 2 | done |
 | 12 | Keys work over admin windows | Slice 4 | in-progress |
 | 13 | Touchpad gestures | Slice 6 | in-progress |
 | 14 | Settings page | Slice 7 | in-progress |
+| 15 | Setup exe installer | Slice 8 | in-progress |
+| 16 | Site guide follows the installer | Slice 8 | done |
 
 ## Already built
 
@@ -146,6 +148,16 @@ code in `src/tray.rs`, `src/main.rs`
   - [x] Tried on your screens: icon shows, Open settings and Open log work (2026-10-26)
   - [x] Still to try: Quit shows every window and exits, icon comes back after an explorer restart (2026-10-28, as admin)
 
+### 10. Restore layout after reboot · in-progress
+After a reboot or a sign out every window gets a new handle; pdesk matches reopened windows to their saved fingerprint (program, class, title) and puts them back on their workspaces for the first few minutes after you sign in.
+**Done when:** after a reboot, windows that reopen land back on their saved workspaces, a window pdesk is unsure about stays visible, and the log says what was restored.
+spec [0003](../specs/0003-restore-layout-after-reboot/index.md) · code in `src/restore.rs`, `src/ws.rs`, `src/settings.rs`
+- [x] Design it (spec): `/architect restore layout after reboot`
+- [ ] Build it: `/develop restore layout after reboot`
+  - [x] Check step, then the thin restore: fingerprints, sign in detection, hide on a match (AC-1, AC-2, AC-3, AC-6, AC-7, AC-8, AC-13, AC-14, AC-15, AC-17)
+  - [x] Full matching, focus guard, resume after a cut, `[restore]` settings, log lines (AC-4, AC-5, AC-9 to AC-12, AC-16)
+  - [ ] Tried on your screens after a reboot, then installed (all ACs)
+
 ### 12. Keys work over admin windows · in-progress · from spec 0008
 pdesk runs as admin from a logon task, so an admin window with focus (Task Manager, an admin terminal) no longer stops its shortcuts, and Win+Ctrl+Right never falls through to Windows' own desktops.
 **Done when:** with Task Manager focused, Win+Ctrl+Right switches pdesk's workspace, pdesk starts as admin at login with no prompt, and the exe lives in Program Files.
@@ -158,17 +170,18 @@ spec [0008](../specs/0008-run-pdesk-as-admin/index.md) · code in `install.ps1`,
 
 ## Slice 5: Overview
 
-### 9. Workspace overview · in-progress
+### 9. Workspace overview · done
 A per screen view of all its workspaces as live thumbnails, like Task View but for one screen, to pick a workspace or a window.
 **Done when:** the overview opens on the screen under the mouse, shows each workspace's windows, and clicking one switches there.
 spec [0010](../specs/0010-workspace-overview/index.md) · code in `src/overview.rs`, `src/ws.rs`, `src/keys.rs`, `src/settings.rs`
 - [x] Design it (spec): `/architect workspace overview`
-- [ ] Build it: `/develop workspace overview`
+- [x] Build it: `/develop workspace overview`
   - [x] Hidden window preview check, then the thin thread: Win+Tab, a popup per screen, tiles, spread, click to go or switch (AC-1, AC-3, AC-4, AC-6, AC-12, AC-13, AC-14)
   - [x] Strip mini windows, near real place spread, cards, labels setting (AC-2, AC-3, AC-4, AC-5)
   - [x] Keys, selection, closing windows (AC-8, AC-9)
   - [x] Drag and drop across screens (AC-7)
-  - [ ] Live setting and animations, then tried on your screens and installed (AC-10, AC-11, all ACs)
+  - [x] Live setting and fade animation, with their settings tests (AC-10, AC-11, AC-14)
+  - [x] Tried on your screens and installed (all ACs), confirmed by you (2026-11-03)
 
 ## Slice 6: Touchpad
 
@@ -180,7 +193,7 @@ spec [0011](../specs/0011-touchpad-gestures/index.md) · code in `src/touchpad.r
 - [ ] Build it: `/develop touchpad gestures`
   - [x] Check step on your touchpad, then the thin thread: four finger left and right over Task Manager (AC-1, AC-11, AC-13)
   - [x] The map: `[touchpad]`, `[[gesture]]` rules, twice, every action (AC-2 to AC-7)
-  - [x] Setup logic: registry gate, save, write back on Quit and same sign in rewrite, tray item (AC-6, AC-8, AC-9, AC-10)
+  - [x] Setup logic: registry gate, save, write back on Quit and same sign in rewrite, Touchpad setup entry (moved from the tray to the settings page, 2026-11-02) (AC-6, AC-8, AC-9, AC-10)
   - [x] Welcome screen to the approved H2 design: Q1 check first, then the window, four rows, give back results; plus the 2026-11-01 change (what pdesk is, the map in each row, Use these gestures or Choose my own) (AC-8, AC-9, AC-11)
   - [ ] Hot plug, README, installed and tried on your screens (AC-12, all ACs)
 
@@ -197,6 +210,25 @@ spec [0012](../specs/0012-settings-page/index.md) · code in `src/settings_page.
   - [x] Every plain setting, screen pictures, live workspace resize, banner and touchpad status, keyboard and themes (AC-2, AC-4, AC-6, AC-10, AC-11, AC-14, AC-16, AC-18 to AC-21)
   - [x] Shortcut recorder, chips and clash prompt (AC-7, AC-8, AC-9)
   - [x] Gesture rows and Choose my own opens the page (AC-12, AC-13)
+  - [ ] Wrap up: README, installed and tried on your screens (all ACs)
+
+## Slice 8: Distribution
+
+### 15. Setup exe installer · in-progress · from spec 0013
+pdesk installs from a double clicked `pdesk-vX.Y.Z-setup.exe` instead of a PowerShell command, and uninstalls from Settings, Apps, giving every hidden window back first.
+**Done when:** the setup installs, updates keeping the layout, and uninstalls on your machine, and a tagged release carries the setup exe and its checksum.
+spec [0013](../specs/0013-setup-exe-installer.md) · code in `pdesk.iss`, `.github/workflows/build.yml`, `README.md`
+- [x] Design it (spec): `/architect setup exe installer`
+- [ ] Build it: `/develop setup exe installer`
+  - [x] Installer, uninstaller, release job and README built (AC-1 to AC-9)
+  - [ ] Tried on your machine: fresh install, update with a layout, uninstall, install again (AC-1, AC-2, AC-5, AC-6)
+  - [ ] First tagged release carries the setup exe and its checksum (AC-8)
+
+### 16. Site guide follows the installer · done · from spec 0013
+The online guide still tells people to unzip and run `install.ps1`; it should match the README: download the setup exe, get past SmartScreen, uninstall from Settings, Apps.
+**Done when:** `site/guide-content.html` and `site/index.html` describe the setup exe and the uninstaller, with the script kept as the alternative.
+- [x] Build it: `/develop site guide follows the installer`
+spec [0013](../specs/0013-setup-exe-installer.md) · code in `site/guide-content.html`, `site/index.html` (same body, edit both together)
 
 ## Deferred
 Out of scope for the current build pass, kept so the plan stays honest.
@@ -206,6 +238,9 @@ Out of scope for the current build pass, kept so the plan stays honest.
 - **Dimmed wallpaper behind the overview**: draw your wallpaper instead of solid dark (from spec 0010) · needs a decision
 - **Mouse wheel in the window finder**: scroll the finder's list with the wheel, only if the keys feel slow with many windows (from spec 0007) · needs a decision
 - **Owned dialogs on hidden workspaces**: pdesk never hides a hidden window's dialogs, so they float over the wrong workspace; check when building feature 4 (from spec 0002) · needs a decision
+- **Relaunch apps after a reboot**: start apps that don't reopen their own windows, so restore has something to match (from spec 0003) · needs a decision
+- **Stable screen names**: `DISPLAY1` and `DISPLAY2` can swap after a reboot or a dock change; key saved screens by something stable, only if they get mixed up (from spec 0003) · needs a decision
+- **Code signing**: sign the setup exe and `pdesk.exe` so SmartScreen stops warning (SignPath Foundation, Azure Trusted Signing, Certum open source, plus a winget manifest), put off for now (from spec 0013) · needs a decision
 
 ## Legend
 

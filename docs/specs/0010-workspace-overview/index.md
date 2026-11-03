@@ -1,7 +1,7 @@
 # 0010. Workspace overview: a GNOME style overview on every screen, with live previews
 
 **Date**: 2026-10-28
-**Status**: In Progress
+**Status**: Accepted
 
 ## Summary
 
@@ -132,11 +132,11 @@ live = true         # false: the list is taken when the overview opens
 1. [x] Check that a DWM thumbnail draws a window pdesk hid (the scratchpad probe, run while a screen shows an empty workspace). If it does, AC-4's card is only for windows that draw nothing; if it does not, cards are what hidden windows show, satisfies **AC-4**
 2. [x] Thin thread: the `overview` shortcut and `WM_OVERVIEW` in `keys.rs`, `src/overview.rs` with a dark popup per screen, numbered tiles, the spread in a plain grid with live thumbnails, click a window to go there, click a tile to switch, Esc and background click to close, and the close first rule for other shortcuts. Add `ws::active` and `ws::show_workspace`, satisfies **AC-1**, **AC-3**, **AC-6**, **AC-12**, **AC-13**, **AC-14**
 3. [x] Strip mini windows at real places, the near their real place spread, card fallback, and the `labels` setting, satisfies **AC-2**, **AC-3**, **AC-4**, **AC-5**, **AC-14**
-4. Keys (arrows, Tab, digits, Enter) with the selection border, and closing windows (hover X popup, middle click, Ctrl+W), satisfies **AC-8**, **AC-9**
-5. Drag and drop across screens with the ghost popup, and `ws::place`, satisfies **AC-7**
-6. The 250 ms refresh and the `live` setting, satisfies **AC-10**, **AC-14**
-7. The `animation` setting: fade (zoom was built too, then dropped on 2026-10-30), satisfies **AC-11**, **AC-14**
-8. Settings tests (defaults parse, bad values reset one key, conflicts), then try it on your screens and reinstall with `install.ps1`, satisfies all ACs
+4. [x] Keys (arrows, Tab, digits, Enter) with the selection border, and closing windows (hover X popup, middle click, Ctrl+W), satisfies **AC-8**, **AC-9**
+5. [x] Drag and drop across screens with the ghost popup, and `ws::place`, satisfies **AC-7**
+6. [x] The 250 ms refresh and the `live` setting, satisfies **AC-10**, **AC-14**
+7. [x] The `animation` setting: fade (zoom was built too, then dropped on 2026-10-30), satisfies **AC-11**, **AC-14**
+8. [x] Settings tests (defaults parse, bad values reset one key, conflicts), then try it on your screens and reinstall with `install.ps1`, satisfies all ACs
 
 ## Consequences
 

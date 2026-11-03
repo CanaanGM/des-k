@@ -12,17 +12,16 @@ hides and shows them.
 **There's a nicer version of this guide, with pictures: <https://canaangm.github.io/pdesk/>**
 ## Install (the easy way)
 
-1. Download the newest `pdesk-…-windows-x64.zip` from
-   [Releases](https://github.com/CanaanGM/pdesk/releases/latest) and unzip it.
-2. Open a terminal in the unzipped folder and run:
-
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File install.ps1
-   ```
-
+1. Download the newest `pdesk-…-setup.exe` from
+   [Releases](https://github.com/CanaanGM/pdesk/releases/latest) and run it.
+2. pdesk isn't signed yet, so Windows may say "Windows protected your PC". Click
+   **More info**, then **Run anyway**.
 3. Say **Yes** to the admin prompt. A pdesk icon shows up in the tray.
 
-To update, do the same with the newer zip. Your workspaces are kept.
+To update, run the newer setup the same way. Your workspaces are kept.
+
+The release also has a zip with the same `pdesk.exe` and `install.ps1`, if you'd rather use a
+script: unzip it and run `powershell -ExecutionPolicy Bypass -File install.ps1` in that folder.
 
 ## Build it yourself instead
 
@@ -168,8 +167,10 @@ shows every hidden window, so nothing is ever lost. It also forgets which window
 workspace, on purpose. If pdesk runs your touchpad gestures, Quit also hands Windows its own
 gestures back from your next sign in.
 
-To remove it completely, **Quit it first** (so your windows and touchpad gestures come back),
-then in an **admin** terminal:
+To remove it completely, uninstall **pdesk** from **Settings → Apps → Installed apps**. The
+uninstaller quits pdesk first, so your windows and touchpad gestures come back.
+
+If you installed with `install.ps1` instead, **Quit it first**, then in an **admin** terminal:
 
 ```powershell
 Unregister-ScheduledTask -TaskName pdesk -Confirm:$false

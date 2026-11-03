@@ -137,4 +137,5 @@ Tracer Bullet: get one admin pdesk working end to end by hand first, then make i
 
 - [ ] Write spec 0009, Alt+Tab per workspace: no code, admin windows are the known exception (decided earlier in this session, now numbered 0009).
 - [x] After build step 2, update spec 0001's settings location line (an `/architect` update) and let `/sync` fix `AGENTS.md`.
+- [x] A setup exe installer (`pdesk.iss`) now does the same install as `install.ps1`, plus an uninstaller: spec [0013](../0013-setup-exe-installer.md). The two task definitions must stay identical.
 - [ ] Scope feature F (install race): the new running check in `install.ps1` makes the race loud. Whether to also retry the copy stays with feature F.

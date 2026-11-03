@@ -22,6 +22,7 @@ cargo test                     # unit tests (settings parsing, touchpad swipes, 
 cargo test render -- --ignored # draws the welcome screen and settings page states to target/welcome/ and target/settings/ PNGs
 powershell -File install.ps1   # from a NORMAL terminal: release build as you, one UAC prompt, install to Program Files, logon task starts it as admin, restart it
 & "$env:ProgramFiles\pdesk\pdesk.exe" --quit   # clean stop from any terminal: shows every hidden window
+iscc /DAppVersion=x.y.z pdesk.iss  # after cargo build --release: the setup exe and its uninstaller in target\setup\ (Inno Setup 6, spec 0013)
 ```
 
 `cargo test` covers settings parsing, the touchpad swipe recognizer and the settings page's number steps; everything else you verify by hand on real screens (Prototype workflow). Only one copy runs at a time: a second start prints `pdesk is already running` and exits, so stop the installed copy before `cargo run`. Release log and layout live in `%LOCALAPPDATA%\pdesk\` (`pdesk.log`, `state.txt`). `settings.toml` lives there too, one file shared by the installed copy and `cargo run` (spec 0008). pdesk checks it once a second and applies changes live, except Restore, which waits for the next start; a new `workspaces` count resizes every screen at once (`ws::resize`, spec 0012).
@@ -43,6 +44,7 @@ Stored in `docs/specs/`. Format: `docs/specs/NNNN-title.md`. Feature plan: `docs
 - Settings (`src/settings.rs`) load once in `main` before `ws::load` and `keys::spawn`; everything else only reads `settings::get()`. After that only the main thread changes them: its 1 s watch timer calls `settings::reload`, and the settings page saves through `settings::write`, which reloads (spec 0012). A bad value resets just that key with a log line, never the whole file (spec 0001).
 - Each file opens with a short comment saying what it owns; inline comments say why, not what.
 - The installed pdesk runs as admin (spec 0008). Message filters let in only `WM_CLOSE` (indicator) and `WM_TRAY` plus `TaskbarCreated` (tray) from normal programs, nothing else. Nothing in `%LOCALAPPDATA%\pdesk` may ever name a program to run or code to load, since anything running as you can write there. Files the tray opens go through explorer (`IShellDispatch2::ShellExecute` in `src/tray.rs`) so the editor runs as you.
+- The setup exe (`pdesk.iss`, spec 0013) repeats `install.ps1`'s admin half: change their task definitions together, keep `CloseApplications=no` (Restart Manager would quit pdesk gently and show every window), and never change its `AppId` (a new one makes a second Apps entry instead of an update).
 - Accepted risk (spec 0011): a gesture's key combo in `settings.toml` is typed by the admin pdesk, so it reaches admin windows, and anything running as you can rewrite that file. Keep combos few and prefer action names; never let a setting carry a program or a path.
 
 ## Gotchas
@@ -52,6 +54,7 @@ Stored in `docs/specs/`. Format: `docs/specs/NNNN-title.md`. Feature plan: `docs
 - The indicator window (class `pdesk-indicator`) doubles as the single instance marker and the `--quit` target, so it is created before anything else.
 - With Num Lock on and Shift held, Windows turns numpad digits into navigation keys (End, Down, and so on) before the low level hook sees them, so a Shift combo never matches a numpad digit (spec 0005).
 - A dev copy started from a normal terminal is not admin, so its hook hears nothing while an admin window has focus (UIPI); start `target\debug\pdesk.exe` from an admin terminal to test that, never `cargo run` there (the build would be owned by Administrators). Hard killing the installed pdesk also needs an admin terminal.
+- `schtasks /Create /XML` rejects UTF-8 task files: write plain ASCII with no `<?xml?>` line, or UTF-16.
 - PowerToys Keyboard Manager can remap F23 too; pdesk's Copilot key handling only wins if its hook is installed after PowerToys.
 
 ## Agent skills

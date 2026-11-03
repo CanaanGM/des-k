@@ -4,7 +4,7 @@ headline: Every screen gets its <em>own</em> desktops
 lede: pdesk lets each monitor switch its own workspaces. The other screens stay where they are. This page shows how to install it, use it and remove it.
 pills: Runs on <b>Windows 11</b> | Built with <b>Rust</b> | Windows stay <b>floating</b>
 status: reviewed
-updated: 2026-10-30
+updated: 2026-11-02
 related: <a href="https://github.com/CanaanGM/pdesk">The code on GitHub</a> | <a href="https://github.com/CanaanGM/pdesk#readme">The README</a>
 link: https://canaangm.github.io/pdesk/
 footnote: pdesk is free software by CanaanGM, under the <a href="https://github.com/CanaanGM/pdesk/blob/main/LICENSE">GNU GPL 3.0 or later</a>. Copyright (C) 2026 CanaanGM.
@@ -62,13 +62,13 @@ footnote: pdesk is free software by CanaanGM, under the <a href="https://github.
   <h2>How do I install it?</h2>
   <p>The easy way needs nothing but Windows 11:</p>
   <ol class="steps">
-    <li>Download the newest <code>pdesk-…-windows-x64.zip</code> from <a href="https://github.com/CanaanGM/pdesk/releases/latest">Releases</a>.</li>
-    <li>Unzip it. Open a terminal in the unzipped folder.</li>
-    <li>Run the install script:
-      <pre data-lang="powershell"><code>powershell -ExecutionPolicy Bypass -File install.ps1</code></pre></li>
+    <li>Download the newest <code>pdesk-…-setup.exe</code> from <a href="https://github.com/CanaanGM/pdesk/releases/latest">Releases</a> and run it.</li>
+    <li>pdesk is not signed yet, so Windows may say "Windows protected your PC". Click <strong>More info</strong>, then <strong>Run anyway</strong>.</li>
     <li>Say <strong>Yes</strong> to the UAC prompt. When the pdesk icon shows in the tray, pdesk is running.</li>
   </ol>
-  <p>To update, do the same with the newer zip. Your workspaces are kept.</p>
+  <p>To update, run the newer setup the same way. Your workspaces are kept.</p>
+  <p>The release also has a zip with the same <code>pdesk.exe</code> and <code>install.ps1</code>, if you would rather use a script. Unzip it, open a terminal in that folder and run:</p>
+  <pre data-lang="powershell"><code>powershell -ExecutionPolicy Bypass -File install.ps1</code></pre>
   <h3>Or build it yourself</h3>
   <p>You build pdesk on your own PC, then the same script installs it. You need three things:</p>
   <div class="table-wrap"><table>
@@ -236,14 +236,15 @@ cd pdesk</code></pre></li>
   <p class="kicker">Steps</p>
   <h2>Stop or remove pdesk</h2>
   <p>To stop it, click <strong>Quit</strong> in the tray menu. Every hidden window comes back, so nothing is lost. pdesk also forgets which window was on which workspace.</p>
-  <p>To remove it completely:</p>
+  <p>To remove it completely, uninstall <strong>pdesk</strong> from <strong>Settings → Apps → Installed apps</strong>. The uninstaller quits pdesk first, so every hidden window comes back.</p>
+  <p>If you installed with <code>install.ps1</code> instead:</p>
   <ol class="steps">
     <li>Quit pdesk from the tray.</li>
     <li>Open a terminal <strong>as administrator</strong> and run:
       <pre data-lang="powershell"><code>Unregister-ScheduledTask -TaskName pdesk -Confirm:$false
 Remove-Item -Recurse "$env:ProgramFiles\pdesk"</code></pre></li>
-    <li>If you also want your settings and log gone, delete the folder <code>%LOCALAPPDATA%\pdesk</code>.</li>
   </ol>
+  <p>Either way, your settings and log stay in <code>%LOCALAPPDATA%\pdesk</code>. Delete that folder too if you want them gone.</p>
 </section>
 
 <section class="card">
@@ -269,9 +270,9 @@ Remove-Item -Recurse "$env:ProgramFiles\pdesk"</code></pre></li>
     <thead><tr><th>When</th><th>Do this</th></tr></thead>
     <tbody>
       <tr><td>A window seems lost</td><td>Press <code>Win+F</code> and search for it, or open the overview with <code>Win+Tab</code>.</td></tr>
-      <tr><td>The shortcuts do nothing</td><td>Check the pdesk icon is in the tray. If it is not, run <code>install.ps1</code> again.</td></tr>
+      <tr><td>The shortcuts do nothing</td><td>Check the pdesk icon is in the tray. If it is not, run the setup again (or <code>install.ps1</code>).</td></tr>
       <tr><td><code>install.ps1</code> says scripts are blocked</td><td>Use the full command with <code>-ExecutionPolicy Bypass</code>, as in the install steps.</td></tr>
-      <tr><td>Everything looks wrong</td><td>Click <strong>Quit</strong> in the tray. Every window comes back. Then run <code>install.ps1</code> again.</td></tr>
+      <tr><td>Everything looks wrong</td><td>Click <strong>Quit</strong> in the tray. Every window comes back. Then run the setup again (or <code>install.ps1</code>).</td></tr>
       <tr><td>You want to know why something happened</td><td>Tray → <strong>Open log</strong>. The log says what pdesk did and why.</td></tr>
     </tbody>
   </table></div>

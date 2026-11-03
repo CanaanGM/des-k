@@ -1,6 +1,6 @@
 # Lints and tests every push. A pushed tag like v0.1.0 also builds the release exe and
-# publishes a GitHub Release with a zip (pdesk.exe, install.ps1, README.md, LICENSE) and its
-# checksum.
+# publishes a GitHub Release with the setup exe (pdesk.iss), a zip (pdesk.exe, install.ps1,
+# README.md, LICENSE) and their checksums.
 name: build
 
 on:
@@ -49,7 +49,11 @@ jobs:
           New-Item -ItemType Directory $dir, dist | Out-Null
           Copy-Item target/release/pdesk.exe, install.ps1, README.md, LICENSE $dir
           Compress-Archive $dir "dist/pdesk-$tag-windows-x64.zip"
-          Get-FileHash dist/*.zip -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } | Set-Content dist/SHA256SUMS.txt
+          choco install innosetup -y --no-progress
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q "/DAppVersion=$($tag.TrimStart('v'))" pdesk.iss
+          if ($LASTEXITCODE) { throw 'installer build failed' }
+          Copy-Item "target/setup/pdesk-$tag-setup.exe" dist
+          Get-FileHash dist/* -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } | Set-Content dist/SHA256SUMS.txt
       - name: Publish the release
         shell: pwsh
         env:
@@ -57,12 +61,8 @@ jobs:
         run: |
           $tag = '${{ github.ref_name }}'
           $notes = @"
-          Download ``pdesk-$tag-windows-x64.zip``, unzip it, and in that folder run:
-
-          ``````powershell
-          powershell -ExecutionPolicy Bypass -File install.ps1
-          ``````
-
-          Say Yes to the admin prompt. The guide: https://canaangm.github.io/pdesk/
+          Download ``pdesk-$tag-setup.exe``, run it, and say Yes to the admin prompt. Uninstall it
+          from Settings, Apps. The zip holds the same pdesk.exe with install.ps1, for those who
+          prefer a script. The guide: https://canaangm.github.io/pdesk/
           "@
           gh release create $tag (Get-ChildItem dist).FullName --title "pdesk $tag" --notes $notes --generate-notes
