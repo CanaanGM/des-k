@@ -27,6 +27,7 @@ use windows::core::{PCWSTR, w};
 
 use crate::indicator::ACCENT;
 use crate::restore;
+use crate::ui::{self, text};
 use crate::ws::{self, Miss};
 
 const CLASS: PCWSTR = w!("des-k-finder");
@@ -98,6 +99,8 @@ thread_local! {
     static BRUSH: Cell<Option<HBRUSH>> = const { Cell::new(None) };
     // Root owner window -> last time it came to the front. Memory only (spec 0007).
     static RECENT: RefCell<HashMap<isize, Instant>> = RefCell::default();
+    // Window -> its icon, asked for once (see `icon`). Borrowed handles, never destroyed.
+    static ICONS: RefCell<HashMap<isize, HICON>> = RefCell::default();
     static SESSION: RefCell<Option<Session>> = const { RefCell::new(None) };
 }
 
@@ -197,12 +200,6 @@ fn first_pick(query: &str, shown: usize) -> usize {
     if query.trim().is_empty() && shown >= 2 { 1 } else { 0 }
 }
 
-/// Screen devices numbered left to right, then top to bottom.
-fn screen_numbers(mut screens: Vec<(String, RECT)>) -> Vec<String> {
-    screens.sort_by_key(|(_, r)| (r.left, r.top));
-    screens.into_iter().map(|(dev, _)| dev).collect()
-}
-
 /// Ctrl+Backspace: where the word before the caret starts. Spaces before the caret go
 /// with it; a word is a run of letters and digits, or a run of other symbols.
 fn delete_word(before: &[u16]) -> usize {
@@ -239,7 +236,23 @@ fn program(hwnd: HWND) -> String {
     name
 }
 
+/// A window's icon, asked for once while des-k runs: WM_GETICON waits on the app (a busy one
+/// can take the whole ICON_WAIT_MS), and the finder and the overview want every window's
+/// icon each time they open. The app's or the class's icon: borrowed, never destroyed.
 pub(crate) fn icon(hwnd: HWND) -> HICON {
+    if let Some(i) = ICONS.with_borrow(|c| c.get(&(hwnd.0 as isize)).copied()) {
+        return i;
+    }
+    let i = ask_icon(hwnd);
+    ICONS.with_borrow_mut(|c| {
+        // A window new to the cache is the time to forget the ones that closed.
+        c.retain(|&h, _| unsafe { IsWindow(Some(HWND(h as *mut _))) }.as_bool());
+        c.insert(hwnd.0 as isize, i);
+    });
+    i
+}
+
+fn ask_icon(hwnd: HWND) -> HICON {
     for kind in [ICON_SMALL2, ICON_SMALL, ICON_BIG] {
         let mut out = 0usize;
         let ok = unsafe { SendMessageTimeoutW(hwnd, WM_GETICON, WPARAM(kind as usize), LPARAM(0), SMTO_ABORTIFHUNG, ICON_WAIT_MS, Some(&mut out)) };
@@ -260,7 +273,7 @@ pub(crate) fn icon(hwnd: HWND) -> HICON {
 }
 
 fn snapshot() -> Vec<Row> {
-    let order = screen_numbers(ws::screens());
+    let order = ws::screen_order();
     let mut rows: Vec<Row> = RECENT.with_borrow(|recent| {
         ws::windows()
             .into_iter()
@@ -555,38 +568,8 @@ fn font(dpi: u32) -> HFONT {
     {
         return f;
     }
-    let make = |face: PCWSTR| unsafe {
-        CreateFontW(
-            -((FONT_PX * dpi as f32 / 96.0).round() as i32),
-            0,
-            0,
-            0,
-            FW_NORMAL.0 as i32,
-            0,
-            0,
-            0,
-            DEFAULT_CHARSET,
-            OUT_DEFAULT_PRECIS,
-            CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY,
-            (DEFAULT_PITCH.0 | FF_DONTCARE.0) as u32,
-            face,
-        )
-    };
-    let mut f = make(w!("Segoe UI Variable Text"));
-    // A missing face is silently swapped for another font: check, and use plain Segoe UI then.
-    unsafe {
-        let dc = GetDC(None);
-        let old = SelectObject(dc, f.into());
-        let mut name = [0u16; 64];
-        let n = GetTextFaceW(dc, Some(&mut name)).max(1) as usize - 1;
-        SelectObject(dc, old);
-        ReleaseDC(None, dc);
-        if String::from_utf16_lossy(&name[..n]) != "Segoe UI Variable Text" {
-            let _ = DeleteObject(f.into());
-            f = make(w!("Segoe UI"));
-        }
-    }
+    let face = if ui::variable() { w!("Segoe UI Variable Text") } else { w!("Segoe UI") };
+    let f = ui::font(face, FONT_PX * dpi as f32 / 96.0, FW_NORMAL.0 as i32);
     // The edit gets the new font before the old one goes.
     if let Some((old, _)) = FONT.replace(Some((f, dpi))) {
         if let Some(edit) = EDIT.get() {
@@ -603,14 +586,6 @@ fn bg_brush() -> HBRUSH {
         BRUSH.set(Some(b));
         b
     })
-}
-
-fn text(dc: HDC, s: &str, mut r: RECT, color: COLORREF, align: DRAW_TEXT_FORMAT) {
-    let mut wide: Vec<u16> = s.encode_utf16().collect();
-    unsafe {
-        SetTextColor(dc, color);
-        DrawTextW(dc, &mut wide, &mut r, align | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
-    }
 }
 
 fn draw(dc: HDC, s: &Session, width: i32) {
@@ -659,19 +634,14 @@ fn paint(hwnd: HWND) {
         let mut rc = RECT::default();
         let _ = GetClientRect(hwnd, &mut rc);
         // Drawn off screen first: the list repaints on every key, and would flicker otherwise.
-        let mem = CreateCompatibleDC(Some(hdc));
-        let bmp = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
-        let old = SelectObject(mem, bmp.into());
-        FillRect(mem, &rc, bg_brush());
-        SESSION.with_borrow(|s| {
-            if let Some(s) = s {
-                draw(mem, s, rc.right);
-            }
+        ui::buffered(hdc, 0, 0, rc.right, rc.bottom, |mem| {
+            FillRect(mem, &rc, bg_brush());
+            SESSION.with_borrow(|s| {
+                if let Some(s) = s {
+                    draw(mem, s, rc.right);
+                }
+            });
         });
-        let _ = BitBlt(hdc, 0, 0, rc.right, rc.bottom, Some(mem), 0, 0, SRCCOPY);
-        SelectObject(mem, old);
-        let _ = DeleteObject(bmp.into());
-        let _ = DeleteDC(mem);
         let _ = EndPaint(hwnd, &ps);
     }
 }
@@ -782,14 +752,6 @@ mod tests {
         assert_eq!(first_pick("  ", 2), 1);
         assert_eq!(first_pick("", 1), 0);
         assert_eq!(first_pick("code", 5), 0);
-    }
-
-    // "S · W" numbers must match what you see: screens counted from the left, then from the top.
-    #[test]
-    fn screens_are_numbered_left_to_right_then_top_down() {
-        let r = |left, top| RECT { left, top, right: left + 100, bottom: top + 100 };
-        let got = screen_numbers(vec![("D1".into(), r(0, 0)), ("D2".into(), r(-1920, 0)), ("D3".into(), r(0, -1080)), ("D4".into(), r(2560, 200))]);
-        assert_eq!(got, ["D2", "D3", "D1", "D4"]);
     }
 
     // AC-5: each typed word must appear, letters in order, any case, in "program title"; the

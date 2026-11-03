@@ -2,7 +2,7 @@
 // once and in effect at once. Built to the approved design (pdesk-design/settings/
 // micro-suite-r4.html): a band, a side list of sections, and one scrolling column of cards.
 // One drawn window with its own focus list and no child controls, so everything scrolls
-// together; it reuses the welcome screen's theme, fonts and shapes. Lives on the main thread:
+// together; it shares the welcome screen's theme, fonts and shapes (`ui`). Lives on the main thread:
 // its keys reach wndproc through main's loop. Sizes are in dip, scaled to the screen's dpi
 // when drawn. The page never keeps its own copy of a value: it draws what settings::get()
 // holds, and every change goes through settings::write.
@@ -22,7 +22,7 @@ use windows::Win32::{
 use windows::core::{HSTRING, PCWSTR, w};
 
 use crate::settings::{self, Action, Combo, Edit, Motion, Owner, Settings};
-use crate::welcome::{Bx, Canvas, F, Fonts, Theme, alpha, buffered, dark_title, mix, op, theme};
+use crate::ui::{self, Bx, Canvas, F, Fonts, Theme, alpha, buffered, dark_title, mix, op, theme};
 
 const CLASS: PCWSTR = w!("des-k-settings");
 // Sizes in height only: the width stays W, since every row is laid out for it.
@@ -139,8 +139,8 @@ const ROWS: &[(Section, Row)] = &[
     (Section::Touchpad, row("touchpad.twice_ms", "Wait for a second go", "Only gestures with a twice action wait. Their once action runs after the wait.",step(100, 1000, 50, "ms"))),
 ];
 
-/// The 11 [shortcuts] entries: key and title.
-const SHORTCUTS: [(&str, &str); 11] = [
+/// The 12 [shortcuts] entries: key and title.
+const SHORTCUTS: [(&str, &str); 12] = [
     ("shortcuts.previous", "Previous workspace"),
     ("shortcuts.next", "Next workspace"),
     ("shortcuts.send_previous", "Send window to previous, and go"),
@@ -152,6 +152,7 @@ const SHORTCUTS: [(&str, &str); 11] = [
     ("shortcuts.send_to_stay", "Send window to 1 to 9, stay"),
     ("shortcuts.finder", "Finder"),
     ("shortcuts.overview", "Overview"),
+    ("shortcuts.pin", "Pin window to every workspace"),
 ];
 
 static DEFAULTS: LazyLock<Settings> = LazyLock::new(Settings::default);
@@ -443,11 +444,11 @@ thread_local! {
 // Never hold the borrow across a call that comes back here: settings::write reloads, and the
 // reload calls refresh().
 fn get<R>(f: impl FnOnce(&Win) -> R) -> Option<R> {
-    WIN.with(|w| w.try_borrow().ok().and_then(|w| w.as_ref().map(f)))
+    ui::get(&WIN, "settings page get", f)
 }
 
 fn set<R>(f: impl FnOnce(&mut Win) -> R) -> Option<R> {
-    WIN.with(|w| w.try_borrow_mut().ok().and_then(|mut w| w.as_mut().map(f)))
+    ui::set(&WIN, "settings page set", f)
 }
 
 /// What one pass of compose found: the controls, the content's height, the section tops.
@@ -2062,7 +2063,7 @@ pub fn open(section: Option<Section>) {
         }
         return;
     }
-    crate::welcome::gdiplus();
+    ui::gdiplus();
     unsafe {
         let Ok(inst) = GetModuleHandleW(None) else { return };
         let wc = WNDCLASSW {
@@ -2300,16 +2301,13 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
             }
             WM_DESTROY => {
                 crate::keys::record(false);
-                if let Some(w) = WIN.with_borrow_mut(Option::take) {
-                    w.fonts.delete();
-                }
+                drop(WIN.with_borrow_mut(Option::take));
                 LRESULT(0)
             }
             WM_DPICHANGED => {
                 let to = *(lp.0 as *const RECT);
                 let scale = (wp.0 & 0xFFFF) as f32 / 96.0;
                 let vh = set(|w| {
-                    w.fonts.delete();
                     w.scale = scale;
                     w.fonts = Fonts::new(scale);
                     w.vh
@@ -2422,7 +2420,7 @@ mod tests {
     #[test]
     #[ignore]
     fn render_settings() {
-        assert!(crate::welcome::gdiplus());
+        assert!(ui::gdiplus());
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("settings");
         std::fs::create_dir_all(&dir).unwrap();
         let next = "shortcuts.next";
@@ -2448,7 +2446,9 @@ mod tests {
             },
             pad: Some(crate::setup::State { pad: true, enabled: true, rows: [crate::setup::Row::Nothing, crate::setup::Row::StillOn, crate::setup::Row::Nothing, crate::setup::Row::Nothing], off: false, saved: false }),
         };
-        let states: [(&str, Option<Rec>, Option<(String, String)>, bool); 6] = [
+        // Name, recording, refusal banner, clash.
+        type Case = (&'static str, Option<Rec>, Option<(String, String)>, bool);
+        let states: [Case; 6] = [
             ("rest", None, None, false),
             ("rec", Some(Rec::List(next, None)), None, false),
             ("refused", Some(Rec::List("shortcuts.finder", Some(0))), Some(("This key can't be saved; try another".into(), "Still recording.".into())), false),
@@ -2464,8 +2464,8 @@ mod tests {
         };
         // Light and dark at 100% for every state; High contrast and 150% for the two that
         // carry the most kinds of parts.
-        let mut runs: Vec<(&str, Theme, f32)> = vec![("light", crate::welcome::LIGHT, 1.0), ("dark", crate::welcome::DARK, 1.0)];
-        runs.extend([("hc", night_sky, 1.0), ("light-150", crate::welcome::LIGHT, 1.5), ("hc-150", night_sky, 1.5)]);
+        let mut runs: Vec<(&str, Theme, f32)> = vec![("light", ui::LIGHT, 1.0), ("dark", ui::DARK, 1.0)];
+        runs.extend([("hc", night_sky, 1.0), ("light-150", ui::LIGHT, 1.5), ("hc-150", night_sky, 1.5)]);
         for (tname, theme, scale) in runs {
             for (sname, rec, refused, prompt) in &states {
                 if (tname.starts_with("hc") || scale > 1.0) && !matches!(*sname, "rest" | "clash") {
@@ -2488,12 +2488,11 @@ mod tests {
                     out.height
                 };
                 let (pw, ph) = ((W * scale).round() as i32, ((BAND + height) * scale).ceil() as i32);
-                crate::welcome::tests::save_png(pw, ph, &dir.join(format!("{sname}-{tname}.png")), |dc| {
+                ui::tests::save_png(pw, ph, &dir.join(format!("{sname}-{tname}.png")), |dc| {
                     let mut c = Canvas::new(dc, true, scale, theme, &win.fonts);
                     c.boxed((0.0, 0.0, W + 1.0, BAND + height + 1.0), 0.0, theme.surface, None);
                     compose(&mut c, &win);
                 });
-                win.fonts.delete();
             }
         }
     }

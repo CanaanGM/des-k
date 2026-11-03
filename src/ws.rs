@@ -2,7 +2,9 @@
 // workspace is simply "whatever is visible on that monitor" at switch time, so new
 // windows and windows dragged between monitors need no tracking.
 use std::collections::{HashMap, HashSet};
-use std::sync::{LazyLock, Mutex, MutexGuard};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{LazyLock, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use windows::Win32::{
     Foundation::{HWND, LPARAM, POINT, RECT},
@@ -31,6 +33,10 @@ use crate::settings;
 const FOLLOW_COOLDOWN_MS: u64 = 1000;
 // A reopened window often takes focus before restore hides it; that focus is not you (spec 0003).
 const RESTORED_IGNORE: Duration = Duration::from_secs(2);
+// Screens drop out for a moment on wake from sleep and on a DisplayPort relink; showing all
+// their hidden windows then would undo the layout. Counted in 1 s checks, not time, since no
+// check runs while the PC sleeps.
+const GONE_CHECKS: u32 = 10;
 
 struct Monitor {
     active: usize,
@@ -79,6 +85,12 @@ struct State {
     restored: HashMap<isize, Instant>, // windows restore hid, and when
     // The window the last stay send moved, and when; any switch clears it (spec 0004).
     sent: Option<(isize, Instant)>,
+    // Screens with workspaces that are not plugged in now, and how many checks in a row.
+    gone: HashMap<String, u32>,
+    // Windows kept in view on every workspace of their screen (spec 0014).
+    pinned: HashSet<isize>,
+    // Each saved window's app by (hwnd, pid), which never changes: a save opens no process twice.
+    apps: HashMap<(isize, u32), String>,
 }
 
 /// Matching reopened windows to saved entries after a new sign in (spec 0003).
@@ -100,19 +112,58 @@ fn state() -> MutexGuard<'static, State> {
     STATE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-pub fn data_dir() -> std::path::PathBuf {
-    let base = std::path::PathBuf::from(std::env::var("LOCALAPPDATA").unwrap_or(".".into()));
-    let dir = base.join("des-k");
-    // Before the rename it was pdesk: carry its settings, layout and saved gestures over once.
-    let old = base.join("pdesk");
-    if !dir.exists() && old.is_dir() && let Err(e) = std::fs::rename(&old, &dir) {
-        eprintln!("could not move {} to {}: {e}", old.display(), dir.display());
-    }
-    let _ = std::fs::create_dir_all(&dir);
-    dir
+/// %LOCALAPPDATA%\des-k, worked out once: the 1 s settings check asks for it.
+pub fn data_dir() -> PathBuf {
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let base = PathBuf::from(std::env::var("LOCALAPPDATA").unwrap_or(".".into()));
+        let dir = base.join("des-k");
+        // The admin des-k writes here, and anything running as you could make this folder a
+        // junction to one only an admin may write: drop the link, never follow it.
+        if is_link(&dir) {
+            eprintln!("{} is a link, not a folder: removed, a real folder takes its place", dir.display());
+            let _ = std::fs::remove_dir(&dir);
+        }
+        // Before the rename it was pdesk: carry its settings, layout and saved gestures over once.
+        let old = base.join("pdesk");
+        if !dir.exists() && old.is_dir() && !is_link(&old) && let Err(e) = std::fs::rename(&old, &dir) {
+            eprintln!("could not move {} to {}: {e}", old.display(), dir.display());
+        }
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    })
+    .clone()
 }
 
-fn state_file() -> std::path::PathBuf {
+fn is_link(path: &Path) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+}
+
+/// A brand new file at `path`, for the data folder. Whatever was there goes first, and the
+/// create fails rather than open what took its place: so the admin des-k never writes through
+/// a link someone put there to a file only an admin may write.
+pub fn create_fresh(path: &Path) -> std::io::Result<std::fs::File> {
+    let _ = std::fs::remove_file(path);
+    std::fs::OpenOptions::new().write(true).create_new(true).open(path)
+}
+
+/// `text` as the whole of a brand new file, by create_fresh.
+pub fn write_new(path: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    create_fresh(path)?.write_all(text.as_bytes())
+}
+
+/// Appends to `path`, unless it is a link: then it starts a new file there (create_fresh).
+pub fn append_to(path: &Path) -> std::io::Result<std::fs::File> {
+    if is_link(path) {
+        return create_fresh(path);
+    }
+    std::fs::OpenOptions::new().append(true).create(true).open(path)
+}
+
+fn state_file() -> PathBuf {
     data_dir().join("state.txt")
 }
 
@@ -124,20 +175,33 @@ fn pid_of(hwnd: HWND) -> u32 {
 
 /// Persist the layout so a restart, hard kill, or reboot keeps it. Lines:
 /// `L <logon id> <logon time>`, `M <device> <active>`,
-/// `W <device> <workspace> <hwnd> <pid>` TAB app TAB class TAB title (a hidden window), and
+/// `W <device> <workspace> <hwnd> <pid>` TAB app TAB class TAB title (a hidden window),
+/// `P <device> <hwnd> <pid>` TAB app TAB class TAB title (a pinned one, spec 0014), and
 /// `V <device>` TAB app TAB class TAB title (a visible one). While a restore runs, its
 /// pending entries are written too (hwnd 0), so another restart still has them.
-fn save(s: &State) {
+fn save(s: &mut State) {
     save_lines(s, true);
 }
 
-/// Without fingerprints: only L and M lines, and no process opening (the panic path).
-fn save_lines(s: &State, fingerprints: bool) {
+/// Without fingerprints: only L and M lines, and no process opening (an exit that showed everything).
+fn save_lines(s: &mut State, fingerprints: bool) {
     let mut out = String::new();
     if let Some((id, time)) = s.logon {
         out += &format!("L {id:x} {time}\n");
     }
-    let fp = |f: &Fp| format!("\t{}\t{}\t{}\n", f.app, f.class, f.title);
+    let line = |f: &Fp| format!("\t{}\t{}\t{}\n", f.app, f.class, f.title);
+    // Only the apps of windows still listed carry over, so the cache never outgrows them.
+    let (mut old, mut apps) = (std::mem::take(&mut s.apps), HashMap::new());
+    let mut fp = |h: HWND, pid: u32| {
+        let key = (h.0 as isize, pid);
+        let app = old.remove(&key).unwrap_or_else(|| restore::app(h, pid));
+        // A Store window's app id may not be readable yet: ask again next save.
+        if !app.is_empty() && !app.ends_with("\\applicationframehost.exe") {
+            apps.insert(key, app.clone());
+        }
+        line(&Fp { app, class: restore::clean(&class_name(h)), title: restore::clean(&title(h)) })
+    };
+    s.pinned.retain(|&raw| unsafe { IsWindow(Some(HWND(raw as *mut _))) }.as_bool());
     for (dev, m) in &s.monitors {
         out += &format!("M {dev} {}\n", m.active);
         if !fingerprints {
@@ -147,28 +211,87 @@ fn save_lines(s: &State, fingerprints: bool) {
             for &h in list {
                 let hwnd = HWND(h as *mut _);
                 let pid = pid_of(hwnd);
-                out += &format!("W {dev} {ws} {h} {pid}{}", fp(&restore::fingerprint(hwnd, pid)));
+                out += &format!("W {dev} {ws} {h} {pid}{}", fp(hwnd, pid));
             }
         }
         if let Some(mon) = monitor_named(dev) {
             for h in app_windows_on(mon) {
-                out += &format!("V {dev}{}", fp(&restore::fingerprint(h, pid_of(h))));
+                let pid = pid_of(h);
+                if s.pinned.contains(&(h.0 as isize)) {
+                    out += &format!("P {dev} {} {pid}{}", h.0 as isize, fp(h, pid));
+                } else {
+                    out += &format!("V {dev}{}", fp(h, pid));
+                }
             }
         }
     }
     if let Some(r) = s.restore.as_ref().filter(|_| fingerprints) {
         for e in r.pending.iter().map(|&i| &r.saved[i]) {
-            match e.ws {
-                Some(ws) => out += &format!("W {} {ws} 0 0{}", e.dev, fp(&e.fp)),
-                None => out += &format!("V {}{}", e.dev, fp(&e.fp)),
+            match (e.ws, e.pin) {
+                (Some(ws), _) => out += &format!("W {} {ws} 0 0{}", e.dev, line(&e.fp)),
+                (None, true) => out += &format!("P {} 0 0{}", e.dev, line(&e.fp)),
+                (None, false) => out += &format!("V {}{}", e.dev, line(&e.fp)),
             }
         }
     }
+    s.apps = apps;
+    write_state(out);
+}
+
+fn write_state(text: String) {
     // A crash or power loss mid write must never leave half a file.
     let tmp = data_dir().join("state.tmp");
-    if std::fs::write(&tmp, out).is_ok() {
-        let _ = std::fs::rename(&tmp, state_file());
+    if let Err(e) = write_new(&tmp, &text).and_then(|()| std::fs::rename(&tmp, state_file())) {
+        eprintln!("state.txt not saved: {e}");
     }
+}
+
+/// `des-k --quit` with no des-k running (after a crash or kill, or from the uninstaller):
+/// show every window state.txt says des-k hid, if it is still that window and still
+/// cloaked on this Windows desktop (the same check as `load`). Then the file is left as a
+/// quit leaves it, plus the W lines of any window it could not show.
+pub fn rescue() {
+    let Ok(text) = std::fs::read_to_string(state_file()) else { return println!("no saved layout, nothing to show") };
+    let vdm = unsafe { CoCreateInstance::<_, IVirtualDesktopManager>(&VirtualDesktopManager, None, CLSCTX_ALL) }.ok();
+    let Some(shell) = shell_for_exit() else { return };
+    let (out, shown, left) = rescued(&text, |raw, pid| {
+        let h = HWND(raw as *mut _);
+        let on_current = vdm.as_ref().is_some_and(|v| unsafe { v.IsWindowOnCurrentVirtualDesktop(h) }.is_ok_and(|b| b.as_bool()));
+        if !(unsafe { IsWindow(Some(h)) }.as_bool() && pid_of(h) == pid && cloaked(h) == 2 && on_current) {
+            return None; // closed, reused handle, or not hidden by des-k
+        }
+        Some(shell.hide(h, false).inspect_err(|e| eprintln!("could not show saved window {raw:#x}: {e}")).is_ok())
+    });
+    println!("des-k was not running: {shown} hidden window(s) shown, {left} could not be");
+    write_state(out);
+}
+
+/// rescue's pass over state.txt, apart so it can be tested. `show` gets each saved hidden
+/// window (hwnd, pid): None if it is not des-k's any more, else whether it is shown now.
+/// Returns the new file, as a quit leaves it plus the W lines of windows still hidden, and
+/// how many were shown and left.
+fn rescued(text: &str, mut show: impl FnMut(isize, u32) -> Option<bool>) -> (String, usize, usize) {
+    let (mut out, mut shown, mut left) = (String::new(), 0, 0);
+    for line in text.lines() {
+        match line.split('\t').next().unwrap_or("").split(' ').collect::<Vec<_>>().as_slice() {
+            ["L", ..] => out += &format!("{line}\n"),
+            ["M", dev, _] => out += &format!("M {dev} 0\n"),
+            ["W", _, _, raw, pid] => {
+                let (Ok(raw), Ok(pid)) = (raw.parse::<isize>(), pid.parse::<u32>()) else { continue };
+                // hwnd 0: a restore's entry still waiting for its window, nothing to show.
+                match (raw != 0).then(|| show(raw, pid)).flatten() {
+                    Some(true) => shown += 1,
+                    Some(false) => {
+                        left += 1;
+                        out += &format!("{line}\n");
+                    }
+                    None => {}
+                }
+            }
+            _ => {} // V and P lines go, as on a quit: nothing for a restore to match
+        }
+    }
+    (out, shown, left)
 }
 
 pub(crate) fn device_name(m: HMONITOR) -> String {
@@ -354,29 +477,28 @@ fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize, focus: Opt
     let mut fg_hidden = false;
     // Hide bottom-up: hiding the top window first briefly uncovers the ones behind it.
     let mut hid = Vec::new();
-    for h in app_windows_on(mon).into_iter().rev().filter(|&h| Some(h) != keep) {
+    // A pinned window stays in view on every workspace (spec 0014).
+    for h in app_windows_on(mon).into_iter().rev().filter(|&h| Some(h) != keep && !s.pinned.contains(&(h.0 as isize))) {
         match shell.hide(h, true) {
             Ok(()) => {
                 hid.push(h.0 as isize);
                 fg_hidden |= h == fg;
             }
-            Err(e) => eprintln!("cloak {:?} failed: {e}", h.0),
+            Err(e) => {
+                // The cloak can work and only the taskbar step fail: undo it, or nothing tracks it.
+                if cloaked(h) != 0 {
+                    let _ = shell.hide(h, false);
+                }
+                eprintln!("cloak {:?} failed: {e}", h.0);
+            }
         }
     }
     hid.reverse(); // keep top-first, so showing them is top-down (no flash either)
     m.hidden[m.active].extend(hid);
 
-    let mut shown = Vec::new();
-    for raw in std::mem::take(&mut m.hidden[target]) {
-        let h = HWND(raw as *mut _);
-        if !unsafe { IsWindow(Some(h)) }.as_bool() {
-            continue; // closed while hidden
-        }
-        match shell.hide(h, false) {
-            Ok(()) => shown.push(h),
-            Err(e) => eprintln!("uncloak {:?} failed: {e}", h.0),
-        }
-    }
+    let (shown, stuck) = show_all(std::mem::take(&mut m.hidden[target]), |raw| uncloak(&shell, raw));
+    // Still hidden, so still tracked: the next switch back here, quit or panic tries again.
+    m.hidden[target] = stuck;
     m.last_switch = Some((Instant::now(), m.active));
     m.active = target;
     // Those windows now belong to the workspace just left; show_desktop must not bring them back here.
@@ -393,7 +515,7 @@ fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize, focus: Opt
         Some(_) => {}
         // Don't leave keyboard focus in a window we just hid.
         None if fg_hidden || fg_desktop => {
-            let next = shown.first().copied().unwrap_or(unsafe { GetShellWindow() });
+            let next = shown.first().map_or(unsafe { GetShellWindow() }, |&raw| HWND(raw as *mut _));
             unsafe { let _ = SetForegroundWindow(next); }
         }
         None => {}
@@ -403,6 +525,55 @@ fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize, focus: Opt
     s.sent = None;
     save(s);
     true
+}
+
+/// Shows the windows of `list`, top first. `show` gets each one: None if it is closed, else
+/// whether it is in view now. Returns those shown and those still hidden: a window that may
+/// still be cloaked is never dropped, so a later switch, quit or panic tries again.
+fn show_all(list: Vec<isize>, mut show: impl FnMut(isize) -> Option<bool>) -> (Vec<isize>, Vec<isize>) {
+    let (mut shown, mut stuck) = (Vec::new(), Vec::new());
+    for raw in list {
+        match show(raw) {
+            Some(true) => shown.push(raw),
+            Some(false) => stuck.push(raw),
+            None => {} // closed while hidden
+        }
+    }
+    (shown, stuck)
+}
+
+/// show_all's `show` for one window des-k hid.
+fn uncloak(shell: &Shell, raw: isize) -> Option<bool> {
+    let h = HWND(raw as *mut _);
+    if !unsafe { IsWindow(Some(h)) }.as_bool() {
+        return None;
+    }
+    Some(shell.hide(h, false).inspect_err(|e| eprintln!("uncloak {raw:#x} failed: {e}, kept to try again")).is_ok())
+}
+
+/// Pin or unpin the focused window (spec 0014). A pinned window stays in view on every
+/// workspace of the screen it is on, wherever you drag it; sending it anywhere unpins it.
+/// The indicator lights every workspace while it is pinned.
+pub fn pin() {
+    // A dialog is never hidden itself, so its owner is what a switch would hide.
+    let h = unsafe { GetAncestor(GetForegroundWindow(), GA_ROOTOWNER) };
+    if !app_windows().contains(&h) {
+        return println!("pin: nothing to pin (\"{}\", {})", title(h), class_name(h));
+    }
+    let mon = unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) };
+    let name = device_name(mon);
+    let count = settings::get().workspaces;
+    let mut s = state();
+    let raw = h.0 as isize;
+    let pinned = !s.pinned.remove(&raw);
+    if pinned {
+        s.pinned.insert(raw);
+    }
+    let active = s.monitors.entry(name.clone()).or_insert_with(Monitor::new).active;
+    let how = if pinned { "pinned to every workspace".to_string() } else { format!("unpinned, stays on workspace {}", active + 1) };
+    println!("pin: \"{}\" on {name} {how}", title(h));
+    indicator::show_pin(mon, active, count, pinned);
+    save(&mut s);
 }
 
 /// Where a send goes: one step over (-1 / +1, wrapping), or workspace N (0 based).
@@ -453,6 +624,9 @@ pub fn send(to: To, follow: bool) {
         }
     };
     let t = title(h);
+    if s.pinned.remove(&(h.0 as isize)) {
+        println!("send: \"{t}\" unpinned, it goes to one workspace");
+    }
     // Without this, a stay press would hide the window into the shown workspace's own list.
     if !is_repeat && target == from {
         println!("send: \"{t}\" already on {name} workspace {}/{count}", from + 1);
@@ -501,7 +675,7 @@ pub fn send(to: To, follow: bool) {
     s.sent = Some((raw, Instant::now()));
     indicator::show(mon, active, count, (target != active).then_some(target));
     println!("{}", line("stay"));
-    save(&s);
+    save(&mut s);
 }
 
 /// A listed window and where it lives, for the finder (spec 0007).
@@ -561,7 +735,10 @@ pub fn active(device: &str) -> usize {
 /// Present screens' devices, numbered as the finder and the settings page number them: left
 /// to right, then top to bottom.
 pub fn screen_order() -> Vec<String> {
-    let mut all = screens();
+    in_order(screens())
+}
+
+fn in_order(mut all: Vec<(String, RECT)>) -> Vec<String> {
     all.sort_by_key(|(_, r)| (r.left, r.top));
     all.into_iter().map(|(dev, _)| dev).collect()
 }
@@ -618,16 +795,11 @@ pub fn resize(count: usize) -> Vec<String> {
             m.hidden[count - 1] = show;
             continue;
         };
-        for raw in show {
-            let h = HWND(raw as *mut _);
-            if unsafe { IsWindow(Some(h)) }.as_bool()
-                && let Err(e) = shell.hide(h, false)
-            {
-                eprintln!("uncloak {raw:#x} failed: {e}");
-            }
-        }
+        // Kept with the shown workspace, like above.
+        let (_, stuck) = show_all(show, |raw| uncloak(shell, raw));
+        m.hidden[count - 1] = stuck;
     }
-    save(&s);
+    save(&mut s);
     lines
 }
 
@@ -768,7 +940,20 @@ fn work_area(mon: HMONITOR) -> RECT {
     mi.rcWork
 }
 
+/// A window whose app stopped answering (paused in a debugger, say): ShowWindow and
+/// SetWindowPos would wait on it with no time limit, with des-k's lock held.
+fn hung(h: HWND) -> bool {
+    let hung = unsafe { IsHungAppWindow(h) }.as_bool();
+    if hung {
+        eprintln!("\"{}\" is not responding, left as it is", title(h));
+    }
+    hung
+}
+
 fn focus(h: HWND) {
+    if hung(h) {
+        return;
+    }
     unsafe {
         let _ = SetForegroundWindow(h);
         if IsIconic(h).as_bool() {
@@ -796,7 +981,7 @@ pub fn show_desktop() {
         }
         return println!("show desktop: {name}, {} window(s) back", back.len());
     }
-    let list: Vec<HWND> = app_windows_on(mon).into_iter().filter(|&h| !unsafe { IsIconic(h) }.as_bool()).collect();
+    let list: Vec<HWND> = app_windows_on(mon).into_iter().filter(|&h| !unsafe { IsIconic(h) }.as_bool() && !hung(h)).collect();
     let fg = unsafe { GetForegroundWindow() };
     for &h in &list {
         unsafe { let _ = ShowWindow(h, SW_SHOWMINNOACTIVE); }
@@ -833,7 +1018,7 @@ pub fn app_previous() {
         return println!("app_previous: no window on {name}");
     };
     let next = stack.get(1).copied().unwrap_or(top);
-    if next != top {
+    if next != top && !hung(top) {
         unsafe { let _ = SetWindowPos(top, Some(HWND_BOTTOM), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE); }
     }
     focus(next);
@@ -854,7 +1039,7 @@ pub fn go_to(hwnd: HWND) -> Result<(), Miss> {
     let t = title(hwnd);
     let (name, ws) = match hidden_on(&s, hwnd.0 as isize) {
         Some((name, ws)) => {
-            // Its screen left: on_display_change is about to show it anyway.
+            // Its screen left: check_screens shows it if the screen stays gone.
             let Some(mon) = monitor_named(&name) else { return Err(Miss::Gone) };
             switch_to(&mut s, mon, &name, ws, Some(hwnd), None);
             (name, ws)
@@ -920,12 +1105,15 @@ fn show_on(hwnd: HWND, device: &str, activate: bool, who: &str) -> Result<(), Mi
     }
     land(hwnd);
     println!("{who}: brought \"{t}\" to {device}");
-    save(&s);
+    save(&mut s);
     Ok(())
 }
 
 /// To the front of the normal windows, restored if minimized, without taking focus.
 fn raise(h: HWND) {
+    if hung(h) {
+        return;
+    }
     unsafe {
         if IsIconic(h).as_bool() {
             let _ = ShowWindow(h, SW_SHOWNOACTIVATE);
@@ -991,10 +1179,13 @@ pub fn place(hwnd: HWND, device: &str, ws: usize) -> Result<(), Miss> {
     if let Some((dev, w)) = &hidden {
         s.monitors.get_mut(dev).expect("found above").hidden[*w].retain(|&x| x != raw);
     }
+    if s.pinned.remove(&raw) {
+        println!("overview: \"{t}\" unpinned, it goes to one workspace");
+    }
     // Front = top, as a send puts it.
     s.monitors.entry(device.to_string()).or_insert_with(Monitor::new).hidden[ws].insert(0, raw);
     println!("overview: \"{t}\" -> {device} workspace {}/{count}, hidden", ws + 1);
-    save(&s);
+    save(&mut s);
     Ok(())
 }
 
@@ -1048,18 +1239,59 @@ fn map_rect(from: RECT, to: RECT, r: RECT) -> RECT {
     RECT { left, top, right: left + w, bottom: top + h }
 }
 
-/// Uncloak everything we hid. Used on --quit, panic and Ctrl+C.
-pub fn restore_all() {
-    let mut s = state();
-    if let Ok(shell) = Shell::new() {
-        for m in s.monitors.values_mut() {
-            for raw in m.hidden.iter_mut().flat_map(std::mem::take) {
-                let _ = shell.hide(HWND(raw as *mut _), false);
-            }
-            m.active = 0;
+/// A fresh Shell for an exit path, waiting out an explorer restart: the exit gets one chance.
+fn shell_for_exit() -> Option<Shell> {
+    for _ in 0..20 {
+        match Shell::new() {
+            Ok(sh) => return Some(sh),
+            Err(_) => std::thread::sleep(Duration::from_millis(250)),
         }
     }
-    save_lines(&s, false);
+    eprintln!("shell unavailable for 5 s: hidden windows stay hidden, state.txt keeps them");
+    None
+}
+
+/// Uncloak everything we hid. Used on --quit, Ctrl+C and the panic hook.
+pub fn restore_all() {
+    restore_in(&mut state());
+}
+
+fn restore_in(s: &mut State) {
+    let shell = shell_for_exit();
+    let mut left = 0;
+    for m in s.monitors.values_mut() {
+        for list in &mut m.hidden {
+            // No shell: every window still exists and stays hidden, so every one is kept.
+            let (_, stuck) = show_all(std::mem::take(list), |raw| match &shell {
+                Some(sh) => uncloak(sh, raw),
+                None => unsafe { IsWindow(Some(HWND(raw as *mut _))) }.as_bool().then_some(false),
+            });
+            left += stuck.len();
+            *list = stuck;
+        }
+        m.active = 0;
+    }
+    if left > 0 {
+        eprintln!("{left} window(s) could not be shown: state.txt keeps them, the next start shows or adopts them");
+    }
+    save_lines(s, left > 0);
+}
+
+/// The panic hook's restore_all. The hook runs before unwinding drops a lock guard, so a
+/// panic mid switch leaves the state locked on this very thread, and locking again would
+/// hang: then show every window cloak.rs recorded instead.
+pub fn restore_after_panic() {
+    match STATE.try_lock() {
+        Ok(mut s) => restore_in(&mut s),
+        Err(std::sync::TryLockError::Poisoned(e)) => restore_in(&mut e.into_inner()),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            eprintln!("panic while the layout was locked: showing every window des-k cloaked");
+            let Some(shell) = shell_for_exit() else { return };
+            for raw in crate::cloak::ours() {
+                let _ = shell.hide(HWND(raw as *mut _), false);
+            }
+        }
+    }
 }
 
 /// Adopt the layout saved by a previous run (restart, update, hard kill). A saved window
@@ -1078,7 +1310,8 @@ pub fn load() -> bool {
     let present = present_monitors();
     let st = settings::get();
     let count = st.workspaces;
-    let (mut saved_logon, mut adopt, mut hidden, mut visible) = (None, Vec::new(), Vec::new(), Vec::new());
+    let (mut saved_logon, mut adopt, mut hidden, mut visible, mut pins) = (None, Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut pinned = Vec::new();
     for line in text.lines() {
         // The fingerprint follows the first tab; a W line without one is from an older des-k.
         let (head, fp) = match line.split_once('\t') {
@@ -1100,13 +1333,22 @@ pub fn load() -> bool {
                     continue;
                 };
                 if let Some(fp) = fp {
-                    hidden.push((Entry { dev: dev.to_string(), ws: Some(ws), fp }, raw == 0));
+                    hidden.push((Entry { dev: dev.to_string(), ws: Some(ws), pin: false, fp }, raw == 0));
                 }
                 if raw != 0 {
                     adopt.push((dev.to_string(), ws, raw, pid));
                 }
             }
-            ["V", dev] => visible.extend(fp.map(|fp| Entry { dev: dev.to_string(), ws: None, fp })),
+            ["V", dev] => visible.extend(fp.map(|fp| Entry { dev: dev.to_string(), ws: None, pin: false, fp })),
+            ["P", dev, raw, pid] => {
+                let (Ok(raw), Ok(pid)) = (raw.parse::<isize>(), pid.parse::<u32>()) else { continue };
+                if let Some(fp) = fp {
+                    pinned.push((Entry { dev: dev.to_string(), ws: None, pin: true, fp }, raw == 0));
+                }
+                if raw != 0 {
+                    pins.push((raw, pid));
+                }
+            }
             _ => {}
         }
     }
@@ -1119,12 +1361,18 @@ pub fn load() -> bool {
         println!("restore: signed in {} min ago, skipped", since / 60);
     }
     let restoring = st.restore_enabled && if new_sign_in { !late } else { cut_short };
+    // A restart in the same sign in: the same window, same pid, is still pinned.
+    if !new_sign_in {
+        let same = |&(raw, pid): &(isize, u32)| unsafe { IsWindow(Some(HWND(raw as *mut _))) }.as_bool() && pid_of(HWND(raw as *mut _)) == pid;
+        s.pinned.extend(pins.iter().filter(|p| same(p)).map(|&(raw, _)| raw));
+    }
     if restoring {
         // A new sign in: every saved handle is dead. A resume: only the cut entries are left.
         if new_sign_in {
             adopt.clear();
         }
-        let saved: Vec<Entry> = hidden.into_iter().filter(|(_, cut)| new_sign_in || *cut).map(|(e, _)| e).chain(visible).collect();
+        let cut = |(e, cut): (Entry, bool)| (new_sign_in || cut).then_some(e);
+        let saved: Vec<Entry> = hidden.into_iter().filter_map(cut).chain(visible).chain(pinned.into_iter().filter_map(cut)).collect();
         println!("restore: {} {} saved window(s), matching for {} min", if new_sign_in { "new sign in," } else { "resuming," }, saved.len(), st.restore_minutes);
         s.restore = Some(Restore {
             pending: (0..saved.len()).collect(),
@@ -1153,18 +1401,28 @@ pub fn load() -> bool {
             match s.monitors.get_mut(&dev) {
                 Some(m) if present.contains(&dev) && ws < count && m.active != ws => {
                     m.hidden[ws].push(raw);
+                    crate::cloak::adopt(h);
                     kept += 1;
                 }
-                _ => {
-                    if shell.hide(h, false).is_ok() {
-                        shown += 1;
+                _ => match shell.hide(h, false) {
+                    Ok(()) => shown += 1,
+                    Err(e) => {
+                        // Still hidden: tracked, so a switch, quit or screen check tries again.
+                        eprintln!("could not show saved window {raw:#x}: {e}, kept to try again");
+                        let m = s.monitors.entry(dev).or_insert_with(Monitor::new);
+                        let ws = ws.min(m.hidden.len() - 1);
+                        m.hidden[ws].push(raw);
+                        crate::cloak::adopt(h);
                     }
-                }
+                },
             }
         }
         println!("loaded saved layout: {kept} hidden window(s) adopted, {shown} shown again");
     }
-    save(&s);
+    if !s.pinned.is_empty() {
+        println!("loaded saved layout: {} pinned window(s)", s.pinned.len());
+    }
+    save(&mut s);
     restoring
 }
 
@@ -1227,7 +1485,12 @@ pub fn restore_tick() -> bool {
                 println!("restore: \"{}\" stays visible, {why}", fp.title);
             };
             let (dev, Some(ws)) = (r.saved[i].dev.clone(), r.saved[i].ws) else {
-                use_up(r, "as before the restart");
+                if r.saved[i].pin {
+                    s.pinned.insert(h.0 as isize);
+                    use_up(r, "pinned to every workspace, as before the restart");
+                } else {
+                    use_up(r, "as before the restart");
+                }
                 continue;
             };
             match s.monitors.get_mut(&dev) {
@@ -1240,6 +1503,10 @@ pub fn restore_tick() -> bool {
                     let was_fg = unsafe { GetForegroundWindow() } == h;
                     // A brand new window fails to cloak for a moment: nothing used up, next tick retries.
                     if shell.hide(h, true).is_err() {
+                        // The cloak can work and only the taskbar step fail: undo it, or nothing tracks it.
+                        if cloaked(h) != 0 {
+                            let _ = shell.hide(h, false);
+                        }
                         continue;
                     }
                     m.hidden[ws].insert(0, h.0 as isize);
@@ -1282,24 +1549,118 @@ fn finish_restore(s: &mut State) {
     save(s);
 }
 
-/// A monitor that disappears (undocking) takes its hidden workspaces with it, so show those windows.
-pub fn on_display_change() {
-    let present = present_monitors();
-    let mut s = state();
-    let gone: Vec<String> = s.monitors.keys().filter(|d| !present.contains(*d)).cloned().collect();
-    if gone.is_empty() {
+// Tries left to hide every tracked window again after explorer restarted (resync).
+static RESYNC: AtomicU32 = AtomicU32::new(0);
+const RESYNC_TRIES: u32 = 10;
+
+/// Explorer restarted (the tray heard TaskbarCreated): main's next 1 s check runs resync.
+/// Only a flag: the tray's message can arrive inside a call made under the state lock.
+pub fn resync_soon() {
+    RESYNC.store(RESYNC_TRIES, Ordering::Relaxed);
+}
+
+/// After explorer restarts, its new taskbar can list des-k's hidden windows again, and their
+/// cloak may be gone with the old explorer. Hide every tracked window again: both steps do
+/// nothing to a window still hidden. One des-k could not hide and that is in view is dropped
+/// from its list (nothing hidden to lose); a failure on one still cloaked keeps it, and the
+/// whole pass runs again next second, RESYNC_TRIES times at most.
+pub fn resync() {
+    let tries = RESYNC.load(Ordering::Relaxed);
+    if tries == 0 {
         return;
     }
-    let Ok(shell) = Shell::new() else { return eprintln!("shell unavailable on display change") };
-    for dev in gone {
-        if let Some(m) = s.monitors.remove(&dev) {
-            for raw in m.hidden.into_iter().flatten() {
-                let _ = shell.hide(HWND(raw as *mut _), false);
-            }
-            println!("{dev} disconnected: its hidden windows are shown again");
+    RESYNC.store(tries - 1, Ordering::Relaxed);
+    let Ok(shell) = Shell::new() else { return }; // explorer not up yet
+    let mut s = state();
+    let (mut hidden, mut failed, mut in_view) = (0, 0, 0);
+    for m in s.monitors.values_mut() {
+        for list in &mut m.hidden {
+            list.retain(|&raw| {
+                let h = HWND(raw as *mut _);
+                if !unsafe { IsWindow(Some(h)) }.as_bool() {
+                    return false;
+                }
+                match shell.hide(h, true) {
+                    Ok(()) => hidden += 1,
+                    Err(e) if cloaked(h) == 0 => {
+                        eprintln!("explorer restarted: could not hide {raw:#x} again ({e}), it stays in view");
+                        in_view += 1;
+                        return false;
+                    }
+                    Err(e) => {
+                        eprintln!("explorer restarted: could not hide {raw:#x} again ({e}), kept to try again");
+                        failed += 1;
+                    }
+                }
+                true
+            });
         }
     }
-    save(&s);
+    println!("explorer restarted: {hidden} hidden window(s) hidden again, {in_view} left in view, {failed} to try again");
+    if failed == 0 {
+        RESYNC.store(0, Ordering::Relaxed);
+    }
+    if in_view > 0 {
+        save(&mut s);
+    }
+}
+
+/// check_screens' bookkeeping, apart so it can be tested: `missing` are the screens with
+/// workspaces that are not plugged in now. Returns those gone GONE_CHECKS ticks in a row
+/// or more, with their count.
+fn count_gone(gone: &mut HashMap<String, u32>, missing: &[String], tick: bool) -> Vec<(String, u32)> {
+    for dev in gone.keys().filter(|d| !missing.contains(*d)) {
+        println!("{dev} is back: its workspaces were kept");
+    }
+    gone.retain(|d, _| missing.contains(d));
+    let mut due = Vec::new();
+    for dev in missing {
+        let n = gone.entry(dev.clone()).or_insert_with(|| {
+            println!("{dev} disconnected: its hidden windows are shown if it stays gone {GONE_CHECKS} s");
+            0
+        });
+        if tick {
+            *n += 1;
+        }
+        if *n >= GONE_CHECKS {
+            due.push((dev.clone(), *n));
+        }
+    }
+    due
+}
+
+/// A monitor that disappears (undocking) takes its hidden workspaces with it, so show those
+/// windows, but only once it stayed gone GONE_CHECKS checks in a row. Called on every display
+/// change (`tick` false: only notes what is gone or back) and by main's 1 s watch timer
+/// (`tick` true: counts), which also catches a display change lost in a menu's modal loop.
+pub fn check_screens(tick: bool) {
+    let present = present_monitors();
+    let mut guard = state();
+    let s = &mut *guard;
+    let missing: Vec<String> = s.monitors.keys().filter(|d| !present.contains(*d)).cloned().collect();
+    let due = count_gone(&mut s.gone, &missing, tick);
+    if due.is_empty() {
+        return;
+    }
+    let Ok(shell) = Shell::new() else { return eprintln!("shell unavailable on display change, trying again") };
+    for (dev, n) in due {
+        let Some(m) = s.monitors.get_mut(&dev) else { continue };
+        let mut left = 0;
+        for list in &mut m.hidden {
+            let (_, stuck) = show_all(std::mem::take(list), |raw| uncloak(&shell, raw));
+            left += stuck.len();
+            *list = stuck;
+        }
+        if left == 0 {
+            s.monitors.remove(&dev);
+            s.gone.remove(&dev);
+            println!("{dev} disconnected: its hidden windows are shown again");
+        } else if n == GONE_CHECKS {
+            // Still tracked: every later check tries again.
+            eprintln!("{dev} disconnected: {left} window(s) could not be shown, trying again each second");
+        }
+    }
+    save(s);
 }
 
 #[cfg(test)]
@@ -1356,6 +1717,85 @@ mod tests {
         assert_eq!(m.resize(4), Vec::<isize>::new());
         assert_eq!(m.active, 1);
         assert_eq!(m.hidden, vec![vec![5], vec![], vec![], vec![]]);
+    }
+
+    // A screen that drops out for a moment (wake from sleep, a DisplayPort relink) keeps its
+    // workspaces: only GONE_CHECKS one second checks in a row count, and display change
+    // events alone never do, however many arrive.
+    #[test]
+    fn a_screen_must_stay_gone_before_its_windows_are_shown() {
+        let mut gone = HashMap::new();
+        let dp = ["DISPLAY2".to_string()];
+        for _ in 0..50 {
+            assert!(count_gone(&mut gone, &dp, false).is_empty());
+        }
+        for _ in 1..GONE_CHECKS {
+            assert!(count_gone(&mut gone, &dp, true).is_empty());
+        }
+        assert_eq!(count_gone(&mut gone, &dp, true), vec![("DISPLAY2".to_string(), GONE_CHECKS)]);
+    }
+
+    // Two short drop outs never add up to one long one: a screen that comes back starts at zero.
+    #[test]
+    fn a_screen_that_comes_back_starts_counting_again() {
+        let mut gone = HashMap::new();
+        let dp = ["DISPLAY2".to_string()];
+        for _ in 1..GONE_CHECKS {
+            count_gone(&mut gone, &dp, true);
+        }
+        assert!(count_gone(&mut gone, &[], true).is_empty());
+        assert!(gone.is_empty());
+        for _ in 1..GONE_CHECKS {
+            assert!(count_gone(&mut gone, &dp, true).is_empty());
+        }
+    }
+
+    // --quit after a crash must never lose a window: one it could not show keeps its W line,
+    // so the next start or --quit still finds it. Shown windows and V lines go and every
+    // screen shows workspace 1, as after a quit.
+    #[test]
+    fn rescue_keeps_the_line_of_a_window_it_could_not_show() {
+        let text = "L 1a2b 1700000000\nM DISPLAY1 2\n\
+            W DISPLAY1 1 100 7\tapp\tclass\tshown\n\
+            W DISPLAY1 2 200 8\tapp\tclass\tstuck\n\
+            W DISPLAY1 1 300 9\tapp\tclass\tclosed\n\
+            W DISPLAY1 1 0 0\tapp\tclass\tpending\n\
+            V DISPLAY1\tapp\tclass\tvisible\n";
+        let mut asked = Vec::new();
+        let (out, shown, left) = rescued(text, |raw, pid| {
+            asked.push((raw, pid));
+            match raw {
+                100 => Some(true),
+                200 => Some(false),
+                _ => None,
+            }
+        });
+        assert_eq!((shown, left), (1, 1));
+        assert_eq!(out, "L 1a2b 1700000000\nM DISPLAY1 0\nW DISPLAY1 2 200 8\tapp\tclass\tstuck\n");
+        assert_eq!(asked, vec![(100, 7), (200, 8), (300, 9)], "a restore's hwnd 0 entry is no window to show");
+    }
+
+    // "S · W" numbers in the finder and the settings page must match what you see: screens
+    // counted from the left, then from the top.
+    #[test]
+    fn screens_are_numbered_left_to_right_then_top_down() {
+        let r = |left, top| rect(left, top, left + 100, top + 100);
+        let got = in_order(vec![("D1".into(), r(0, 0)), ("D2".into(), r(-1920, 0)), ("D3".into(), r(0, -1080)), ("D4".into(), r(2560, 200))]);
+        assert_eq!(got, ["D2", "D3", "D1", "D4"]);
+    }
+
+    // A window that fails to show is never dropped: it may still be cloaked, and only a list
+    // lets a later switch, quit or panic show it. A closed one goes. Shown windows keep their
+    // top first order, so focus lands on the old top one.
+    #[test]
+    fn a_window_that_fails_to_show_stays_tracked() {
+        let (shown, stuck) = show_all(vec![1, 2, 3, 4], |raw| match raw {
+            2 => Some(false),
+            3 => None,
+            _ => Some(true),
+        });
+        assert_eq!(shown, vec![1, 4]);
+        assert_eq!(stuck, vec![2]);
     }
 
     // A window hanging off its old screen must still land fully on the new one, never lost off its edge.

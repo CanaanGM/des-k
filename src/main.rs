@@ -5,9 +5,11 @@
 // Win+F opens the window finder: search every window on every screen and workspace.
 // Win+Tab opens the workspace overview on every screen: every workspace and its windows.
 // Three and four finger touchpad gestures run what settings.toml maps them to, read by des-k itself (spec 0011).
+// Win+Ctrl+P pins the focused window to every workspace of its screen (spec 0014).
 // The Copilot key acts as Right Ctrl. `des-k --quit` (or Ctrl+C in a console) shows
-// every hidden window again and exits. Release builds have no console and log to
-// %LOCALAPPDATA%\des-k\des-k.log.
+// every hidden window again and exits; `des-k --start` (the Start menu entry) starts the
+// installed des-k through its logon task, so it runs as admin. Release builds have no
+// console and log to %LOCALAPPDATA%\des-k\des-k.log.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod cloak;
@@ -22,6 +24,7 @@ mod settings_page;
 mod setup;
 mod touchpad;
 mod tray;
+mod ui;
 mod welcome;
 mod ws;
 
@@ -69,11 +72,20 @@ unsafe extern "system" fn on_console_close(event: u32) -> BOOL {
 
 /// No console (release build started at login): send println!/eprintln! to a log file.
 /// Rust's stdio looks the std handle up on every write, so swapping it here is enough.
-fn log_to_file_without_console() {
+/// `append`: add to the log (a `--quit` with nothing running) instead of starting a new one.
+fn log_to_file_without_console(append: bool) {
     if !unsafe { GetConsoleWindow() }.is_invalid() {
         return;
     }
-    if let Ok(f) = std::fs::File::create(ws::data_dir().join("des-k.log")) {
+    let log = ws::data_dir().join("des-k.log");
+    let file = if append {
+        ws::append_to(&log)
+    } else {
+        // The last run's log survives one restart: after a crash it still says why.
+        let _ = std::fs::rename(&log, ws::data_dir().join("des-k.old.log"));
+        ws::create_fresh(&log)
+    };
+    if let Ok(f) = file {
         let h = HANDLE(f.into_raw_handle());
         unsafe {
             let _ = SetStdHandle(STD_OUTPUT_HANDLE, h);
@@ -96,12 +108,41 @@ fn elevated() -> windows::core::Result<bool> {
     }
 }
 
+/// `des-k --start`: runs the logon task, which starts the installed des-k as admin. Started
+/// straight from the Start menu it would run without admin, and then the task's copy could
+/// not start (spec 0008). Logs to the console only: no des-k log is open yet.
+fn start_task() {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let schtasks = std::env::var("SystemRoot").map_or("schtasks.exe".into(), |r| format!(r"{r}\System32\schtasks.exe"));
+    match std::process::Command::new(schtasks).args(["/run", "/tn", "des-k"]).creation_flags(CREATE_NO_WINDOW).status() {
+        Ok(s) if s.success() => println!("des-k task started"),
+        Ok(s) => eprintln!("des-k task did not start ({s}): install des-k first, with its setup or install.ps1"),
+        Err(e) => eprintln!("schtasks did not run: {e}"),
+    }
+}
+
 fn main() -> windows::core::Result<()> {
     let running = unsafe { FindWindowW(indicator::CLASS, None) }.ok();
+    if std::env::args().nth(1).as_deref() == Some("--start") {
+        match running {
+            Some(_) => println!("des-k is already running"),
+            None => start_task(),
+        }
+        return Ok(());
+    }
     if std::env::args().nth(1).as_deref() == Some("--quit") {
         match running {
             Some(h) => unsafe { PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0))? },
-            None => println!("des-k is not running"),
+            None => {
+                // Stopped by a crash or a kill: still show what it hid and give Windows its
+                // gestures back, as a quit would (the uninstaller relies on this).
+                log_to_file_without_console(true);
+                println!("des-k --quit: des-k is not running");
+                unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok()? };
+                ws::rescue();
+                setup::write_back();
+            }
         }
         return Ok(());
     }
@@ -110,7 +151,7 @@ fn main() -> windows::core::Result<()> {
         println!("des-k is already running");
         return Ok(());
     }
-    log_to_file_without_console(); // only now: a second copy must not truncate the running one's log
+    log_to_file_without_console(false); // only now: a second copy must not truncate the running one's log
     match elevated() {
         Ok(true) => println!("des-k runs as admin: its keys work whatever window has focus"),
         Ok(false) => println!("des-k runs without admin: its keys stop while an admin window (Task Manager, an admin terminal) has focus"),
@@ -134,10 +175,13 @@ fn main() -> windows::core::Result<()> {
     }
 
     let default_panic = std::panic::take_hook();
+    // Any thread: a des-k missing its keyboard hook or touchpad reader must not run on, so it
+    // always ends here, after showing every window.
     std::panic::set_hook(Box::new(move |info| {
-        ws::restore_all();
-        setup::write_back();
         default_panic(info);
+        ws::restore_after_panic();
+        setup::write_back();
+        std::process::exit(101);
     }));
     unsafe { let _ = SetConsoleCtrlHandler(Some(on_console_close), true); }
 
@@ -168,16 +212,16 @@ fn main() -> windows::core::Result<()> {
 
     let mut msg = MSG::default();
     while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
-        // Any switch, jump, send or screen change closes the finder and the overview first,
+        // Any switch, jump, send, pin or screen change closes the finder and the overview first,
         // focus back (specs 0007, 0010).
-        if matches!(msg.message, WM_APP | indicator::WM_DISPLAY_CHANGED | keys::WM_SEND | keys::WM_JUMP | keys::WM_SEND_TO) {
+        if matches!(msg.message, WM_APP | indicator::WM_DISPLAY_CHANGED | keys::WM_SEND | keys::WM_JUMP | keys::WM_SEND_TO | keys::WM_PIN) {
             finder::close(true);
             overview::close(true);
         }
         match msg.message {
             WM_APP => ws::switch(msg.wParam.0 as isize),
             indicator::WM_DISPLAY_CHANGED => {
-                ws::on_display_change();
+                ws::check_screens(false);
                 settings_page::tick();
             }
             WM_FOLLOW => {
@@ -190,6 +234,7 @@ fn main() -> windows::core::Result<()> {
             keys::WM_SEND => ws::send(ws::To::Step(msg.wParam.0 as isize), msg.lParam.0 != 0),
             keys::WM_JUMP => ws::jump(msg.wParam.0),
             keys::WM_SEND_TO => ws::send(ws::To::Index(msg.wParam.0), msg.lParam.0 != 0),
+            keys::WM_PIN => ws::pin(),
             keys::WM_FINDER => {
                 overview::close(true);
                 finder::toggle();
@@ -210,9 +255,15 @@ fn main() -> windows::core::Result<()> {
             }
             WM_TIMER if msg.hwnd.is_invalid() && watch_timer != 0 && msg.wParam.0 == watch_timer => {
                 settings::watch();
+                ws::check_screens(true);
+                ws::resync();
+                tray::warn_if_broken();
                 settings_page::tick();
             }
-            WM_CLOSE => break, // posted by `des-k --quit` and the tray's Quit
+            // Posted by `des-k --quit` (to the indicator) and the tray's Quit. The finder and
+            // the overview post WM_CLOSE to any window they close, des-k's own settings page
+            // and welcome screen too: those go to their window, never end des-k.
+            WM_CLOSE if matches!(ws::class_name(msg.hwnd).as_str(), "des-k-indicator" | "des-k-tray") => break,
             // Indicator, tray, finder, overview, welcome screen and settings page messages.
             // TranslateMessage makes the finder's typed characters and IME input; the finder and the
             // overview take their own keys before that, and the welcome screen's go through

@@ -1,6 +1,6 @@
 // On-screen workspace indicator: a row of dots centered on the switched monitor,
 // the active one drawn as a wider bright pill, and the workspace a window was just sent to
-// in an accent color. Holds briefly, then fades out.
+// in an accent color, or every other one for a window just pinned. Holds briefly, then fades out.
 // Lives on the main thread (its messages come through main's loop).
 use std::cell::Cell;
 use windows::Win32::{
@@ -34,6 +34,7 @@ thread_local! {
     static ACTIVE: Cell<usize> = const { Cell::new(0) };
     static COUNT: Cell<usize> = const { Cell::new(0) };
     static SENT: Cell<Option<usize>> = const { Cell::new(None) };
+    static ALL: Cell<bool> = const { Cell::new(false) }; // a window was just pinned: every workspace lit
     static SCALE: Cell<f32> = const { Cell::new(1.0) };
     static ALPHA: Cell<u8> = const { Cell::new(0) };
     static STEP: Cell<u8> = const { Cell::new(OPAQUE) }; // alpha lost per fade tick
@@ -69,7 +70,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 let mut x = px(PAD);
                 for i in 0..COUNT.get() {
                     let w = if i == ACTIVE.get() { px(ACTIVE_W) } else { d };
-                    let brush = if i == ACTIVE.get() { on } else if SENT.get() == Some(i) { sent } else { off };
+                    let brush = if i == ACTIVE.get() { on } else if ALL.get() || SENT.get() == Some(i) { sent } else { off };
                     SelectObject(hdc, brush.into());
                     let _ = RoundRect(hdc, x, top, x + w, top + d, d, d);
                     x += w + px(GAP);
@@ -132,6 +133,18 @@ fn window() -> Option<HWND> {
 /// Show `active` (0-based) of `count` workspaces, centered on `mon`'s work area, with
 /// `sent` (0-based, never `active`) in the accent color.
 pub fn show(mon: HMONITOR, active: usize, count: usize, sent: Option<usize>) {
+    ALL.set(false);
+    show_now(mon, active, count, sent);
+}
+
+/// After a pin (spec 0014): every workspace but `active` in the accent color while `pinned`,
+/// the window being on all of them; plain dots after an unpin.
+pub fn show_pin(mon: HMONITOR, active: usize, count: usize, pinned: bool) {
+    ALL.set(pinned);
+    show_now(mon, active, count, None);
+}
+
+fn show_now(mon: HMONITOR, active: usize, count: usize, sent: Option<usize>) {
     let st = settings::get();
     if !st.indicator_enabled {
         return;

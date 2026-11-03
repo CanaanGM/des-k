@@ -191,8 +191,9 @@ Tracer Bullet: tasks 1 and 2 give a working end to end restore (reboot, a single
 - Fingerprints are only as fresh as the last save (a switch, a display change, or start). A window whose title changed a lot since then may stay visible. A window opened after the last switch has no `V` entry, so after a reboot it can compete with a hidden window of the same app for that app's `W` entry.
 - Apps whose exe path holds a version folder (some Electron apps) change `app` after an update, so their windows miss after a reboot that also updated them.
 - Apps that don't reopen their windows (no session restore, not in "restart apps") are not restored; des-k never relaunches them.
-- During the period, a window you open yourself from an app that had exactly one saved window, or whose saved windows all sat on one workspace, can be taken by that entry.
-- `save()` now opens each window's process to read its exe path, on every switch. A few dozen windows cost a few milliseconds; the cache keeps ticks cheap.
+- During the period, a window you open yourself from an app that had exactly one saved window, or whose saved windows all sat on one workspace, can be taken by that entry. The 2026-11-03 review raised this; the owner kept rule 2 as it is, since a wrong pick lands where that app's windows lived anyway.
+- `save()` now opens each window's process to read its exe path, on every switch. A few dozen windows cost a few milliseconds; the cache keeps ticks cheap. Since 2026-11-03 `save()` keeps each window's app by (hwnd, pid), so it opens a process only for a window it has not saved before.
+- Since spec 0014 a pinned window saves as a `P` line, an entry with `pin` set; rule 2 treats pinned as a place of its own.
 - Window titles now sit in `state.txt` in plain text.
 
 **Neutral**:

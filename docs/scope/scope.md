@@ -34,6 +34,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 14 | Settings page | Slice 7 | in-progress |
 | 15 | Setup exe installer | Slice 8 | in-progress |
 | 16 | Site guide follows the installer | Slice 8 | done |
+| 17 | Pin a window to every workspace | Slice 9 | in-progress |
 
 ## Already built
 
@@ -56,7 +57,7 @@ A dots popup in the middle of the switched screen, DPI aware, fades out. A redes
 Release build with no console, one copy at a time, log file, `--quit`, and `install.ps1` that registers start at login. Starting at login confirmed by you (2026-10-30). code in `src/main.rs`, `install.ps1`
 
 ### G. Layout survives restarts and undocking · in-progress
-Saves each screen's workspace and every hidden window, and adopts them on start. Restart was confirmed working; showing a disconnected screen's hidden windows has not been tried yet. code in `src/ws.rs`
+Saves each screen's workspace and every hidden window, and adopts them on start. Restart was confirmed working. A screen now counts as gone only after 10 one second checks in a row, so a short drop out (sleep, a DisplayPort relink) keeps its workspaces; neither the short nor the long case has been tried yet. A window that fails to show stays tracked, `--quit` with des-k stopped shows what `state.txt` says it hid, and after an explorer restart des-k hides its windows again (2026-11-03 review). code in `src/ws.rs`
 
 ## Foundations
 
@@ -230,6 +231,18 @@ The online guide still tells people to unzip and run `install.ps1`; it should ma
 - [x] Build it: `/develop site guide follows the installer`
 spec [0013](../specs/0013-setup-exe-installer.md) · code in `site/guide-content.html`, `site/index.html` (same body, edit both together)
 
+## Slice 9: From the review
+
+### 17. Pin a window to every workspace · in-progress · from spec 0014
+Win+Ctrl+P keeps the focused window in view on every workspace of its screen (a call, music, notes); again unpins it.
+**Done when:** a pinned window stays through switches both ways, survives a restart, and a send unpins it.
+spec [0014](../specs/0014-pin-window.md) · code in `src/ws.rs`, `src/keys.rs`, `src/settings.rs`, `src/indicator.rs`
+- [x] Design it (spec): `/architect pin window`
+- [ ] Build it: `/develop pin window`
+  - [x] Pin and unpin, switches skip pinned windows, the indicator, a send unpins (AC-1, AC-2, AC-4, AC-6, AC-7)
+  - [x] `P` lines: kept over a restart, matched after a reboot (AC-5)
+  - [ ] Tried on your screens (all ACs)
+
 ## Deferred
 Out of scope for the current build pass, kept so the plan stays honest.
 - **Indicator redesign**: a nicer popup look, asked for later · needs a decision
@@ -240,6 +253,7 @@ Out of scope for the current build pass, kept so the plan stays honest.
 - **Owned dialogs on hidden workspaces**: des-k never hides a hidden window's dialogs, so they float over the wrong workspace; check when building feature 4 (from spec 0002) · needs a decision
 - **Relaunch apps after a reboot**: start apps that don't reopen their own windows, so restore has something to match (from spec 0003) · needs a decision
 - **Stable screen names**: `DISPLAY1` and `DISPLAY2` can swap after a reboot or a dock change; key saved screens by something stable, only if they get mixed up (from spec 0003) · needs a decision
+- **Restart after a crash**: Task Scheduler's restart on failure does not restart a task whose program exits with an error code (tried 2026-11-03), so it would not help; the Start menu entry starts des-k again by hand · needs a decision
 - **Code signing**: sign the setup exe and `des-k.exe` so SmartScreen stops warning (SignPath Foundation, Azure Trusted Signing, Certum open source, plus a winget manifest), put off for now (from spec 0013) · needs a decision
 
 ## Legend

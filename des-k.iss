@@ -42,6 +42,11 @@ Type: files; Name: "{localappdata}\pdesk\pdesk.exe"
 Type: files; Name: "{localappdata}\des-k\pdesk.exe"
 Type: filesandordirs; Name: "{autopf}\pdesk"
 
+; Starts des-k again after a Quit or a crash, through its task so it runs as admin
+; (des-k --start); a plain des-k.exe here would start a normal copy. Same entry as install.ps1's.
+[Icons]
+Name: "{userprograms}\des-k"; Filename: "{app}\des-k.exe"; Parameters: "--start"; Comment: "Start des-k as admin, through its logon task"
+
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "pdesk"; Flags: deletevalue
 
@@ -154,7 +159,12 @@ end;
 function InitializeUninstall: Boolean;
 begin
   Result := True;
-  if not Running then exit;
+  if not Running then begin
+    // Stopped by a crash or a kill: --quit still shows what it hid and gives Windows its
+    // touchpad gestures back.
+    Run(ExpandConstant('{app}\des-k.exe'), '--quit');
+    exit;
+  end;
   // Quit, not a kill: it shows every hidden window and hands Windows its touchpad gestures back.
   Run(ExpandConstant('{app}\des-k.exe'), '--quit');
   if not WaitFor(False, 100) then begin

@@ -1,8 +1,8 @@
 // Touchpad reader and gesture recognizer (spec 0011), on its own thread like the keyboard
 // hook, so frames (about 125 a second) never queue behind a slow switch. It reads every
 // precision touchpad's raw reports through Raw Input, follows the fingers, and posts
-// WM_GESTURE (wparam = rule index in settings' gestures) to the main thread. It never runs
-// an action itself.
+// WM_GESTURE (wparam = the gesture, gestures::pack) to the main thread. It never runs an
+// action itself.
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
@@ -17,7 +17,7 @@ use windows::core::{PCWSTR, w};
 
 use crate::settings::{self, Motion};
 
-/// Thread message to the main thread: run gesture rule wparam.
+/// Thread message to the main thread: run the rule of gesture wparam (gestures::pack).
 pub const WM_GESTURE: u32 = WM_APP + 8;
 /// Thread message to the main thread: a touchpad came or went, so an open welcome screen refreshes.
 pub const WM_TOUCHPADS_CHANGED: u32 = WM_APP + 9;
@@ -316,13 +316,15 @@ impl Session {
     }
 }
 
-/// Hands rule `rule` to the main thread, or logs that the gesture has none.
+/// Hands rule `rule`'s gesture to the main thread, or logs that the gesture has none. The
+/// gesture, not the index: a settings reload before the main thread reads it may reorder rules.
 fn post(fingers: usize, motion: Motion, rule: Option<usize>) {
-    match rule.and_then(|i| Some((i, settings::get().gestures.get(i)?))) {
-        Some((i, g)) => {
+    match rule.and_then(|i| settings::get().gestures.get(i)) {
+        Some(g) => {
             println!("gesture {g} → {}", g.action);
             unsafe {
-                let _ = PostThreadMessageW(MAIN_THREAD.load(Ordering::Relaxed), WM_GESTURE, WPARAM(i), LPARAM(0));
+                let w = crate::gestures::pack(g.fingers, g.motion, g.times);
+                let _ = PostThreadMessageW(MAIN_THREAD.load(Ordering::Relaxed), WM_GESTURE, WPARAM(w), LPARAM(0));
             }
         }
         None => println!("gesture {fingers} {} → no rule", motion.word()),

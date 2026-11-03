@@ -515,7 +515,7 @@ footer .footnote:empty { display: none; }
     <h1>Every screen gets its <em>own</em> desktops</h1>
     <p>des-k lets each monitor switch its own workspaces. The other screens stay where they are. This page shows how to install it, use it and remove it.</p>
     <div class="pills"><span class="pill">Runs on <b>Windows 11</b></span><span class="pill">Built with <b>Rust</b></span><span class="pill">Windows stay <b>floating</b></span></div>
-    <p class="meta"><span class="chip sage">Reviewed</span><span>Updated <time datetime="2026-11-02">2 Nov 2026</time></span><span>7 min read</span></p>
+    <p class="meta"><span class="chip sage">Reviewed</span><span>Updated <time datetime="2026-11-03">3 Nov 2026</time></span><span>8 min read</span></p>
   </header>
   <aside class="related" aria-label="Related"><p class="toc-title">Related</p><ul><li><a href="https://github.com/CanaanGM/des-k">The code on GitHub</a></li><li><a href="https://github.com/CanaanGM/des-k#readme">The README</a></li></ul></aside>
   <main class="sections">
@@ -627,9 +627,10 @@ cd des-k</code></pre></li>
       <tr><td><code>Win+Shift+Left</code> / <code>Right</code></td><td>Move a window to another screen (this one comes from Windows)</td></tr>
       <tr><td><code>Win+F</code></td><td>Open the <a href="#find-any-window">finder</a></td></tr>
       <tr><td><code>Win+Tab</code></td><td>Open the <a href="#see-everything-at-once">overview</a></td></tr>
+      <tr><td><code>Win+Ctrl+P</code></td><td>Pin the window in front: it stays on every workspace of its screen. Press again to unpin.</td></tr>
     </tbody>
   </table></div>
-  <p>After each switch, a small row of dots shows for a moment. It tells you which workspace you are on.</p>
+  <p>After each switch, a small row of dots shows for a moment. It tells you which workspace you are on. After a pin, every dot lights up, because the window is on all of them. Sending a pinned window to a workspace unpins it.</p>
   <div class="callout watch"><strong>des-k takes two Windows shortcuts.</strong> <code>Win+Tab</code> no longer opens Task View. <code>Win+1</code> … <code>9</code> no longer open taskbar apps. You can change this in the <a href="#settings">settings</a>.</div>
 </section>
 
@@ -692,25 +693,24 @@ cd des-k</code></pre></li>
       <tr><td><code>Esc</code>, a click on the background, or <code>Win+Tab</code></td><td>Close the overview</td></tr>
     </tbody>
   </table></div>
-  <div class="callout note"><strong>The overview is new.</strong> It is still being finished. Animations are not built yet.</div>
 </section>
 
 <section class="card">
   <p class="kicker">Steps</p>
   <h2>Switch with the touchpad</h2>
-  <p>A four finger swipe can switch des-k's workspaces. You set it up once in Windows:</p>
+  <p>des-k reads three and four finger swipes and taps itself, so they work over every window, admin ones too. Out of the box, a four finger swipe left or right switches the workspace of the screen under the mouse.</p>
+  <p>Windows has its own gestures, and one swipe must never do two things. So des-k acts only while Windows' own three and four finger gestures are set to <strong>Nothing</strong>. The first time des-k starts, a welcome screen helps you:</p>
   <ol class="steps">
-    <li>Open <strong>Settings → Bluetooth &amp; devices → Touchpad → Advanced gestures</strong>.</li>
-    <li>Set the four finger swipe left to the custom shortcut <code>Win+Ctrl+Right</code>.</li>
-    <li>Set the four finger swipe right to <code>Win+Ctrl+Left</code>.</li>
+    <li><strong>Set up in Windows Settings</strong> saves your current Windows values and opens Settings at Touchpad. Set the gestures there to Nothing.</li>
+    <li><strong>Choose my own</strong> does the same, and also opens the des-k settings page at Touchpad, where you change what each gesture does.</li>
   </ol>
-  <p>Swap the two if the other way feels more natural to you.</p>
+  <p>Open that screen again any time: settings page, Touchpad, <strong>Touchpad setup</strong>. <strong>Give gestures back to Windows</strong> there writes your saved values back.</p>
 </section>
 
 <section class="card">
   <p class="kicker">Reference</p>
   <h2>Settings</h2>
-  <p>Right click the des-k icon in the tray, then <strong>Open settings</strong>. The file is <code>%LOCALAPPDATA%\des-k\settings.toml</code>. Each line has a comment that says what it does.</p>
+  <p>Right click the des-k icon in the tray, then <strong>Settings</strong>. The settings page can change everything below. The file behind it is <code>%LOCALAPPDATA%\des-k\settings.toml</code>. Each line has a comment that says what it does.</p>
   <div class="table-wrap"><table>
     <thead><tr><th>Setting</th><th>Default</th><th>Allowed</th><th>What it changes</th></tr></thead>
     <tbody>
@@ -728,7 +728,7 @@ cd des-k</code></pre></li>
       <tr><td><code>[overview] live</code></td><td>true</td><td>true, false</td><td>The overview updates as windows open and close</td></tr>
     </tbody>
   </table></div>
-  <p>des-k reads the file once, when it starts. After you edit it, run <code>install.ps1</code> again, or sign out and back in.</p>
+  <p>des-k checks the file once a second and uses a change at once. Only the <code>[restore]</code> settings wait for the next start.</p>
   <div class="callout tip"><strong>A typo cannot break des-k.</strong> A bad value only sets that one setting back to its default. The log says which one.</div>
 </section>
 
@@ -738,14 +738,14 @@ cd des-k</code></pre></li>
     <li>A hidden window leaves the taskbar and Alt+Tab, so each screen shows only what is on it. Admin windows, like Task Manager, still show in Alt+Tab.</li>
     <li>When a hidden window comes to the front by itself, des-k switches its screen to that workspace.</li>
     <li>After a restart of the PC, des-k puts reopened windows back where they were, for the first 3 minutes after sign in.</li>
-    <li>The tray icon menu has <strong>Open settings</strong>, <strong>Open log</strong> and <strong>Quit</strong>.</li>
+    <li>The tray icon menu has <strong>Settings</strong>, <strong>Open log</strong> and <strong>Quit</strong>.</li>
   </ul>
 </section>
 
 <section class="card">
   <p class="kicker">Steps</p>
   <h2>Stop or remove des-k</h2>
-  <p>To stop it, click <strong>Quit</strong> in the tray menu. Every hidden window comes back, so nothing is lost. des-k also forgets which window was on which workspace.</p>
+  <p>To stop it, click <strong>Quit</strong> in the tray menu. Every hidden window comes back, so nothing is lost. des-k also forgets which window was on which workspace. To start it again, open <strong>des-k</strong> from the Start menu.</p>
   <p>To remove it completely, uninstall <strong>des-k</strong> from <strong>Settings → Apps → Installed apps</strong>. The uninstaller quits des-k first, so every hidden window comes back.</p>
   <p>If you installed with <code>install.ps1</code> instead:</p>
   <ol class="steps">
@@ -780,13 +780,13 @@ Remove-Item -Recurse "$env:ProgramFiles\des-k"</code></pre></li>
     <thead><tr><th>When</th><th>Do this</th></tr></thead>
     <tbody>
       <tr><td>A window seems lost</td><td>Press <code>Win+F</code> and search for it, or open the overview with <code>Win+Tab</code>.</td></tr>
-      <tr><td>The shortcuts do nothing</td><td>Check the des-k icon is in the tray. If it is not, run the setup again (or <code>install.ps1</code>).</td></tr>
+      <tr><td>The shortcuts do nothing</td><td>Check the des-k icon is in the tray. If it is not, open <strong>des-k</strong> from the Start menu.</td></tr>
       <tr><td><code>install.ps1</code> says scripts are blocked</td><td>Use the full command with <code>-ExecutionPolicy Bypass</code>, as in the install steps.</td></tr>
-      <tr><td>Everything looks wrong</td><td>Click <strong>Quit</strong> in the tray. Every window comes back. Then run the setup again (or <code>install.ps1</code>).</td></tr>
+      <tr><td>Everything looks wrong</td><td>Click <strong>Quit</strong> in the tray. Every window comes back. Then open <strong>des-k</strong> from the Start menu.</td></tr>
       <tr><td>You want to know why something happened</td><td>Tray → <strong>Open log</strong>. The log says what des-k did and why.</td></tr>
     </tbody>
   </table></div>
-  <div class="callout watch"><strong>des-k uses a hidden part of Windows</strong> to hide windows. It works on Windows 11 25H2, but a big Windows update could change that.</div>
+  <div class="callout watch"><strong>des-k uses a hidden part of Windows</strong> to hide windows. It works on Windows 11 25H2, but a big Windows update could change that. If it does, the tray shows a warning.</div>
 </section>
   </main>
 

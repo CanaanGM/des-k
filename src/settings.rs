@@ -73,6 +73,7 @@ pub enum Action {
     ShowDesktop,
     AppNext,
     AppPrevious,
+    Pin,
     Keys(&'static [u16]), // typed as des-k's own input, straight to Windows
     MiddleClick,
     Nothing,
@@ -91,6 +92,7 @@ const ACTIONS: &[(&str, Action)] = &[
     ("show_desktop", Action::ShowDesktop),
     ("app_next", Action::AppNext),
     ("app_previous", Action::AppPrevious),
+    ("pin", Action::Pin),
     ("search", Action::Keys(&[VK_LWIN.0, b'S' as u16])),
     ("notifications", Action::Keys(&[VK_LWIN.0, b'N' as u16])),
     ("middle_click", Action::MiddleClick),
@@ -116,6 +118,7 @@ const ACTION_LABELS: &[(&str, &str)] = &[
     ("show_desktop", "show desktop"),
     ("app_next", "next app"),
     ("app_previous", "previous app"),
+    ("pin", "pin window to every workspace"),
     ("search", "search"),
     ("notifications", "notifications"),
     ("middle_click", "middle click"),
@@ -154,6 +157,7 @@ pub struct Settings {
     pub send_to_stay: Option<u8>,
     pub finder: Vec<Combo>, // opens the window finder (spec 0007)
     pub overview: Vec<Combo>, // opens the workspace overview (spec 0010)
+    pub pin: Vec<Combo>,      // keeps the focused window on every workspace (spec 0014)
     pub indicator_enabled: bool,
     pub hold_ms: u32,
     pub fade_ms: u32,
@@ -205,6 +209,7 @@ impl Default for Settings {
             send_to_stay: Some(WIN | CTRL),
             finder: vec![Combo { mods: WIN, vk: b'F' as u16 }],
             overview: vec![Combo { mods: WIN, vk: VK_TAB.0 }],
+            pin: vec![Combo { mods: WIN | CTRL, vk: b'P' as u16 }],
             indicator_enabled: true,
             hold_ms: 550,
             fade_ms: 200,
@@ -245,6 +250,8 @@ send_to_stay = "Win+Ctrl"    # and stay where you are
 finder = ["Win+F"]
 # Every workspace of every screen at once, like Task View (which it replaces on Win+Tab).
 overview = ["Win+Tab"]
+# Keep the focused window on every workspace of its screen; press again to undo.
+pin = ["Win+Ctrl+P"]
 
 [indicator]
 enabled = true
@@ -272,7 +279,7 @@ twice_ms = 300              # how long a gesture with a "times = 2" rule waits f
 # times = 1 or 2 (optional); do = an action below, or a key combo like "Ctrl+Shift+T".
 # Actions: previous, next, send_previous, send_next, send_previous_stay, send_next_stay,
 # jump_1 to jump_9, send_to_1 to send_to_9, send_to_stay_1 to send_to_stay_9, finder, overview,
-# show_desktop, app_next, app_previous, search, notifications, middle_click, play_pause,
+# show_desktop, app_next, app_previous, pin, search, notifications, middle_click, play_pause,
 # next_track, previous_track, volume_up, volume_down, mute, none.
 # Writing any [[gesture]] block replaces this whole list.
 [[gesture]]
@@ -327,7 +334,7 @@ do = "notifications"
 "#;
 
 const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activation", "shortcuts", "indicator", "restore", "overview", "touchpad", "gesture"];
-const SHORTCUT_KEYS: &[&str] = &["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "jump", "send_to", "send_to_stay", "finder", "overview"];
+const SHORTCUT_KEYS: &[&str] = &["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "jump", "send_to", "send_to_stay", "finder", "overview", "pin"];
 const INDICATOR_KEYS: &[&str] = &["enabled", "hold_ms", "fade_ms"];
 const RESTORE_KEYS: &[&str] = &["enabled", "minutes"];
 const OVERVIEW_KEYS: &[&str] = &["animation", "labels", "live"];
@@ -565,7 +572,7 @@ pub fn write(edit: Edit) -> Result<(), String> {
     };
     let new = edit_text(&text, &edit)?;
     let tmp = path.with_extension("toml.tmp");
-    if let Err(e) = std::fs::write(&tmp, new).and_then(|()| std::fs::rename(&tmp, &path)) {
+    if let Err(e) = crate::ws::write_new(&tmp, &new).and_then(|()| std::fs::rename(&tmp, &path)) {
         let why = format!("cannot save {} ({e})", path.display());
         eprintln!("settings: {why}");
         return Err(why);
@@ -698,9 +705,9 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
         } else {
             (s.previous, s.next) = (previous, next);
         }
-        // Switch keys always win: a send list (or the finder, or the overview) sharing a combo with
+        // Switch keys always win: a send list (or the finder, the overview, pin) sharing a combo with
         // them, or with an earlier list still on, is turned off (an empty list never matches)
-        // (specs 0004, 0007, 0010).
+        // (specs 0004, 0007, 0010, 0014).
         let mut taken = vec![("previous", s.previous.clone()), ("next", s.next.clone())];
         let sends = [
             ("send_previous", &mut s.send_previous),
@@ -709,6 +716,7 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
             ("send_next_stay", &mut s.send_next_stay),
             ("finder", &mut s.finder),
             ("overview", &mut s.overview),
+            ("pin", &mut s.pin),
         ];
         for (key, list) in sends {
             let got = combos(t, key, &format!("shortcuts.{key}"), list, &mut warn);
@@ -820,7 +828,7 @@ pub fn savable(vk: u16) -> bool {
 }
 
 /// The shortcut lists in the order the hook tries them, then the digit sets (keys::shortcut).
-pub const LISTS: [&str; 8] = ["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "finder", "overview"];
+pub const LISTS: [&str; 9] = ["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "finder", "overview", "pin"];
 pub const SETS: [&str; 3] = ["jump", "send_to", "send_to_stay"];
 
 /// Who already uses a combo the page is about to save (spec 0012 AC-9).
@@ -848,6 +856,7 @@ impl Settings {
             "send_next_stay" => &self.send_next_stay,
             "finder" => &self.finder,
             "overview" => &self.overview,
+            "pin" => &self.pin,
             _ => &[],
         }
     }
@@ -1245,6 +1254,7 @@ impl Settings {
             ("shortcuts.send_to_stay", mods_text(self.send_to_stay).to_string()),
             ("shortcuts.finder", list(&self.finder)),
             ("shortcuts.overview", list(&self.overview)),
+            ("shortcuts.pin", list(&self.pin)),
             ("indicator.enabled", self.indicator_enabled.to_string()),
             ("indicator.hold_ms", self.hold_ms.to_string()),
             ("indicator.fade_ms", self.fade_ms.to_string()),
@@ -1772,6 +1782,6 @@ do = "previous"
         let mut unique = names.clone();
         unique.sort();
         unique.dedup();
-        assert_eq!((names.len(), unique.len()), (26, 26));
+        assert_eq!((names.len(), unique.len()), (27, 27));
     }
 }

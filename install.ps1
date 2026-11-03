@@ -86,4 +86,12 @@ if ($p.ExitCode) { exit $p.ExitCode }
 # pdesk, from before the rename) could start a normal copy first.
 Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name pdesk -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $env:LOCALAPPDATA 'pdesk\pdesk.exe'), (Join-Path $env:LOCALAPPDATA 'des-k\pdesk.exe') -ErrorAction SilentlyContinue
+
+# Starts des-k again after a Quit or a crash, through its task so it runs as admin
+# (des-k --start); a plain des-k.exe here would start a normal copy. Same entry as des-k.iss's.
+$link = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path ([Environment]::GetFolderPath('Programs')) 'des-k.lnk'))
+$link.TargetPath = $exe
+$link.Arguments = '--start'
+$link.Description = 'Start des-k as admin, through its logon task'
+$link.Save()
 Write-Host "des-k installed to $exe, starts as admin at login. Stop it with: & '$exe' --quit"

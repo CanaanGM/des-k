@@ -17,8 +17,6 @@ use windows::Win32::{
 };
 use windows::core::PWSTR;
 
-use crate::ws::{class_name, title};
-
 /// What identifies a window across a reboot, where its handle and pid are new.
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct Fp {
@@ -27,11 +25,13 @@ pub struct Fp {
     pub title: String,
 }
 
-/// A saved window: `ws` is `Some` for a hidden one (`W` line), `None` for a visible one (`V`).
+/// A saved window: `ws` is `Some` for a hidden one (`W` line), `None` for a visible one (`V`),
+/// or a pinned one (`P`, `pin` set: in view on every workspace, spec 0014).
 #[derive(Clone, PartialEq, Debug)]
 pub struct Entry {
     pub dev: String,
     pub ws: Option<usize>,
+    pub pin: bool,
     pub fp: Fp,
 }
 
@@ -83,10 +83,6 @@ fn app_id(hwnd: HWND) -> Option<String> {
     }
 }
 
-pub fn fingerprint(hwnd: HWND, pid: u32) -> Fp {
-    Fp { app: app(hwnd, pid), class: clean(&class_name(hwnd)), title: clean(&title(hwnd)) }
-}
-
 /// The current logon session id and its logon time in Unix seconds. A new id means a new
 /// sign in (reboot, Fast Startup boot, or sign out and back in).
 pub fn logon() -> Option<(u64, i64)> {
@@ -135,8 +131,8 @@ pub fn pick(saved: &[Entry], pending: &[usize], fp: &Fp, pass: u8) -> Pick {
     }
 
     // The whole group, used entries too: once a visible entry of the app is used up, its
-    // hidden siblings must still need a title to decide.
-    let mut places = saved.iter().filter(|e| same(e)).map(|e| e.ws.map(|ws| (e.dev.as_str(), ws)));
+    // hidden siblings must still need a title to decide. Pinned is a place of its own.
+    let mut places = saved.iter().filter(|e| same(e)).map(|e| (e.pin, e.ws.map(|ws| (e.dev.as_str(), ws))));
     let first_place = places.next().expect("candidates come from this group");
     if places.all(|p| p == first_place) {
         return Pick::Take(first);
@@ -165,10 +161,10 @@ mod tests {
         Fp { app: app.into(), class: class.into(), title: title.into() }
     }
     fn hidden(dev: &str, ws: usize, f: Fp) -> Entry {
-        Entry { dev: dev.into(), ws: Some(ws), fp: f }
+        Entry { dev: dev.into(), ws: Some(ws), pin: false, fp: f }
     }
     fn visible(f: Fp) -> Entry {
-        Entry { dev: "DISPLAY1".into(), ws: None, fp: f }
+        Entry { dev: "DISPLAY1".into(), ws: None, pin: false, fp: f }
     }
     const EDGE: &str = r"c:\edge\msedge.exe";
     const WIN: &str = "Chrome_WidgetWin_1";
@@ -187,6 +183,15 @@ mod tests {
     fn a_visible_plus_hidden_group_never_matches_on_rule_2() {
         let saved = [visible(fp(EDGE, WIN, "Docs")), hidden("DISPLAY1", 1, fp(EDGE, WIN, "Mail"))];
         assert_eq!(pick(&saved, &[1], &fp(EDGE, WIN, "Something else"), 2), Pick::Unclear);
+    }
+
+    // A guess between a pinned and a plain window of one app would pin the wrong one (spec 0014).
+    #[test]
+    fn a_pinned_plus_visible_group_never_matches_on_rule_2() {
+        let pinned = Entry { pin: true, ..visible(fp(EDGE, WIN, "Music")) };
+        let saved = [pinned, visible(fp(EDGE, WIN, "Docs"))];
+        assert_eq!(pick(&saved, &[0, 1], &fp(EDGE, WIN, "New tab"), 2), Pick::Unclear);
+        assert_eq!(pick(&saved, &[0, 1], &fp(EDGE, WIN, "music"), 2), Pick::Take(0));
     }
 
     #[test]

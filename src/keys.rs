@@ -7,18 +7,26 @@
 //   WM_SEND_TO (wparam = index, lparam as WM_SEND). The lists above win (spec 0005).
 // - The finder shortcut: posted as WM_FINDER, once per press (spec 0007).
 // - The overview shortcut: posted as WM_OVERVIEW, once per press (spec 0010).
+// - The pin shortcut: posted as WM_PIN, once per press (spec 0014).
 // - Copilot key (sends LWin, LShift, F23): turned into Right Ctrl, unless settings turn it off.
 // - The keys and clicks touchpad gestures type (spec 0011).
 // - Recording for the settings page: while on, every key is swallowed and none of the above
 //   fires; each first key down that is not a modifier goes to the main thread as WM_RECORDED
 //   (wparam = vk, lparam = modifier bits) (spec 0012 AC-7).
+// - A watch: Windows silently removes a low level hook that answers too slowly, and then
+//   every shortcut goes to Windows. Raw input counts the keys too; keys it saw that the hook
+//   never did mean the hook is gone, and it is installed again.
 use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use windows::Win32::{
-    Foundation::{LPARAM, LRESULT, WPARAM},
+    Foundation::{HWND, LPARAM, LRESULT, WPARAM},
     System::LibraryLoader::GetModuleHandleW,
-    UI::{Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
+    UI::{
+        Input::{KeyboardAndMouse::*, RAWINPUTDEVICE, RIDEV_INPUTSINK, RegisterRawInputDevices},
+        WindowsAndMessaging::*,
+    },
 };
+use windows::core::{PCWSTR, w};
 
 use crate::settings::{self, ALT, CTRL, Combo, SHIFT, WIN};
 
@@ -36,6 +44,8 @@ pub const WM_FINDER: u32 = WM_APP + 6;
 pub const WM_OVERVIEW: u32 = WM_APP + 7;
 /// Thread message: the settings page's recorder got a key (spec 0012).
 pub const WM_RECORDED: u32 = WM_APP + 10;
+/// Thread message: pin or unpin the focused window (spec 0014).
+pub const WM_PIN: u32 = WM_APP + 12;
 
 static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
 static RECORDING: AtomicBool = AtomicBool::new(false);
@@ -61,7 +71,15 @@ thread_local! {
     // Keys whose down the recorder swallowed: their repeats and up are swallowed too, even
     // after recording ends, so Windows never sees half a key.
     static SWALLOWED: RefCell<[bool; 256]> = const { RefCell::new([false; 256]) };
+    // The watch: the hook, and key events each side saw since the last check.
+    static HOOK: Cell<Option<HHOOK>> = const { Cell::new(None) };
+    static HOOK_CALLS: Cell<u32> = const { Cell::new(0) };
+    static RAW_KEYS: Cell<u32> = const { Cell::new(0) };
 }
+
+const WATCH_CLASS: PCWSTR = w!("des-k-keys");
+const WATCH_TIMER: usize = 1;
+const WATCH_MS: u32 = 5000;
 
 fn mod_of(vk: u16) -> u8 {
     match VIRTUAL_KEY(vk) {
@@ -202,6 +220,29 @@ fn digit(vk: u16) -> Option<usize> {
     }
 }
 
+/// What a pressed combo does: (message, wparam, lparam follow), or None for a key that is
+/// not des-k's. The lists first, in settings::LISTS order, then the digit sets in order, so a
+/// list holding one of a set's digits keeps it (spec 0012 AC-8). Modifiers must match exactly.
+fn decide(st: &settings::Settings, combo: Combo) -> Option<(u32, isize, isize)> {
+    // (list, message, wparam direction, lparam follow)
+    let all: [(&[Combo], u32, isize, isize); 9] = [
+        (&st.previous, WM_APP, -1, 0),
+        (&st.next, WM_APP, 1, 0),
+        (&st.send_previous, WM_SEND, -1, 1),
+        (&st.send_next, WM_SEND, 1, 1),
+        (&st.send_previous_stay, WM_SEND, -1, 0),
+        (&st.send_next_stay, WM_SEND, 1, 0),
+        (&st.finder, WM_FINDER, 0, 0),
+        (&st.overview, WM_OVERVIEW, 0, 0),
+        (&st.pin, WM_PIN, 0, 0),
+    ];
+    let sets = [(st.jump, WM_JUMP, 0), (st.send_to, WM_SEND_TO, 1), (st.send_to_stay, WM_SEND_TO, 0)];
+    all.iter().find(|(list, ..)| list.contains(&combo)).map(|&(_, msg, dir, follow)| (msg, dir, follow)).or_else(|| {
+        let i = digit(combo.vk)?;
+        sets.iter().find(|(set, ..)| *set == Some(combo.mods)).map(|&(_, msg, follow)| (msg, i as isize, follow))
+    })
+}
+
 /// A switch or send shortcut: act on key down, and swallow its down, repeats and up.
 fn shortcut(vk: u16, up: bool) -> bool {
     // A held send acts once, even if a modifier is let go meanwhile: otherwise a held
@@ -218,29 +259,11 @@ fn shortcut(vk: u16, up: bool) -> bool {
         _ => {}
     }
     let st = settings::get();
-    // (list, message, wparam direction, lparam follow)
-    let all: [(&[Combo], u32, isize, isize); 8] = [
-        (&st.previous, WM_APP, -1, 0),
-        (&st.next, WM_APP, 1, 0),
-        (&st.send_previous, WM_SEND, -1, 1),
-        (&st.send_next, WM_SEND, 1, 1),
-        (&st.send_previous_stay, WM_SEND, -1, 0),
-        (&st.send_next_stay, WM_SEND, 1, 0),
-        (&st.finder, WM_FINDER, 0, 0),
-        (&st.overview, WM_OVERVIEW, 0, 0),
-    ];
-    let index = digit(vk);
-    if index.is_none() && !all.iter().any(|(list, ..)| list.iter().any(|c| c.vk == vk)) {
+    if digit(vk).is_none() && !settings::LISTS.iter().any(|l| st.list(l).iter().any(|c| c.vk == vk)) {
         return false; // most keys: skip the modifier lookups
     }
     let combo = Combo { mods: mods_held(), vk };
-    // (message, wparam, lparam follow): the lists first, then the digit sets in order.
-    let sets = [(st.jump, WM_JUMP, 0), (st.send_to, WM_SEND_TO, 1), (st.send_to_stay, WM_SEND_TO, 0)];
-    let found = all.iter().find(|(list, ..)| list.contains(&combo)).map(|&(_, msg, dir, follow)| (msg, dir, follow)).or_else(|| {
-        let i = index?;
-        sets.iter().find(|(set, ..)| *set == Some(combo.mods)).map(|&(_, msg, follow)| (msg, i as isize, follow))
-    });
-    let Some((msg, wparam, follow)) = found else {
+    let Some((msg, wparam, follow)) = decide(st, combo) else {
         return false;
     };
     if !up {
@@ -248,8 +271,8 @@ fn shortcut(vk: u16, up: bool) -> bool {
         if combo.mods & (WIN | ALT) != 0 {
             send(&[(VK_MASK, false), (VK_MASK, true)]);
         }
-        // A held finder or overview key would open and close it over and over.
-        if matches!(msg, WM_SEND | WM_SEND_TO | WM_FINDER | WM_OVERVIEW) {
+        // A held finder, overview or pin key would toggle it over and over.
+        if matches!(msg, WM_SEND | WM_SEND_TO | WM_FINDER | WM_OVERVIEW | WM_PIN) {
             SEND_HELD.set(Some(vk));
         }
         unsafe {
@@ -331,6 +354,7 @@ fn handle(vk: u16, up: bool) -> bool {
 }
 
 unsafe extern "system" fn hook(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    HOOK_CALLS.set(HOOK_CALLS.get().wrapping_add(1));
     if code == HC_ACTION as i32 {
         let k = unsafe { &*(lp.0 as *const KBDLLHOOKSTRUCT) };
         let up = matches!(wp.0 as u32, WM_KEYUP | WM_SYSKEYUP);
@@ -341,14 +365,126 @@ unsafe extern "system" fn hook(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe { CallNextHookEx(None, code, wp, lp) }
 }
 
+/// Whether the hook looks removed: since the last check raw input saw a few key events and
+/// the hook none. A quiet keyboard says nothing either way.
+fn hook_gone(hook_calls: u32, raw_keys: u32) -> bool {
+    hook_calls == 0 && raw_keys >= 3
+}
+
+fn install() -> windows::core::Result<HHOOK> {
+    unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook), Some(GetModuleHandleW(None)?.into()), 0) }
+}
+
+unsafe extern "system" fn watch(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    match m {
+        WM_INPUT => RAW_KEYS.set(RAW_KEYS.get().wrapping_add(1)),
+        WM_TIMER if wp.0 == WATCH_TIMER => {
+            if hook_gone(HOOK_CALLS.take(), RAW_KEYS.take()) {
+                if let Some(old) = HOOK.take() {
+                    unsafe { let _ = UnhookWindowsHookEx(old); }
+                }
+                match install() {
+                    Ok(new) => {
+                        HOOK.set(Some(new));
+                        eprintln!("keyboard hook: Windows had removed it (it answered too slowly once), installed again");
+                    }
+                    Err(e) => eprintln!("keyboard hook: Windows had removed it and it could not be installed again ({e}), trying again in {} s", WATCH_MS / 1000),
+                }
+            }
+            return LRESULT(0);
+        }
+        _ => {}
+    }
+    // WM_INPUT too: DefWindowProc frees what raw input allocated.
+    unsafe { DefWindowProcW(h, m, wp, lp) }
+}
+
+/// The watch's message only window. Without it the hook still works, only unwatched: logged.
+fn start_watch() {
+    unsafe {
+        let Ok(module) = GetModuleHandleW(None) else { return };
+        let wc = WNDCLASSW { lpfnWndProc: Some(watch), hInstance: module.into(), lpszClassName: WATCH_CLASS, ..Default::default() };
+        RegisterClassW(&wc);
+        let hwnd = match CreateWindowExW(Default::default(), WATCH_CLASS, w!(""), Default::default(), 0, 0, 0, 0, Some(HWND_MESSAGE), None, Some(module.into()), None) {
+            Ok(h) => h,
+            Err(e) => return eprintln!("keyboard hook: no watch window, a hook Windows removes stays gone: {e}"),
+        };
+        // INPUTSINK: keys arrive whatever window has focus. Keyboard: usage page 1, usage 6.
+        let rid = RAWINPUTDEVICE { usUsagePage: 0x01, usUsage: 0x06, dwFlags: RIDEV_INPUTSINK, hwndTarget: hwnd };
+        if let Err(e) = RegisterRawInputDevices(&[rid], size_of::<RAWINPUTDEVICE>() as u32) {
+            return eprintln!("keyboard hook: no raw input, a hook Windows removes stays gone: {e}");
+        }
+        SetTimer(Some(hwnd), WATCH_TIMER, WATCH_MS, None);
+    }
+}
+
 pub fn spawn(main_thread: u32) {
     MAIN_THREAD.store(main_thread, Ordering::Relaxed);
     std::thread::spawn(|| unsafe {
-        let module = GetModuleHandleW(None).expect("module handle");
-        let _hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook), Some(module.into()), 0).expect("keyboard hook");
+        HOOK.set(Some(install().expect("keyboard hook")));
+        start_watch();
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
             DispatchMessageW(&msg);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::Settings;
+
+    fn c(mods: u8, vk: u16) -> Combo {
+        Combo { mods, vk }
+    }
+
+    // The defaults the README promises: a wrong message here moves the wrong thing.
+    #[test]
+    fn the_default_keys_do_what_the_readme_says() {
+        let s = Settings::default();
+        assert_eq!(decide(&s, c(WIN | CTRL, VK_LEFT.0)), Some((WM_APP, -1, 0)));
+        assert_eq!(decide(&s, c(WIN | CTRL | SHIFT, VK_RIGHT.0)), Some((WM_SEND, 1, 1)));
+        assert_eq!(decide(&s, c(WIN | CTRL | ALT, VK_LEFT.0)), Some((WM_SEND, -1, 0)));
+        assert_eq!(decide(&s, c(WIN, b'3' as u16)), Some((WM_JUMP, 2, 0)));
+        assert_eq!(decide(&s, c(WIN | SHIFT, VK_NUMPAD9.0)), Some((WM_SEND_TO, 8, 1)));
+        assert_eq!(decide(&s, c(WIN | CTRL, b'1' as u16)), Some((WM_SEND_TO, 0, 0)));
+        assert_eq!(decide(&s, c(WIN | CTRL, b'P' as u16)), Some((WM_PIN, 0, 0)));
+    }
+
+    // Everything des-k does not own must reach Windows and the apps: an extra modifier is
+    // another shortcut (Win+Ctrl+Shift+Alt+Left), and 0 is no workspace.
+    #[test]
+    fn other_combos_pass_through() {
+        let s = Settings::default();
+        assert_eq!(decide(&s, c(WIN | CTRL | SHIFT | ALT, VK_LEFT.0)), None);
+        assert_eq!(decide(&s, c(CTRL, VK_LEFT.0)), None);
+        assert_eq!(decide(&s, c(WIN, b'0' as u16)), None);
+        assert_eq!(decide(&s, c(WIN | ALT, b'1' as u16)), None, "no digit set has Win+Alt");
+    }
+
+    // The settings page tells you a list on one of a set's digits keeps that digit (spec 0012 AC-8).
+    #[test]
+    fn a_list_beats_a_digit_set_on_its_digit() {
+        let s = Settings { finder: vec![c(WIN, b'2' as u16)], ..Settings::default() };
+        assert_eq!(decide(&s, c(WIN, b'2' as u16)), Some((WM_FINDER, 0, 0)));
+        assert_eq!(decide(&s, c(WIN, b'3' as u16)), Some((WM_JUMP, 2, 0)));
+    }
+
+    // Typing with the hook gone sends every shortcut to Windows' own desktops; a quiet keyboard
+    // must not count as gone, or the hook would be reinstalled for nothing every few seconds.
+    #[test]
+    fn only_keys_the_hook_never_heard_mean_it_is_gone() {
+        assert!(hook_gone(0, 3));
+        assert!(!hook_gone(0, 0), "nobody typed");
+        assert!(!hook_gone(0, 2), "a key or two can fall between two checks");
+        assert!(!hook_gone(1, 40), "the hook heard some");
+    }
+
+    // A set turned off ("" in the file) gives its digits back to Windows (Win+1 opens a taskbar app).
+    #[test]
+    fn a_set_turned_off_matches_nothing() {
+        let s = Settings { jump: None, ..Settings::default() };
+        assert_eq!(decide(&s, c(WIN, b'1' as u16)), None);
+    }
 }

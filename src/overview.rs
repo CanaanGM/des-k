@@ -23,6 +23,7 @@ use windows::core::{BOOL, PCWSTR, w};
 use crate::finder::{self, BG, DIM, TEXT};
 use crate::indicator::ACCENT;
 use crate::settings::{self, Animation, Labels};
+use crate::ui::{self, text};
 use crate::ws::{self, Miss};
 
 const CLASS: PCWSTR = w!("des-k-overview");
@@ -186,6 +187,11 @@ impl Screen {
 
     fn rects(&self) -> Vec<RECT> {
         self.slots.iter().map(|s| s.rect).collect()
+    }
+
+    /// The band under a spread window, where its label goes.
+    fn band(&self, s: &Slot) -> RECT {
+        RECT { left: s.rect.left, top: s.rect.bottom, right: s.rect.right, bottom: s.rect.bottom + self.px(LABEL) }
     }
 
     /// Every preview on this screen: the spread first, then the tiles' minis.
@@ -491,27 +497,6 @@ fn thumb(host: HWND, src: HWND, full: RECT, shown: RECT) -> Option<Thumb> {
     Some(t)
 }
 
-fn font(scale: f32) -> HFONT {
-    unsafe {
-        CreateFontW(
-            -((FONT_PX * scale).round() as i32),
-            0,
-            0,
-            0,
-            FW_SEMIBOLD.0 as i32,
-            0,
-            0,
-            0,
-            DEFAULT_CHARSET,
-            OUT_DEFAULT_PRECIS,
-            CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY,
-            (DEFAULT_PITCH.0 | FF_DONTCARE.0) as u32,
-            w!("Segoe UI"),
-        )
-    }
-}
-
 fn popup(r: RECT, layered: bool) -> Option<HWND> {
     unsafe {
         let inst = GetModuleHandleW(None).ok()?;
@@ -607,7 +592,7 @@ fn open() {
             eprintln!("overview: close button for {device} not created");
             HWND::default()
         });
-        let mut sc = Screen { device, popup, rect, scale, font: font(scale), shown: 0, tiles: Vec::new(), slots: Vec::new(), close_btn, note: None };
+        let mut sc = Screen { device, popup, rect, scale, font: ui::font(w!("Segoe UI"), FONT_PX * scale, FW_SEMIBOLD.0 as i32), shown: 0, tiles: Vec::new(), slots: Vec::new(), close_btn, note: None };
         sc.build(&places);
         screens.push(sc);
     }
@@ -1172,10 +1157,16 @@ fn on_move(popup: HWND, pt: POINT) {
 /// After `hover` changed from `old`: the X moves to the hovered window (or hides), and the
 /// hover label redraws. Every screen, since the mouse may have crossed onto another one.
 fn hover_changed(old: Option<(HWND, HWND)>) {
-    let Some((buttons, new)) = SESSION.with_borrow(|s| {
+    let Some((buttons, bands)) = SESSION.with_borrow(|s| {
         let s = s.as_ref()?;
         let at = |sc: &Screen| s.hover.filter(|(p, _)| *p == sc.popup).and_then(|(_, h)| sc.close_spot(h));
-        Some((s.screens.iter().map(|sc| (sc.close_btn, at(sc))).collect::<Vec<_>>(), s.hover))
+        // Only the old and the new label change, so only their bands repaint: a whole popup
+        // is a whole screen. A window no longer laid out repaints its whole popup.
+        let band = |(p, h): (HWND, HWND)| {
+            let sc = s.screens.iter().find(|sc| sc.popup == p);
+            (p, sc.and_then(|sc| Some(sc.band(sc.slots.iter().find(|x| x.hwnd == h)?))))
+        };
+        Some((s.screens.iter().map(|sc| (sc.close_btn, at(sc))).collect::<Vec<_>>(), [old, s.hover].into_iter().flatten().map(band).collect::<Vec<_>>()))
     }) else {
         return;
     };
@@ -1188,7 +1179,9 @@ fn hover_changed(old: Option<(HWND, HWND)>) {
         }
     }
     if settings::get().overview_labels == Labels::Hover {
-        invalidate([old, new].into_iter().flatten().map(|(p, _)| p));
+        for (p, r) in bands {
+            unsafe { let _ = InvalidateRect(Some(p), r.as_ref().map(|r| r as *const RECT), false); }
+        }
     }
 }
 
@@ -1199,14 +1192,6 @@ fn on_close_click() {
     }
 }
 
-fn text(dc: HDC, s: &str, mut r: RECT, color: COLORREF, align: DRAW_TEXT_FORMAT) {
-    let mut wide: Vec<u16> = s.encode_utf16().collect();
-    unsafe {
-        SetTextColor(dc, color);
-        DrawTextW(dc, &mut wide, &mut r, align | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
-    }
-}
-
 fn icon(dc: HDC, icon: HICON, x: i32, y: i32, size: i32) {
     unsafe { let _ = DrawIconEx(dc, x, y, icon, size, size, 0, None, DI_NORMAL); }
 }
@@ -1214,7 +1199,7 @@ fn icon(dc: HDC, icon: HICON, x: i32, y: i32, size: i32) {
 /// The band under a spread window: its title, after its icon when `with_icon`, centered
 /// together and cut with … when too long.
 fn label(dc: HDC, sc: &Screen, s: &Slot, with_icon: bool) {
-    let mut r = RECT { left: s.rect.left, top: s.rect.bottom, right: s.rect.right, bottom: s.rect.bottom + sc.px(LABEL) };
+    let mut r = sc.band(s);
     if with_icon {
         let (size, gap) = (sc.px(ICON), sc.px(ICON_GAP));
         let wide: Vec<u16> = s.title.encode_utf16().collect();
@@ -1299,32 +1284,31 @@ fn paint(hwnd: HWND) {
         let hdc = BeginPaint(hwnd, &mut ps);
         let mut rc = RECT::default();
         let _ = GetClientRect(hwnd, &mut rc);
-        // Drawn off screen first, like the finder, so a repaint never flickers.
-        let mem = CreateCompatibleDC(Some(hdc));
-        let bmp = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
-        let old = SelectObject(mem, bmp.into());
-        let bg = CreateSolidBrush(BG);
-        FillRect(mem, &rc, bg);
-        let _ = DeleteObject(bg.into());
-        let drawn = SESSION.with_borrow(|s| {
-            let Some(s) = s.as_ref() else { return false };
-            let Some(sc) = s.screens.iter().find(|sc| sc.popup == hwnd) else { return false };
-            let mine = |at: Option<(HWND, HWND)>| at.filter(|(p, _)| *p == hwnd).map(|(_, h)| h);
-            draw(mem, sc, mine(s.hover), mine(s.selection()));
-            true
-        });
-        if !drawn {
-            // A popup fading out keeps its picture, without the marks.
-            LEAVING.with_borrow(|l| {
-                if let Some(sc) = l.iter().flat_map(|l| &l.screens).find(|sc| sc.popup == hwnd) {
-                    draw(mem, sc, None, None);
-                }
+        // Drawn off screen first, like the finder, so a repaint never flickers. The buffer
+        // holds only the part that needs painting (a hover label's band, say), not the whole
+        // screen, and is shifted so the drawing keeps popup coordinates.
+        let dirty = ps.rcPaint;
+        ui::buffered(hdc, dirty.left, dirty.top, dirty.right - dirty.left, dirty.bottom - dirty.top, |mem| {
+            let _ = SetViewportOrgEx(mem, -dirty.left, -dirty.top, None);
+            let bg = CreateSolidBrush(BG);
+            FillRect(mem, &rc, bg);
+            let _ = DeleteObject(bg.into());
+            let drawn = SESSION.with_borrow(|s| {
+                let Some(s) = s.as_ref() else { return false };
+                let Some(sc) = s.screens.iter().find(|sc| sc.popup == hwnd) else { return false };
+                let mine = |at: Option<(HWND, HWND)>| at.filter(|(p, _)| *p == hwnd).map(|(_, h)| h);
+                draw(mem, sc, mine(s.hover), mine(s.selection()));
+                true
             });
-        }
-        let _ = BitBlt(hdc, 0, 0, rc.right, rc.bottom, Some(mem), 0, 0, SRCCOPY);
-        SelectObject(mem, old);
-        let _ = DeleteObject(bmp.into());
-        let _ = DeleteDC(mem);
+            if !drawn {
+                // A popup fading out keeps its picture, without the marks.
+                LEAVING.with_borrow(|l| {
+                    if let Some(sc) = l.iter().flat_map(|l| &l.screens).find(|sc| sc.popup == hwnd) {
+                        draw(mem, sc, None, None);
+                    }
+                });
+            }
+        });
         let _ = EndPaint(hwnd, &ps);
     }
 }

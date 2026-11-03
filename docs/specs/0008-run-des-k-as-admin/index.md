@@ -138,4 +138,5 @@ Tracer Bullet: get one admin des-k working end to end by hand first, then make i
 - [ ] Write spec 0009, Alt+Tab per workspace: no code, admin windows are the known exception (decided earlier in this session, now numbered 0009).
 - [x] After build step 2, update spec 0001's settings location line (an `/architect` update) and let `/sync` fix `AGENTS.md`.
 - [x] A setup exe installer (`des-k.iss`) now does the same install as `install.ps1`, plus an uninstaller: spec [0013](../0013-setup-exe-installer.md). The two task definitions must stay identical.
+- [x] Start again by hand (2026-11-03 review): both installers add a Start menu entry that runs `des-k --start`, which runs the task (`schtasks /run` works without admin, checked), so des-k starts as admin. Restart on failure was tried on a test task and does not restart a program that exits with an error code, so the task has none.
 - [ ] Scope feature F (install race): the new running check in `install.ps1` makes the race loud. Whether to also retry the copy stays with feature F.

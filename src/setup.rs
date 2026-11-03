@@ -314,7 +314,7 @@ fn load() -> Option<File> {
 /// A hard kill mid write must never lose your saved values.
 fn save(f: &File) -> bool {
     let tmp = crate::ws::data_dir().join("touchpad.tmp");
-    match std::fs::write(&tmp, format(f)).and_then(|()| std::fs::rename(&tmp, path())) {
+    match crate::ws::write_new(&tmp, &format(f)).and_then(|()| std::fs::rename(&tmp, path())) {
         Ok(()) => true,
         Err(e) => {
             eprintln!("touchpad.txt: cannot write it: {e}");

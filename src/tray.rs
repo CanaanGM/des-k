@@ -1,6 +1,7 @@
-// Tray icon near the clock: shows des-k is running, with Settings, Open log and Quit.
-// Lives on the main thread (its messages come through main's loop) and adds itself again
-// whenever explorer restarts.
+// Tray icon near the clock: shows des-k is running, with Settings, Open log and Quit, and
+// warns once when hiding windows stopped working. Lives on the main thread (its messages come
+// through main's loop), adds itself again whenever explorer restarts, and has des-k hide its
+// windows again then.
 use std::cell::Cell;
 use std::path::Path;
 use windows::Win32::{
@@ -13,8 +14,8 @@ use windows::Win32::{
     },
     UI::{
         Shell::{
-            CSIDL_DESKTOP, IShellBrowser, IShellDispatch2, IShellFolderViewDual, IShellWindows, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE,
-            NIM_MODIFY, NOTIFYICONDATAW, SID_STopLevelBrowser, SVGIO_BACKGROUND, SWC_DESKTOP, SWFO_NEEDDISPATCH, ShellExecuteW, ShellWindows,
+            CSIDL_DESKTOP, IShellBrowser, IShellDispatch2, IShellFolderViewDual, IShellWindows, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_WARNING,
+            NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, SID_STopLevelBrowser, SVGIO_BACKGROUND, SWC_DESKTOP, SWFO_NEEDDISPATCH, ShellWindows,
             Shell_NotifyIconW,
         },
         WindowsAndMessaging::*,
@@ -23,8 +24,10 @@ use windows::Win32::{
 use windows::core::{BOOL, BSTR, HSTRING, Interface, PCWSTR, w};
 
 const CLASS: PCWSTR = w!("des-k-tray");
-/// Window message (not a thread message): the shell's callback for clicks on the icon.
-const WM_TRAY: u32 = WM_APP + 3;
+/// Window message (not a thread message): the shell's callback for clicks on the icon. Its
+/// own id all the same: main's loop matches thread messages by id alone, and normal programs
+/// may post this one to the admin des-k (spec 0008).
+const WM_TRAY: u32 = WM_APP + 11;
 const ID_SETTINGS: usize = 1;
 const ID_LOG: usize = 2;
 const ID_QUIT: usize = 3;
@@ -33,7 +36,11 @@ thread_local! {
     static WND: Cell<Option<HWND>> = const { Cell::new(None) };
     static ICON: Cell<Option<HICON>> = const { Cell::new(None) };
     static TASKBAR_CREATED: Cell<u32> = const { Cell::new(0) };
+    static BROKEN: Cell<bool> = const { Cell::new(false) }; // warned that hiding does not work
 }
+
+const TIP: &str = "des-k";
+const BROKEN_TIP: &str = "des-k: hiding windows does not work, see the log";
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
@@ -42,9 +49,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 menu(hwnd);
                 LRESULT(0)
             }
-            // Explorer restarted (or the taskbar changed scale): the old icon is gone.
+            // Explorer restarted (or the taskbar changed scale): the old icon is gone, and the
+            // new taskbar may list hidden windows again.
             _ if msg == TASKBAR_CREATED.get() => {
                 add(hwnd);
+                crate::ws::resync_soon();
                 LRESULT(0)
             }
             _ => DefWindowProcW(hwnd, msg, wp, lp),
@@ -98,13 +107,41 @@ fn add(hwnd: HWND) {
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_TRAY;
     nid.hIcon = ICON.get().unwrap_or_default();
-    for (d, s) in nid.szTip.iter_mut().zip("des-k".encode_utf16()) {
-        *d = s;
-    }
+    copy(&mut nid.szTip, if BROKEN.get() { BROKEN_TIP } else { TIP });
     unsafe {
         // At login explorer may not be ready yet; its TaskbarCreated brings us back here.
         if !Shell_NotifyIconW(NIM_ADD, &nid).as_bool() && !Shell_NotifyIconW(NIM_MODIFY, &nid).as_bool() {
             eprintln!("tray: icon not added");
+        }
+    }
+}
+
+/// `text` into a fixed buffer, cut to fit, always ending in a 0.
+fn copy(to: &mut [u16], text: &str) {
+    let last = to.len() - 1;
+    for (d, s) in to[..last].iter_mut().zip(text.encode_utf16().chain([0])) {
+        *d = s;
+    }
+}
+
+/// Once, when cloak.rs says a Windows update broke hiding: a warning balloon and a tooltip
+/// that stays, so a switch that hides nothing is never a mystery. Main's 1 s check.
+pub fn warn_if_broken() {
+    if BROKEN.get() || !crate::cloak::broken() {
+        return;
+    }
+    BROKEN.set(true);
+    eprintln!("hiding windows does not work: Windows refuses des-k's SetCloak call, most likely after an update changed it. Switching hides nothing until des-k is updated.");
+    let Some(h) = WND.get() else { return };
+    let mut nid = data(h);
+    nid.uFlags = NIF_TIP | NIF_INFO;
+    nid.dwInfoFlags = NIIF_WARNING;
+    copy(&mut nid.szTip, BROKEN_TIP);
+    copy(&mut nid.szInfoTitle, "des-k cannot hide windows");
+    copy(&mut nid.szInfo, "A Windows update most likely changed what des-k uses to hide windows. Switching hides nothing until des-k is updated. The log says more.");
+    unsafe {
+        if !Shell_NotifyIconW(NIM_MODIFY, &nid).as_bool() {
+            eprintln!("tray: warning not shown");
         }
     }
 }
@@ -185,12 +222,11 @@ fn menu(hwnd: HWND) {
 }
 
 /// Opened by explorer, so the editor runs as you even when des-k runs as admin (spec 0008).
-/// Any failure falls back to opening it from des-k, with des-k's rights. Also takes a
-/// settings page like `ms-settings:devices-touchpad`.
+/// Never from des-k itself: an admin ShellExecute follows file associations anything running
+/// as you can rewrite. Also takes a settings page like `ms-settings:devices-touchpad`.
 pub fn open(path: &Path) {
     if let Err(e) = unsafe { open_by_explorer(path) } {
-        eprintln!("tray: explorer did not open {} ({e}), opening it from des-k", path.display());
-        open_here(path);
+        eprintln!("tray: explorer did not open {} ({e}); open it yourself, or try again once explorer runs", path.display());
     }
 }
 
@@ -210,18 +246,5 @@ unsafe fn open_by_explorer(path: &Path) -> windows::core::Result<()> {
         let view: IShellFolderViewDual = browser.QueryActiveShellView()?.GetItemObject::<IDispatch>(SVGIO_BACKGROUND)?.cast()?;
         let shell: IShellDispatch2 = view.Application()?.cast()?;
         shell.ShellExecute(&BSTR::from(path.to_string_lossy().as_ref()), &empty, &empty, &empty, &empty)
-    }
-}
-
-/// The default app, else Notepad: .toml and .log often have no association.
-fn open_here(path: &Path) {
-    let file = HSTRING::from(path.as_os_str());
-    unsafe {
-        if ShellExecuteW(None, w!("open"), &file, None, None, SW_SHOWNORMAL).0 as isize <= 32 {
-            let quoted = HSTRING::from(format!("\"{}\"", path.display()));
-            if ShellExecuteW(None, w!("open"), w!("notepad.exe"), &quoted, None, SW_SHOWNORMAL).0 as isize <= 32 {
-                eprintln!("tray: cannot open {}", path.display());
-            }
-        }
     }
 }

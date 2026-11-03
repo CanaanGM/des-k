@@ -56,8 +56,11 @@ Everything works on **the screen under your mouse**.
 | `Win+Shift+Left` / `Right` | Move a window to another screen (this one is Windows' own) |
 | `Win+F` | **Finder**: search every window on every screen and workspace |
 | `Win+Tab` | **Overview**: see every workspace of every screen at once |
+| `Win+Ctrl+P` | **Pin** the focused window: it stays on every workspace of its screen; again to unpin |
 
 Each switch shows a small row of dots for a moment, so you can see which workspace you're on.
+After a pin, every dot lights up: the window is on all of them. Sending a pinned window to a
+workspace unpins it.
 
 Note: des-k takes over `Win+Tab` (Windows' Task View) and `Win+1` … `9` (Windows' "open the
 Nth taskbar app"). You can change any shortcut in the settings.
@@ -182,12 +185,18 @@ Your settings and log stay in `%LOCALAPPDATA%\des-k`; delete that folder too if 
 ## If something goes wrong
 
 - **A window seems lost**: press `Win+F` and search for it, or open the overview.
-- **Shortcuts stopped working**: check the tray icon is there. If not, run `install.ps1` again.
-- **Everything is weird**: Quit from the tray. Every window comes back. Then run `install.ps1`.
-- The log (tray → **Open log**) says what des-k did and why.
+- **des-k stopped** (no tray icon) and windows are still hidden: run
+  `& "$env:ProgramFiles\des-k\des-k.exe" --quit`. Even with des-k stopped, it shows every window
+  des-k hid and gives Windows its touchpad gestures back. Then start des-k from the Start menu
+  (**des-k**), which starts it as admin through its logon task.
+- **Everything is weird**: Quit from the tray. Every window comes back. Then start des-k again
+  from the Start menu.
+- The log (tray → **Open log**) says what des-k did and why. The run before lives on in
+  `des-k.old.log` beside it, so after a crash it still says what happened.
 
 des-k uses an undocumented part of Windows to hide windows. It works on Windows 11 25H2, but a
-big Windows update could change that.
+big Windows update could change that. If it does, the tray shows a warning and switching hides
+nothing until des-k is updated.
 
 ## License
 
