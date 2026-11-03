@@ -9,7 +9,7 @@
 use std::cell::RefCell;
 use std::sync::LazyLock;
 use windows::Win32::{
-    Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
+    Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Graphics::Gdi::*,
     System::LibraryLoader::GetModuleHandleW,
     UI::{
@@ -25,16 +25,18 @@ use crate::settings::{self, Action, Combo, Edit, Motion, Owner, Settings};
 use crate::welcome::{Bx, Canvas, F, Fonts, Theme, alpha, buffered, dark_title, mix, op, theme};
 
 const CLASS: PCWSTR = w!("des-k-settings");
-const STYLE: WINDOW_STYLE = WINDOW_STYLE(WS_OVERLAPPED.0 | WS_CAPTION.0 | WS_SYSMENU.0 | WS_MINIMIZEBOX.0);
+// Sizes in height only: the width stays W, since every row is laid out for it.
+const STYLE: WINDOW_STYLE = WINDOW_STYLE(WS_OVERLAPPED.0 | WS_CAPTION.0 | WS_SYSMENU.0 | WS_MINIMIZEBOX.0 | WS_MAXIMIZEBOX.0 | WS_THICKFRAME.0);
 
 // The window's client area and its parts, in dip.
 const W: f32 = 760.0;
-const H: f32 = 620.0;
+const H: f32 = 620.0; // the height it opens at, when the screen has room
+const MIN_H: f32 = 460.0; // the side list and its file button still fit
 const BAND: f32 = 56.0;
 const SIDE: f32 = 184.0;
 const CX: f32 = SIDE + 24.0; // the content column
 const CW: f32 = W - CX - 30.0;
-const VIEW: f32 = H - BAND; // the visible height of the content
+const KNOB: f32 = 8.0; // a bar's knob radius; the bar's ends stay this far inside its box
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Section {
@@ -125,16 +127,16 @@ const ROWS: &[(Section, Row)] = &[
     (Section::Workspaces, row("follow_activation", "Follow a window", "When a hidden window comes to the front, go to its workspace.", Kind::Toggle)),
     (Section::Workspaces, row("copilot_as_right_ctrl", "Copilot key works as Right Ctrl", "So Win+Ctrl shortcuts work with it.", Kind::Toggle)),
     (Section::Indicator, row("indicator.enabled", "Show the workspace dots", "", Kind::Toggle)),
-    (Section::Indicator, row("indicator.hold_ms", "Hold", "how long the dots stay", step(0, 5000, 50, "ms"))),
-    (Section::Indicator, row("indicator.fade_ms", "Fade", "how long they take to go", step(0, 2000, 50, "ms"))),
+    (Section::Indicator, row("indicator.hold_ms", "Hold", "How long the dots stay.", step(0, 5000, 50, "ms"))),
+    (Section::Indicator, row("indicator.fade_ms", "Fade", "How long they take to go.", step(0, 2000, 50, "ms"))),
     (Section::Restore, row("restore.enabled", "Put windows back after a restart", "After a reboot or sign in, reopened windows go back to their workspaces, hidden.", Kind::Toggle)),
-    (Section::Restore, row("restore.minutes", "Keep matching for", "after that, windows open where Windows puts them", step(1, 30, 1, "min"))),
+    (Section::Restore, row("restore.minutes", "Keep matching for", "After that, windows open where Windows puts them.",step(1, 30, 1, "min"))),
     (Section::Overview, row("overview.labels", "Window names", "", Kind::Choice(LABEL_WORDS))),
     (Section::Overview, row("overview.animation", "Opening", "", Kind::Choice(ANIMATION_WORDS))),
     (Section::Overview, row("overview.live", "Live window list", "Off: the overview shows the windows as they were when it opened.", Kind::Toggle)),
     (Section::Touchpad, row("touchpad.enabled", "Read touchpad gestures", "Three and four finger gestures, also over admin windows.", Kind::Toggle)),
-    (Section::Touchpad, row("touchpad.swipe_mm", "Swipe distance", "how far your fingers travel before a swipe counts", step(5, 50, 1, "mm"))),
-    (Section::Touchpad, row("touchpad.twice_ms", "Wait for a second go", "only gestures with a twice action wait; their once action runs after it", step(100, 1000, 50, "ms"))),
+    (Section::Touchpad, row("touchpad.swipe_mm", "Swipe distance", "How far your fingers travel before a swipe counts.", step(5, 50, 1, "mm"))),
+    (Section::Touchpad, row("touchpad.twice_ms", "Wait for a second go", "Only gestures with a twice action wait. Their once action runs after the wait.",step(100, 1000, 50, "ms"))),
 ];
 
 /// The 11 [shortcuts] entries: key and title.
@@ -259,6 +261,19 @@ fn label(a: Action) -> String {
     c.next().map_or(String::new(), |f| f.to_uppercase().chain(c).collect())
 }
 
+/// A twice picker's label. No twice rule and a twice rule that does nothing behave apart (the
+/// second still waits), so their words must not look alike (AC-12).
+const NO_TWICE: &str = "No twice action";
+const TWICE_NOTHING: &str = "Nothing (still waits)";
+
+fn twice_label(a: Option<Action>) -> String {
+    match a {
+        None => NO_TWICE.into(),
+        Some(Action::Nothing) => TWICE_NOTHING.into(),
+        Some(a) => label(a),
+    }
+}
+
 /// What the recorder is recording for (spec 0012 AC-7, AC-12).
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Rec {
@@ -284,6 +299,7 @@ enum Ctl {
     Minus(&'static str),
     Plus(&'static str),
     Stepper(&'static str), // focus only: a number's − and + are one stop, Left and Right step
+    Bar(&'static str),     // a number's range: a click or a drag sets it
     Choice(&'static str, usize),
     Pick(&'static str), // focus only: a choice's buttons are one stop, Left and Right move
     Reset(&'static str),
@@ -305,7 +321,7 @@ enum Ctl {
 impl Ctl {
     fn key(self) -> Option<&'static str> {
         match self {
-            Ctl::Toggle(k) | Ctl::Minus(k) | Ctl::Plus(k) | Ctl::Stepper(k) | Ctl::Choice(k, _) | Ctl::Pick(k) | Ctl::Reset(k) => Some(k),
+            Ctl::Toggle(k) | Ctl::Minus(k) | Ctl::Plus(k) | Ctl::Stepper(k) | Ctl::Bar(k) | Ctl::Choice(k, _) | Ctl::Pick(k) | Ctl::Reset(k) => Some(k),
             Ctl::Chip(k, _) | Ctl::Remove(k, _) | Ctl::Add(k) | Ctl::StopRec(k) | Ctl::Move(k) | Ctl::Cancel(k) => Some(k),
             _ => None,
         }
@@ -319,7 +335,7 @@ impl Ctl {
     /// The keyboard stop this control belongs to: one per row.
     fn stop(self) -> Ctl {
         match self {
-            Ctl::Minus(k) | Ctl::Plus(k) => Ctl::Stepper(k),
+            Ctl::Minus(k) | Ctl::Plus(k) | Ctl::Bar(k) => Ctl::Stepper(k),
             Ctl::Choice(k, _) => Ctl::Pick(k),
             c => c,
         }
@@ -353,6 +369,8 @@ struct Win {
     hover: Option<Ctl>,
     press: Option<Ctl>,
     drag: Option<f32>, // dragging the scroll thumb: where in the thumb it was grabbed
+    slide: Option<&'static str>, // dragging a number's bar
+    vh: f32, // the client area's height: H until the window sizes
     error: Option<(String, String)>, // the last save that failed: what stays, and why
     rec: Option<Rec>,
     refused: Option<(String, String)>, // the last key the recorder refused: title and line
@@ -547,6 +565,28 @@ impl Ctx<'_, '_> {
         self.ring((x, y, 124.0, 30.0), 15.0, Ctl::Stepper(key));
     }
 
+    /// A number's range beside its stepper: lo, a bar filled up to the value with a knob, hi.
+    /// A click or a drag on it sets the value. `y`: the stepper's top.
+    fn bar(&mut self, key: &'static str, x: f32, y: f32, w: f32, (v, lo, hi): (i64, i64, i64), unit: &str) {
+        let t = self.c.t;
+        let (lo_text, hi_text) = (lo.to_string(), format!("{hi} {unit}"));
+        // Fixed columns for the two ends, so every bar on the page starts and ends in line.
+        let (lw, hw) = (28.0, 60.0);
+        self.c.text(x + lw - self.c.width(&lo_text, F::Small), y, 30.0, &lo_text, F::Small, t.dim);
+        self.c.text(x + w - self.c.width(&hi_text, F::Small), y, 30.0, &hi_text, F::Small, t.dim);
+        let (bx, bw) = (x + lw + 6.0 + KNOB, w - lw - hw - 12.0 - 2.0 * KNOB);
+        let f = ((v - lo) as f32 / (hi - lo) as f32).clamp(0.0, 1.0);
+        let col = if self.ro { t.disabled } else { t.accent };
+        self.c.boxed((bx, y + 11.0, bw, 8.0), 4.0, t.tile, Some(t.card_edge));
+        if f > 0.0 {
+            self.c.fill_rr((bx, y + 11.0, (bw * f).max(8.0), 8.0), 4.0, op(col));
+        }
+        let ctl = Ctl::Bar(key);
+        let r = if self.hovered(ctl) && !self.ro { KNOB + 1.0 } else { KNOB };
+        self.c.circle(bx + bw * f, y + 15.0, r, Some(op(t.card)), Some((op(col), 2.0)));
+        self.hit(ctl, (bx - KNOB, y, bw + 2.0 * KNOB, 30.0), 1);
+    }
+
     /// Choice buttons in one pill. Returns its width.
     fn choice(&mut self, key: &'static str, x: f32, y: f32, words: &[(&str, &str)], sel: usize) -> f32 {
         let t = self.c.t;
@@ -621,24 +661,13 @@ impl Ctx<'_, '_> {
                 }
                 self.switch(row.key, x + w - 40.0, y + 14.0 + ((h - 14.0 - 20.0) / 2.0).max(0.0), v != 0);
             }
-            Kind::Step { lo, hi, by, unit } => {
-                // The picture: the range as a bar, filled up to the value.
-                let f = ((v - lo) as f32 / (hi - lo) as f32).clamp(0.0, 1.0);
-                self.c.boxed((x, y + h, w, 8.0), 4.0, t.tile, Some(t.card_edge));
-                if f > 0.0 {
-                    self.c.fill_rr((x, y + h, (w * f).max(8.0), 8.0), 4.0, op(t.accent));
-                }
-                h += 10.0;
-                let hi_text = format!("{hi} {unit}");
-                self.c.text(x, y + h, 18.0, &lo.to_string(), F::Small, t.dim);
-                self.c.text(x + w - self.c.width(&hi_text, F::Small), y + h, 18.0, &hi_text, F::Small, t.dim);
-                h += 24.0;
-                let desc = format!(" {}", row.desc);
-                h += self.c.para(x, y + h, w, 20.0, &[(row.title, F::Bold, t.text), (&name, F::Mono, t.dim), (&desc, F::Small, t.dim)]);
-                h += 6.0;
+            Kind::Step { lo, hi, unit, .. } => {
+                h += self.c.para(x, y + h, w, 20.0, &[(row.title, F::Bold, t.text), (&name, F::Mono, t.dim)]);
+                h += self.c.para(x, y + h, w, 17.0, &[(row.desc, F::Small, t.dim)]);
+                h += 8.0;
                 self.stepper(row.key, x, y + h, &format!("{v} {unit}"), v > lo, v < hi);
+                self.bar(row.key, x + 140.0, y + h, w - 140.0, (v, lo, hi), unit);
                 h += 30.0;
-                let _ = by;
             }
             Kind::Choice(words) => {
                 h += self.c.para(x, y + h, w, 20.0, &[(row.title, F::Bold, t.text), (&name, F::Mono, t.dim)]);
@@ -741,7 +770,8 @@ impl Ctx<'_, '_> {
                 let x = CX + 16.0;
                 let n = c.s.workspaces.to_string();
                 let mut h = 14.0 + c.pictures(y + 14.0) + 4.0;
-                h += c.c.para(x, y + h, CW - 32.0, 20.0, &[("Every screen has ", F::Body, t.text), (&n, F::Bold, t.text), (" workspaces ", F::Body, t.text), ("(2 to 9) ", F::Small, t.dim), ("workspaces", F::Mono, t.dim)]);
+                h += c.c.para(x, y + h, CW - 32.0, 20.0, &[("Workspaces per screen", F::Bold, t.text), (" workspaces", F::Mono, t.dim)]);
+                h += c.c.para(x, y + h, CW - 32.0, 20.0, &[("Every screen has ", F::Body, t.text), (&n, F::Bold, t.text), (" workspaces ", F::Body, t.text), ("(2 to 9)", F::Small, t.dim)]);
                 let e = c.measured(|c| c.extras("workspaces", x, 0.0, CW - 32.0));
                 if e > 0.0 {
                     c.extras("workspaces", x, y + h + 6.0, CW - 32.0);
@@ -1242,7 +1272,7 @@ impl Ctx<'_, '_> {
         let (px, pw) = (x + 150.0, (w - 150.0 - 10.0) / 2.0);
         let mut h = 14.0;
         h += self.c.para(x, y + h, w, 20.0, &[("Gestures", F::Bold, t.text), (" gesture", F::Mono, t.dim)]);
-        h += self.c.para(x, y + h, w, 17.0, &[("What each gesture does. A twice action waits for a second go (Wait for a second go, above). Not set: the once action runs at once. Nothing: the gesture still waits, and a second go does nothing.", F::Small, t.dim)]);
+        h += self.c.para(x, y + h, w, 17.0, &[("What each gesture does. With a twice action, a gesture waits for a second go (Wait for a second go, above). No twice action: the once action runs at once. Nothing (still waits): the gesture waits, and a second go does nothing.", F::Small, t.dim)]);
         h += 8.0;
         self.c.text(px, y + h, 18.0, "Once", F::SmallBold, t.dim);
         self.c.text(px + pw + 10.0, y + h, 18.0, "Twice", F::SmallBold, t.dim);
@@ -1260,7 +1290,7 @@ impl Ctx<'_, '_> {
                 }
                 let rec = self.w.rec;
                 self.picker(Ctl::Once(i), px, y + h, pw, &label(once.unwrap_or(Action::Nothing)), rec == Some(Rec::Gesture(i, 1)));
-                self.picker(Ctl::Twice(i), px + pw + 10.0, y + h, pw, &twice.map_or("Not set".into(), label), rec == Some(Rec::Gesture(i, 2)));
+                self.picker(Ctl::Twice(i), px + pw + 10.0, y + h, pw, &twice_label(twice), rec == Some(Rec::Gesture(i, 2)));
                 h += rh + 8.0;
                 if matches!(rec, Some(Rec::Gesture(r, _)) if r == i) {
                     h += self.row_note("gesture", x, y + h - 8.0, w);
@@ -1289,7 +1319,7 @@ impl Ctx<'_, '_> {
 
     /// The side list item the view is in: the last section whose top has scrolled past.
     fn current(&self) -> Option<Option<Section>> {
-        current(self.w.scroll, self.out.height, &self.out.tops)
+        current(self.w.scroll, self.out.height, self.w.vh - BAND, &self.out.tops)
     }
 
     fn icon(&self, sec: Option<Section>, x: f32, y: f32, col: u32) {
@@ -1337,8 +1367,9 @@ impl Ctx<'_, '_> {
     /// The side list, over the content's left edge, and the file at its foot.
     fn side(&mut self) {
         let t = self.c.t;
-        self.c.boxed((0.0, BAND, SIDE, VIEW + 1.0), 0.0, t.foot, None);
-        self.c.lines(&[(SIDE - 0.5, BAND), (SIDE - 0.5, H)], 1.0, op(t.card_edge));
+        let vh = self.w.vh;
+        self.c.boxed((0.0, BAND, SIDE, vh - BAND + 1.0), 0.0, t.foot, None);
+        self.c.lines(&[(SIDE - 0.5, BAND), (SIDE - 0.5, vh)], 1.0, op(t.card_edge));
         let problems = settings::problems();
         let count = |sec: Option<Section>| problems.iter().filter(|p| home(&p.key) == sec).count();
         let mut items: Vec<(Option<Section>, &str)> = vec![];
@@ -1371,10 +1402,10 @@ impl Ctx<'_, '_> {
             self.hit(ctl, bx, 0);
             y += 40.0;
         }
-        self.c.lines(&[(16.0, H - 104.0), (SIDE - 16.0, H - 104.0)], 1.0, op(t.card_edge));
-        self.c.text(16.0, H - 96.0, 18.0, "%LOCALAPPDATA%\\des-k\\", F::Mono, t.dim);
-        self.c.text(16.0, H - 78.0, 18.0, "settings.toml", F::Mono, t.dim);
-        self.button(Ctl::Open, 16.0, H - 50.0, Some(SIDE - 32.0), "Open settings.toml", 2);
+        self.c.lines(&[(16.0, vh - 104.0), (SIDE - 16.0, vh - 104.0)], 1.0, op(t.card_edge));
+        self.c.text(16.0, vh - 96.0, 18.0, "%LOCALAPPDATA%\\des-k\\", F::Mono, t.dim);
+        self.c.text(16.0, vh - 78.0, 18.0, "settings.toml", F::Mono, t.dim);
+        self.button(Ctl::Open, 16.0, vh - 50.0, Some(SIDE - 32.0), "Open settings.toml", 2);
     }
 
     /// The band: what this window is, and the one rule that matters (AC-4).
@@ -1395,15 +1426,16 @@ impl Ctx<'_, '_> {
     }
 
     fn scrollbar(&self) {
-        if let Some((y, h)) = thumb(self.w.scroll, self.out.height) {
+        if let Some((y, h)) = thumb(self.w.scroll, self.out.height, self.w.vh - BAND) {
             self.c.fill_rr((W - 11.0, y, 5.0, h), 2.5, alpha(self.c.t.dim, if self.w.drag.is_some() { 0.8 } else { 0.5 }));
         }
     }
 }
 
-/// The side list item the view is in, for a scroll, content height and section tops.
-fn current(scroll: f32, height: f32, tops: &[(Option<Section>, f32)]) -> Option<Option<Section>> {
-    if scroll >= height - VIEW - 1.0 {
+/// The side list item the view is in, for a scroll, content height, the visible height (`view`)
+/// and section tops.
+fn current(scroll: f32, height: f32, view: f32, tops: &[(Option<Section>, f32)]) -> Option<Option<Section>> {
+    if scroll >= height - view - 1.0 {
         return tops.last().map(|(s, _)| *s);
     }
     let pos = scroll + 60.0;
@@ -1411,11 +1443,30 @@ fn current(scroll: f32, height: f32, tops: &[(Option<Section>, f32)]) -> Option<
 }
 
 /// The scroll thumb's top and height, when the content is taller than the view.
-fn thumb(scroll: f32, height: f32) -> Option<(f32, f32)> {
-    (height > VIEW + 0.5).then(|| {
-        let h = (VIEW * VIEW / height).max(32.0);
-        (BAND + scroll / (height - VIEW) * (VIEW - h), h)
+fn thumb(scroll: f32, height: f32, view: f32) -> Option<(f32, f32)> {
+    (height > view + 0.5).then(|| {
+        let h = (view * view / height).max(32.0);
+        (BAND + scroll / (height - view) * (view - h), h)
     })
+}
+
+/// The value at a point on a number's bar, `f` from 0 (its left end) to 1, on the same step
+/// grid as − and + (AC-10), so a click never writes a value the stepper could not.
+fn at_bar(f: f32, lo: i64, hi: i64, by: i64) -> i64 {
+    let raw = lo as f32 + f.clamp(0.0, 1.0) * (hi - lo) as f32;
+    ((raw / by as f32).round() as i64 * by).clamp(lo, hi)
+}
+
+/// What Esc does: it backs out of the newest thing first, like a dialog. The clash prompt
+/// presses Cancel, so a stray Esc never closes the page with a choice still owed (AC-9); then
+/// each Dismiss banner goes, save error first; None when nothing is left: it closes the page.
+fn escape(prompt: Option<&Prompt>, error: bool, edited: bool) -> Option<Ctl> {
+    match prompt {
+        Some(p) => Some(Ctl::Cancel(p.key)),
+        None if error => Some(Ctl::Dismiss),
+        None if edited => Some(Ctl::DismissEdit),
+        None => None,
+    }
 }
 
 /// The whole page, back to front: content first, then the band and side list over its edges.
@@ -1481,7 +1532,7 @@ fn layout() {
             return;
         };
         let moved = set(|w| {
-            let max = (out.height - VIEW).max(0.0);
+            let max = (out.height - (w.vh - BAND)).max(0.0);
             let scroll = w.scroll.clamp(0.0, max);
             let moved = scroll != w.scroll;
             w.scroll = scroll;
@@ -1528,8 +1579,8 @@ fn reveal() {
         let (top, bottom) = (h.at.1 - 12.0, h.at.1 + h.at.3 + 12.0);
         if top < BAND {
             Some(top - BAND)
-        } else if bottom > H {
-            Some(bottom - H)
+        } else if bottom > w.vh {
+            Some(bottom - w.vh)
         } else {
             None
         }
@@ -1727,7 +1778,7 @@ fn remove(key: &'static str, i: usize) {
     }
 }
 
-/// One gesture row's once or twice action; None: no twice rule (Not set). The whole map is
+/// One gesture row's once or twice action; None: no twice rule (No twice action). The whole map is
 /// written again, every row's once rule included (AC-12).
 fn set_gesture(row: usize, times: u8, action: Option<Action>) {
     let s = settings::get();
@@ -1741,7 +1792,7 @@ fn set_gesture(row: usize, times: u8, action: Option<Action>) {
     commit(Edit::Gestures(map), "Gestures");
 }
 
-/// The once or twice picker as a menu under its button: Not set (twice only), Nothing, every
+/// The once or twice picker as a menu under its button: No twice action (twice only), Nothing, every
 /// action by its label, the three digit families, and Key combo… (AC-12).
 fn pick(row: usize, times: u8) {
     const NOT_SET: usize = 1;
@@ -1767,11 +1818,12 @@ fn pick(row: usize, times: u8) {
             let _ = AppendMenuW(menu, flags, id, PCWSTR(HSTRING::from(text).as_ptr()));
         };
         if times == 2 {
-            add(menu, NOT_SET, "Not set", now.is_none());
+            add(menu, NOT_SET, NO_TWICE, now.is_none());
         }
         let shown = now.or((times == 1).then_some(Action::Nothing));
         for (i, a) in list.iter().enumerate() {
-            add(menu, BASE + i, &label(*a), shown == Some(*a));
+            let text = if times == 2 { twice_label(Some(*a)) } else { label(*a) };
+            add(menu, BASE + i, &text, shown == Some(*a));
         }
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
         for (name, make) in families {
@@ -1810,6 +1862,16 @@ fn pick(row: usize, times: u8) {
     }
 }
 
+/// A press or a drag on a number's bar at window `x`: saves the value under it.
+fn slide(key: &'static str, x: f32) {
+    if settings::parse_error().is_some() {
+        return; // read only (AC-14)
+    }
+    let Some(Row { kind: Kind::Step { lo, hi, by, .. }, .. }) = find_row(key) else { return };
+    let Some(at) = get(|w| w.hits.iter().find(|h| h.ctl == Ctl::Bar(key)).map(|h| h.at)).flatten() else { return };
+    save(key, at_bar((x - at.0 - KNOB) / (at.2 - 2.0 * KNOB), *lo, *hi, *by));
+}
+
 fn step_key(key: &'static str, up: bool) {
     if let Some(Row { kind: Kind::Step { lo, hi, by, .. }, .. }) = find_row(key) {
         save(key, stepped(value(settings::get(), key), *lo, *hi, *by, up));
@@ -1826,6 +1888,7 @@ fn act(ctl: Ctl) {
         Ctl::Minus(key) => step_key(key, false),
         Ctl::Plus(key) => step_key(key, true),
         Ctl::Stepper(_) | Ctl::Pick(_) => {} // focus only: Left and Right change them
+        Ctl::Bar(_) => {}                    // the press and the drag already set it
         Ctl::Choice(key, i) => save(key, i as i64),
         Ctl::Reset(key) => save(key, value(&DEFAULTS, key)),
         Ctl::Open => crate::tray::open(&settings::path()),
@@ -1898,7 +1961,7 @@ fn next_stop(w: &Win, vk: VIRTUAL_KEY) -> Option<Ctl> {
     };
     match vk {
         VK_TAB if side => first_seen(),
-        VK_TAB => current(w.scroll, w.height, &w.tops).map(Ctl::Side),
+        VK_TAB => current(w.scroll, w.height, w.vh - BAND, &w.tops).map(Ctl::Side),
         _ if w.focus.is_none() => first_seen(),
         _ => {
             let list = stops(w, side);
@@ -1937,7 +2000,13 @@ fn on_key(h: HWND, vk: VIRTUAL_KEY) {
     let _ = set(|w| w.kb = true);
     let focus = get(|w| w.focus).flatten();
     match vk {
-        VK_ESCAPE => unsafe { let _ = DestroyWindow(h); },
+        VK_ESCAPE => match get(|w| escape(w.prompt.as_ref(), w.error.is_some(), w.edited.is_some())).flatten() {
+            Some(c) => {
+                act(c);
+                reveal();
+            }
+            None => unsafe { let _ = DestroyWindow(h); },
+        },
         VK_TAB | VK_UP | VK_DOWN | VK_HOME | VK_END => match get(|w| next_stop(w, vk)).flatten() {
             Some(c) => focus_on(c),
             None => repaint(), // at the end already: just show the ring
@@ -1959,8 +2028,10 @@ fn on_key(h: HWND, vk: VIRTUAL_KEY) {
         VK_DELETE if focus == Some(Ctl::Stepper("workspaces")) => {
             change(Ctl::Stepper("workspaces"), false);
         }
-        VK_PRIOR => scroll_by(-(VIEW - 40.0)),
-        VK_NEXT => scroll_by(VIEW - 40.0),
+        VK_PRIOR | VK_NEXT => {
+            let page = get(|w| w.vh - BAND - 40.0).unwrap_or(0.0);
+            scroll_by(if vk == VK_PRIOR { -page } else { page });
+        }
         _ => {}
     }
 }
@@ -2003,9 +2074,7 @@ pub fn open(section: Option<Section>) {
         };
         RegisterClassW(&wc); // fails harmlessly when the page opens a second time
         let (mon, _) = crate::ws::under_mouse();
-        let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
-        let _ = GetMonitorInfoW(mon, &mut mi);
-        let work = mi.rcWork;
+        let (work, _) = work_area(mon);
         // Made on the screen it opens on, so it starts at that screen's dpi.
         let h = match CreateWindowExW(WINDOW_EX_STYLE(0), CLASS, w!("des-k settings"), STYLE, work.left, work.top, 100, 100, None, None, Some(inst.into()), None) {
             Ok(h) => h,
@@ -2028,6 +2097,8 @@ pub fn open(section: Option<Section>) {
             hover: None,
             press: None,
             drag: None,
+            slide: None,
+            vh: H,
             error: None,
             rec: None,
             refused: None,
@@ -2035,7 +2106,9 @@ pub fn open(section: Option<Section>) {
             pics: Pics::default(),
             edited: None,
         }));
-        let (ww, wh) = size(h);
+        // Shorter than H when the screen is (1366 × 768 at 125%); WM_SIZE sets vh.
+        let (ww, wh) = size(h, H);
+        let wh = wh.min(work.bottom - work.top);
         let (x, y) = ((work.left + work.right - ww) / 2, ((work.top + work.bottom - wh) / 2).max(work.top));
         let _ = SetWindowPos(h, None, x, y, ww, wh, SWP_NOZORDER | SWP_NOACTIVATE);
         update_pictures(true);
@@ -2047,15 +2120,30 @@ pub fn open(section: Option<Section>) {
     }
 }
 
-/// The window's outer size for its client area at its dpi.
-fn size(h: HWND) -> (i32, i32) {
+/// The window's outer size for a client area W wide and `ch` dip high, at its dpi.
+fn size(h: HWND, ch: f32) -> (i32, i32) {
+    let (r, _) = frame(h, ch);
+    (r.right - r.left, r.bottom - r.top)
+}
+
+/// The outer rect for a client area W × `ch` dip at the window's dpi, and the frame's
+/// thickness below the client area (a maximized window hides that much past each edge).
+fn frame(h: HWND, ch: f32) -> (RECT, i32) {
     unsafe {
         let dpi = GetDpiForWindow(h);
         let s = dpi as f32 / 96.0;
-        let mut r = RECT { left: 0, top: 0, right: (W * s).round() as i32, bottom: (H * s).round() as i32 };
+        let bottom = (ch * s).round() as i32;
+        let mut r = RECT { left: 0, top: 0, right: (W * s).round() as i32, bottom };
         let _ = AdjustWindowRectExForDpi(&mut r, STYLE, false, WINDOW_EX_STYLE(0), dpi);
-        (r.right - r.left, r.bottom - r.top)
+        (r, r.bottom - bottom)
     }
+}
+
+/// The work area of the screen a window or rect is on, and that screen's whole rect.
+fn work_area(mon: HMONITOR) -> (RECT, RECT) {
+    let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+    let _ = unsafe { GetMonitorInfoW(mon, &mut mi) };
+    (mi.rcWork, mi.rcMonitor)
 }
 
 unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -2099,7 +2187,7 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                 let _ = set(|w| {
                     let (x, y) = point(lp, w.scale);
                     w.kb = false;
-                    match thumb(w.scroll, w.height) {
+                    match thumb(w.scroll, w.height, w.vh - BAND) {
                         Some((ty, th)) if x >= W - 16.0 && y > BAND => {
                             // On the thumb: drag it; beside it: jump there, then drag.
                             let grab = if (ty..ty + th).contains(&y) { y - ty } else { th / 2.0 };
@@ -2110,6 +2198,10 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                             if w.press.is_some() {
                                 w.focus = w.press.map(Ctl::stop);
                             }
+                            // The posted move below sets the value under the press.
+                            if let Some(Ctl::Bar(k)) = w.press {
+                                w.slide = Some(k);
+                            }
                         }
                     }
                 });
@@ -2119,11 +2211,16 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                 LRESULT(0)
             }
             WM_MOUSEMOVE => {
+                if let Some((k, x)) = get(|w| w.slide.map(|k| (k, point(lp, w.scale).0))).flatten() {
+                    slide(k, x);
+                    return LRESULT(0);
+                }
                 let drag = get(|w| {
                     let (_, y) = point(lp, w.scale);
-                    let (_, th) = thumb(w.scroll, w.height)?;
+                    let view = w.vh - BAND;
+                    let (_, th) = thumb(w.scroll, w.height, view)?;
                     let grab = w.drag?;
-                    Some((y - grab - BAND) / (VIEW - th) * (w.height - VIEW))
+                    Some((y - grab - BAND) / (view - th) * (w.height - view))
                 })
                 .flatten();
                 if let Some(to) = drag {
@@ -2148,6 +2245,7 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                 let _ = ReleaseCapture();
                 let click = set(|w| {
                     let was = w.press.take();
+                    w.slide = None;
                     let dragged = w.drag.take().is_some();
                     let now = hit_at(w, point(lp, w.scale));
                     (!dragged && was.is_some() && was == now).then_some(was).flatten()
@@ -2160,9 +2258,38 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                 LRESULT(0)
             }
             WM_CAPTURECHANGED => {
-                let _ = set(|w| w.drag = None);
+                let _ = set(|w| {
+                    w.drag = None;
+                    w.slide = None;
+                });
                 LRESULT(0)
             }
+            WM_SIZE => {
+                if wp.0 as u32 != SIZE_MINIMIZED && set(|w| w.vh = ((lp.0 >> 16) & 0xFFFF) as f32 / w.scale).is_some() {
+                    layout();
+                }
+                LRESULT(0)
+            }
+            WM_GETMINMAXINFO => {
+                let mm = &mut *(lp.0 as *mut MINMAXINFO);
+                let (ww, min_h) = size(h, MIN_H);
+                mm.ptMinTrackSize = POINT { x: ww, y: min_h };
+                mm.ptMaxTrackSize.x = ww;
+                // Maximize: the screen's full height at the same width, centered. Relative to
+                // the screen's corner, its frame hidden past the edges as Windows does.
+                let (_, b) = frame(h, MIN_H);
+                let (work, full) = work_area(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST));
+                mm.ptMaxSize = POINT { x: ww, y: work.bottom - work.top + 2 * b };
+                mm.ptMaxPosition = POINT { x: work.left - full.left + (work.right - work.left - ww) / 2, y: work.top - full.top - b };
+                LRESULT(0)
+            }
+            // The width never changes, so the side edges and corners only size up and down.
+            WM_NCHITTEST => match DefWindowProcW(h, m, wp, lp).0 as u32 {
+                HTLEFT | HTRIGHT => LRESULT(HTBORDER as isize),
+                HTTOPLEFT | HTTOPRIGHT => LRESULT(HTTOP as isize),
+                HTBOTTOMLEFT | HTBOTTOMRIGHT => LRESULT(HTBOTTOM as isize),
+                r => LRESULT(r as isize),
+            },
             WM_ACTIVATE => {
                 // Recording ends when the page loses focus (AC-7).
                 if (wp.0 & 0xFFFF) as u32 == WA_INACTIVE && get(|w| w.rec.is_some()) == Some(true) {
@@ -2181,13 +2308,17 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
             WM_DPICHANGED => {
                 let to = *(lp.0 as *const RECT);
                 let scale = (wp.0 & 0xFFFF) as f32 / 96.0;
-                let _ = set(|w| {
+                let vh = set(|w| {
                     w.fonts.delete();
                     w.scale = scale;
                     w.fonts = Fonts::new(scale);
-                });
-                let (ww, wh) = size(h);
-                let _ = SetWindowPos(h, None, to.left, to.top, ww, wh, SWP_NOZORDER | SWP_NOACTIVATE);
+                    w.vh
+                })
+                .unwrap_or(H);
+                // The same height in dip, but never taller than the new screen.
+                let (ww, wh) = size(h, vh);
+                let (work, _) = work_area(MonitorFromRect(&to, MONITOR_DEFAULTTONEAREST));
+                let _ = SetWindowPos(h, None, to.left, to.top, ww, wh.min(work.bottom - work.top), SWP_NOZORDER | SWP_NOACTIVATE);
                 layout();
                 LRESULT(0)
             }
@@ -2224,6 +2355,47 @@ mod tests {
         assert_eq!(stepped(0, 0, 5000, 50, false), 0);
         assert_eq!(stepped(5000, 0, 5000, 50, true), 5000);
         assert_eq!(stepped(5, 5, 50, 1, false), 5);
+    }
+
+    // A click on a bar writes only what − and + could reach: on the grid and in range, so the
+    // parser never resets it, and the bar's two ends are the range's two ends.
+    #[test]
+    fn bars_land_on_the_grid() {
+        assert_eq!(at_bar(0.111, 0, 5000, 50), 550); // 555 rounds to the nearest step
+        assert_eq!(at_bar(0.5, 5, 50, 1), 28);
+        assert_eq!(at_bar(-0.3, 100, 1000, 50), 100); // dragged past the left end
+        assert_eq!(at_bar(1.7, 100, 1000, 50), 1000);
+        for (_, row) in ROWS {
+            if let Kind::Step { lo, hi, by, .. } = row.kind {
+                assert_eq!((at_bar(0.0, lo, hi, by), at_bar(1.0, lo, hi, by)), (lo, hi), "{}", row.key);
+                for i in 0..=100 {
+                    let v = at_bar(i as f32 / 100.0, lo, hi, by);
+                    assert!((lo..=hi).contains(&v) && v % by == 0, "{}: {v}", row.key);
+                }
+            }
+        }
+    }
+
+    // AC-9: Esc with the clash prompt open is Cancel, never close: closing would drop the
+    // prompt, and the owner expects Esc to back out of the question, not the page. Banners
+    // go next, one per Esc, and only an Esc with nothing left closes the page.
+    #[test]
+    fn esc_backs_out_one_layer_at_a_time() {
+        let p = Prompt { key: "shortcuts.next", title: String::new(), sub: String::new(), edit: Edit::Gestures(vec![]) };
+        assert_eq!(escape(Some(&p), true, true), Some(Ctl::Cancel("shortcuts.next")));
+        assert_eq!(escape(None, true, true), Some(Ctl::Dismiss));
+        assert_eq!(escape(None, false, true), Some(Ctl::DismissEdit));
+        assert_eq!(escape(None, false, false), None);
+    }
+
+    // AC-12: no twice rule and a twice rule that does nothing behave apart (one waits for a
+    // second go), so their labels must differ and say which one waits.
+    #[test]
+    fn twice_labels_tell_waiting_apart() {
+        let (none, nothing) = (twice_label(None), twice_label(Some(Action::Nothing)));
+        assert_ne!(none, nothing);
+        assert!(nothing.contains("waits") && !none.contains("waits"));
+        assert_eq!(twice_label(Some(Action::Overview)), label(Action::Overview));
     }
 
     // Every row writes a value the parser reads back as the same setting: a typo in a key or
@@ -2284,12 +2456,24 @@ mod tests {
             ("clash", None, None, true),
             ("pictures", None, None, false),
         ];
-        for (tname, theme) in [("light", crate::welcome::LIGHT), ("dark", crate::welcome::DARK)] {
+        // The welcome screen's High contrast Night sky render theme, so the two can be compared.
+        let (bg, fg) = (0x000000, 0xFFFFFF);
+        let night_sky = Theme {
+            dark: true, hc: true, surface: bg, text: fg, dim: fg, stroke: fg, accent: 0x1AEBFF, on_accent: bg, band_a: bg, band_b: bg, on_band: fg, card: bg, card_edge: fg, tile: bg, tile_ico: bg, tile_ico_fg: fg,
+            chip_on: bg, chip_on_fg: fg, chip_off: bg, chip_off_fg: fg, chip_err: bg, chip_err_fg: fg, note: bg, note_edge: fg, warn: bg, warn_edge: fg, btn: bg, btn_edge: fg, foot: bg, disabled: 0x3FF23F,
+        };
+        // Light and dark at 100% for every state; High contrast and 150% for the two that
+        // carry the most kinds of parts.
+        let mut runs: Vec<(&str, Theme, f32)> = vec![("light", crate::welcome::LIGHT, 1.0), ("dark", crate::welcome::DARK, 1.0)];
+        runs.extend([("hc", night_sky, 1.0), ("light-150", crate::welcome::LIGHT, 1.5), ("hc-150", night_sky, 1.5)]);
+        for (tname, theme, scale) in runs {
             for (sname, rec, refused, prompt) in &states {
-                let scale = 1.0;
+                if (tname.starts_with("hc") || scale > 1.0) && !matches!(*sname, "rest" | "clash") {
+                    continue;
+                }
                 let win = Win {
                     hwnd: HWND::default(), scale, theme, fonts: Fonts::new(scale), scroll: 0.0, height: 0.0, tops: vec![], hits: vec![],
-                    focus: prompt.then_some(Ctl::Cancel(next)), kb: *prompt, hover: None, press: None, drag: None, error: None,
+                    focus: prompt.then_some(Ctl::Cancel(next)), kb: *prompt, hover: None, press: None, drag: None, slide: None, vh: H, error: None,
                     rec: *rec, refused: refused.clone(), prompt: prompt.then(clash), pics: fake(), edited: None,
                 };
                 let mut win = win;
@@ -2303,10 +2487,10 @@ mod tests {
                     ReleaseDC(None, dc);
                     out.height
                 };
-                let ph = (BAND + height).ceil() as i32;
-                crate::welcome::tests::save_png(W as i32, ph, &dir.join(format!("{sname}-{tname}.png")), |dc| {
+                let (pw, ph) = ((W * scale).round() as i32, ((BAND + height) * scale).ceil() as i32);
+                crate::welcome::tests::save_png(pw, ph, &dir.join(format!("{sname}-{tname}.png")), |dc| {
                     let mut c = Canvas::new(dc, true, scale, theme, &win.fonts);
-                    c.boxed((0.0, 0.0, W + 1.0, ph as f32 + 1.0), 0.0, theme.surface, None);
+                    c.boxed((0.0, 0.0, W + 1.0, BAND + height + 1.0), 0.0, theme.surface, None);
                     compose(&mut c, &win);
                 });
                 win.fonts.delete();

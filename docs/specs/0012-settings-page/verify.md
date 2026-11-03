@@ -26,7 +26,7 @@ _Steps derived from spec 0012 acceptance criteria. You run the on screen steps; 
 - [ ] × on Finder's only chip → the file says `finder = []`, Win+F does nothing, and the log names no problem; × on jump → `jump = ""` → AC-8
 - [ ] Record Win+3 for Finder → the prompt says Go to workspace skips 3; Move it here → the jump chip reads "Win + 1…9, skips 3 (Finder)", Win+3 opens the finder, Win+4 still jumps → AC-8, AC-9
 - [ ] Record Win+Shift on Go to workspace → the prompt names Send window to 1 to 9, and go; Move it here → that set is off, in one write → AC-9
-- [ ] 4 fingers, swipe left: set Twice to Overview → the file gets a `times = 2` block and keeps the comment above the first block; one swipe now waits, two open the overview; set it back to Not set → the block goes → AC-12
+- [ ] 4 fingers, swipe left: set Twice to Overview → the file gets a `times = 2` block and keeps the comment above the first block; one swipe now waits, two open the overview; set it back to No twice action → the block goes → AC-12
 - [ ] Hand delete the 3 finger tap block → its row shows Nothing and "not in the file"; pick Nothing → the file gets `do = "none"` for it → AC-12
 
 ## Commands
@@ -52,3 +52,17 @@ _Steps derived from spec 0012 acceptance criteria. You run the on screen steps; 
 ## Commands
 - [ ] `cargo test` → the three resize tests pass (lowering keeps every window, the shown removed workspace switches, raising adds empty ones) → AC-6
 - [ ] `cargo test render_settings -- --ignored` → target/settings/pictures-light.png and pictures-dark.png show two screens, the removal note, the banner and the waiting status → AC-6, AC-18, AC-20
+
+## Change of 2026-11-03 (usability review)
+- [ ] Record a combo that clashes, then press Esc → the prompt goes, nothing is saved, and the page stays open; Esc again closes the page → AC-16
+- [ ] Hand edit settings.toml with the page open, so the "settings.toml changed at …" banner shows → Esc dismisses the banner and the page stays open; Esc again closes the page → AC-16, AC-20
+- [ ] Drag the page's bottom edge up and down → it sizes, stops at 460 dip, and the side list, its Open settings.toml button and scrolling all keep working; the left and right edges show no sizing arrow → AC-1
+- [ ] Maximize → the page fills the screen's height (above the taskbar), same width, centered; restore → back to the old height → AC-1
+- [ ] On a screen with less than 620 dip of height (or a high scale), open Settings → the whole window fits, nothing below the taskbar → AC-1
+- [ ] Drag the page to a screen at another scale → it stays sharp and keeps its height in dip, never taller than that screen → AC-1, AC-16
+- [ ] Indicator › Hold: click the bar near its right end → about 4500 ms is saved at once; drag the knob → the value follows in 50 ms steps; − and + still work → AC-10
+- [ ] Touchpad › Gestures: a Twice picker reads "No twice action"; its menu lists "No twice action" and "Nothing (still waits)" → AC-12
+
+## Commands
+- [ ] `cargo test` → bars_land_on_the_grid, esc_cancels_a_clash_first and twice_labels_tell_waiting_apart pass
+- [ ] `cargo test render_settings -- --ignored` → also writes rest-hc, clash-hc, rest-light-150, clash-light-150, rest-hc-150 and clash-hc-150

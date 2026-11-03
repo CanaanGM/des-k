@@ -160,7 +160,14 @@ fn menu(hwnd: HWND) {
         // Debug builds with a console log there instead of to the file.
         let _ = AppendMenuW(m, flag(log.exists()), ID_LOG, w!("Open log"));
         let _ = AppendMenuW(m, MF_SEPARATOR, 0, PCWSTR::null());
-        let _ = AppendMenuW(m, MF_STRING, ID_QUIT, w!("Quit (shows every window)"));
+        // With Windows' gestures off, quitting leaves the touchpad with none: say for how long.
+        let st = crate::setup::state();
+        let quit = match (st.off, st.saved) {
+            (true, true) => "Quit (shows every window; gestures return at next sign in)",
+            (true, false) => "Quit (shows every window; touchpad gestures stop)",
+            _ => "Quit (shows every window)",
+        };
+        let _ = AppendMenuW(m, MF_STRING, ID_QUIT, &HSTRING::from(quit));
         let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
         // Without this the menu stays open after a click elsewhere.

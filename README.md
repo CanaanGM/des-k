@@ -99,8 +99,8 @@ every window, admin ones like Task Manager too. Out of the box:
 
 Windows has its own three and four finger gestures, and one swipe must never do two things. So
 des-k acts only while Windows' own ones are all set to **Nothing**. The first time des-k starts,
-a welcome screen helps you with that. It shows what each gesture does in des-k. **Use these
-gestures** saves your current Windows values and opens Settings at Touchpad for you to set them
+a welcome screen helps you with that. It shows what each gesture does in des-k. **Set up in
+Windows Settings** saves your current Windows values and opens Settings at Touchpad for you to set them
 to Nothing. **Choose my own** does the same and also opens the settings page at Touchpad, so
 you can change what each gesture does. If one is still on, des-k logs which one and does nothing for that
 gesture. Open the screen again any time from the settings page: Touchpad, **Touchpad setup**. It shows, for each

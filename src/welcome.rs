@@ -21,7 +21,7 @@ use windows::Win32::{
         Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW},
         Controls::{DRAWITEMSTRUCT, ODS_DISABLED, ODS_FOCUS, ODS_NOFOCUSRECT, ODS_SELECTED},
         HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow},
-        Input::KeyboardAndMouse::{EnableWindow, GetActiveWindow, GetFocus, IsWindowEnabled, SetFocus},
+        Input::KeyboardAndMouse::{EnableWindow, GetActiveWindow, GetFocus, IsWindowEnabled, SetFocus, VIRTUAL_KEY, VK_NEXT, VK_PRIOR},
         WindowsAndMessaging::*,
     },
 };
@@ -41,7 +41,7 @@ const ID_GIVE: i32 = 104;
 const ID_CLOSE: i32 = IDCANCEL.0;
 const IDS: [i32; 5] = [ID_CARD, ID_CARD2, ID_OWN, ID_GIVE, ID_CLOSE];
 
-const USE: &str = "Use these gestures";
+const USE: &str = "Set up in Windows Settings";
 const OPEN: &str = "Open Touchpad settings";
 const AGAIN: &str = "Try giving back again";
 const GIVE: &str = "Give gestures back to Windows";
@@ -54,6 +54,7 @@ const IN: f32 = W - 2.0 * SIDE;
 const BAND: f32 = 112.0;
 const CARD_IN: f32 = IN - 2.0 * 15.0; // inside the card's border and 14 dip padding
 const RING: f32 = 4.0; // a button's window reaches this far past its pill, for the focus ring
+const MIN_SHOWN: f32 = 120.0; // the least of the middle a short window shows
 
 /// Colors as 0xRRGGBB: the design file's tokens (provisional, the indicator's).
 #[derive(Clone, Copy, PartialEq)]
@@ -374,6 +375,16 @@ struct Place {
     enabled: bool,
 }
 
+/// How the screen sits in its window. Short: the whole screen is taller than its screen's work
+/// area, so the window is capped and the middle (intro to card) scrolls.
+#[derive(Clone, Copy, Default, PartialEq)]
+struct Fit {
+    height: f32, // the client height
+    short: bool,
+    content: f32, // the middle's height, when short
+    shown: f32,   // how much of the middle shows, when short
+}
+
 struct Win {
     hwnd: HWND,
     first: bool,
@@ -385,6 +396,8 @@ struct Win {
     places: Vec<Place>,
     buttons: Vec<(i32, HWND)>,
     focus: Option<HWND>, // the focused button while the window is not active
+    fit: Fit,
+    scroll: f32,
 }
 
 // Never hold the borrow across a call that sends this window a message: a button redraws
@@ -675,10 +688,37 @@ pub(crate) fn measure(c: &mut Canvas, f: impl FnOnce(&mut Canvas) -> f32) -> f32
     h
 }
 
-/// The whole screen, top to bottom. Returns its height.
-fn compose(c: &mut Canvas, v: &View) -> f32 {
+/// The whole screen, back to front. With `short` (the client height when the whole screen
+/// doesn't fit its screen), the middle scrolls by `scroll` under the band, and the card's
+/// buttons move to a strip pinned above the footer, so every button stays in reach.
+fn compose(c: &mut Canvas, v: &View, short: Option<f32>, scroll: f32) -> Fit {
+    let Some(height) = short else {
+        let y = BAND + middle(c, v, BAND, true);
+        band(c);
+        let height = y + footer(c, v, y);
+        return Fit { height, ..Fit::default() };
+    };
+    let pinned = measure(c, |c| strip(c, v, 0.0) + footer(c, v, 0.0));
+    let height = height.max(BAND + pinned + MIN_SHOWN);
+    let shown = height - BAND - pinned;
+    let content = measure(c, |c| middle(c, v, BAND, false));
+    let scroll = scroll.clamp(0.0, (content - shown).max(0.0));
+    middle(c, v, BAND - scroll, false);
+    band(c);
+    let y = height - pinned;
+    let y = y + strip(c, v, y);
+    footer(c, v, y);
+    // The scroll thumb, like the settings page's.
+    if content > shown + 0.5 {
+        let th = (shown * shown / content).max(32.0);
+        c.fill_rr((W - 11.0, BAND + scroll / (content - shown) * (shown - th), 5.0, th), 2.5, alpha(c.t.dim, 0.5));
+    }
+    Fit { height, short: true, content, shown }
+}
+
+/// The band at the top: the title, the line under it and the art.
+fn band(c: &mut Canvas) {
     let t = c.t;
-    // The band.
     if t.hc {
         c.boxed((0.0, 0.0, W, BAND), 0.0, t.surface, None);
         c.boxed((0.0, BAND - 1.0, W, 1.0), 0.0, t.stroke, None);
@@ -688,32 +728,50 @@ fn compose(c: &mut Canvas, v: &View) -> f32 {
     c.text(SIDE, 14.0, 36.0, "Welcome to des-k!", F::H1, t.on_band);
     c.text(SIDE, 52.0, 20.0, "Every screen gets its own desktops.", F::Body, t.on_band);
     art(c, W - 18.0 - 172.0, BAND - 8.0 - 62.0, t.on_band);
-    let mut y = BAND + 16.0;
+}
+
+/// The intro, tiles, heading and card from `top`; `inline`: the card holds its buttons.
+/// Returns its height.
+fn middle(c: &mut Canvas, v: &View, top: f32, inline: bool) -> f32 {
+    let t = c.t;
+    let mut y = top + 16.0;
     let intro = "des-k gives each of your screens its own set of workspaces. You switch the screen under your mouse, and your other screens stay where they are. des-k never moves or resizes your windows. It only hides and shows them.";
     y += c.para(SIDE, y, IN, 20.0, &[(intro, F::Body, t.text)]) + 16.0;
     tiles(c, y);
     y += 56.0 + 16.0;
-    // The heading, with the count at its right.
+    // The heading, with the count at its right: Windows' own values, in every state.
     pad_icon(c, SIDE, y + 1.0, op(t.text));
     c.text(SIDE + 28.0, y, 22.0, "Your touchpad gestures", F::H2, t.text);
-    if v.st.enabled && v.back.is_none() {
-        let n = v.st.rows.iter().filter(|r| **r == Row::Nothing).count();
-        let count = format!("Windows: {n} of 4 off");
-        let cw = c.width(&count, F::SmallBold);
-        c.text(SIDE + IN - cw, y + 3.0, 16.0, &count, F::SmallBold, t.dim);
-    }
+    let n = v.st.rows.iter().filter(|r| **r == Row::Nothing).count();
+    let count = format!("Windows: {n} of 4 off");
+    let cw = c.width(&count, F::SmallBold);
+    c.text(SIDE + IN - cw, y + 3.0, 16.0, &count, F::SmallBold, t.dim);
     y += 22.0 + 8.0;
     // The card: border 1, padding 12 on top and 14 below.
-    let h = measure(c, |c| card(c, v, SIDE + 15.0, y + 13.0)) + 28.0;
+    let h = measure(c, |c| card(c, v, SIDE + 15.0, y + 13.0, inline)) + 28.0;
     c.boxed((SIDE, y, IN, h), 12.0, t.card, Some(t.card_edge));
-    card(c, v, SIDE + 15.0, y + 13.0);
-    y += h + 24.0;
-    // The footer: border 1 on top, padding 14.
+    card(c, v, SIDE + 15.0, y + 13.0, inline);
+    y + h + 24.0 - top
+}
+
+/// The card's buttons, pinned above the footer while the middle scrolls. Returns its height.
+fn strip(c: &mut Canvas, v: &View, y: f32) -> f32 {
+    let t = c.t;
+    let h = measure(c, |c| buttons(c, v, SIDE, y + 12.0, IN, t.surface)) + 24.0;
+    c.boxed((0.0, y, W, h), 0.0, t.surface, None);
+    c.boxed((0.0, y, W, 1.0), 0.0, t.card_edge, None);
+    buttons(c, v, SIDE, y + 12.0, IN, t.surface);
+    h
+}
+
+/// The footer from `y`: border 1 on top, padding 14. Returns its height.
+fn footer(c: &mut Canvas, v: &View, y: f32) -> f32 {
+    let t = c.t;
     let fh = measure(c, |c| foot(c, v, y + 15.0)) + 29.0;
     c.boxed((0.0, y, W, fh), 0.0, t.foot, None);
     c.boxed((0.0, y, W, 1.0), 0.0, t.card_edge, None);
     foot(c, v, y + 15.0);
-    y + fh
+    fh
 }
 
 /// Three screens, each on its own workspace: the indicator's dots, the current one bright.
@@ -778,18 +836,59 @@ fn pad_icon(c: &Canvas, x: f32, y: f32, argb: u32) {
     }
 }
 
-/// The card's contents at x, top. Returns their height.
-fn card(c: &mut Canvas, v: &View, x: f32, top: f32) -> f32 {
+/// The card's primary button (label, enabled), and whether Open Touchpad settings shows
+/// beside it.
+fn actions(v: &View) -> (Option<(&'static str, bool)>, bool) {
+    let st = &v.st;
+    if !st.enabled {
+        // Reading off: Use can't do anything, so it isn't there; Choose my own turns reading on.
+        return (None, st.off);
+    }
+    let primary = match v.back {
+        Some(b) if b.failed() => Some((AGAIN, true)),
+        _ if !st.pad => Some((USE, false)), // the No touchpad banner above says why
+        _ if st.rows.iter().all(|r| *r == Row::Nothing) => None,
+        None if st.saved => Some((OPEN, true)),
+        _ => Some((USE, true)),
+    };
+    (primary, false)
+}
+
+/// The card's buttons from x, y on one line, Choose my own wrapping below when it doesn't fit
+/// in `w`. `back` is the color behind them. Returns their height.
+fn buttons(c: &mut Canvas, v: &View, x: f32, y: f32, w: f32, back: u32) -> f32 {
+    let (primary, open) = actions(v);
+    let (mut bx, mut by) = (x, y);
+    if let Some((label, enabled)) = primary {
+        let pw = c.pill_w(label, Kind::Primary);
+        c.place(Place { id: ID_CARD, kind: Kind::Primary, x: bx, y: by, w: pw, h: 32.0, back, label, enabled });
+        bx += pw + 8.0;
+    }
+    if open {
+        let pw = c.pill_w(OPEN, Kind::Quiet);
+        c.place(Place { id: ID_CARD2, kind: Kind::Quiet, x: bx, y: by, w: pw, h: 32.0, back, label: OPEN, enabled: true });
+        bx += pw + 8.0;
+    }
+    let pw = c.pill_w(OWN, Kind::Quiet);
+    if bx + pw > x + w {
+        (bx, by) = (x, by + 32.0 + 8.0);
+    }
+    c.place(Place { id: ID_OWN, kind: Kind::Quiet, x: bx, y: by, w: pw, h: 32.0, back, label: OWN, enabled: true });
+    by + 32.0 - y
+}
+
+/// The card's contents at x, top; `inline`: with its buttons at the end. Returns their height.
+fn card(c: &mut Canvas, v: &View, x: f32, top: f32, inline: bool) -> f32 {
     let t = c.t;
     let st = &v.st;
     let all = st.rows.iter().all(|r| *r == Row::Nothing);
     let mut y = top;
-    // Reading off wins over no touchpad: then des-k runs nothing, so the rows would mislead.
-    let (primary, open) = if !st.enabled {
+    // Reading off wins over no touchpad. The rows show in every state, captioned with what
+    // des-k does with them right now.
+    if !st.enabled {
         let sub = "Windows' three and four finger gestures are set to Nothing, so right now they do nothing. Turn reading back on with Choose my own, or set them back in Windows Settings.";
         let sub = st.off.then_some(sub);
         y += banner(c, x, y, CARD_IN, st.off, "Touchpad reading is off in des-k's settings.", sub.as_slice());
-        (Some((USE, false)), st.off)
     } else {
         match v.back {
             Some(b) => {
@@ -797,13 +896,13 @@ fn card(c: &mut Canvas, v: &View, x: f32, top: f32) -> f32 {
                 let (warn, title, subs) = if !b.failed() {
                     let mut subs = vec!["To have them now, set them in Settings (it's open). des-k has stopped reading gestures.".to_string()];
                     if !b.cleared {
-                        subs.push("des-k couldn't clear its copy of your values (the log says why). Press Give gestures back again to clear it.".into());
+                        subs.push("des-k couldn't clear its copy of your values. The log says why (tray icon › Open log). Press Give gestures back again to clear it.".into());
                     }
                     (false, "Your gestures come back at your next sign in.", subs)
                 } else if b.wrote.iter().all(|w| *w == Wrote::NotOne) {
-                    (true, "Giving back didn't work.", vec![format!("Nothing was written back (the log says why). {again}")])
+                    (true, "Giving back didn't work.", vec![format!("Nothing was written back. The log says why (tray icon › Open log). {again}")])
                 } else {
-                    let sub = format!("Some values were written back for your next sign in, some weren't (the log names them). {again}");
+                    let sub = format!("Some values were written back for your next sign in, some weren't. The log names them (tray icon › Open log). {again}");
                     (true, "Giving back stopped part way.", vec![sub])
                 };
                 let subs: Vec<&str> = subs.iter().map(String::as_str).collect();
@@ -817,7 +916,7 @@ fn card(c: &mut Canvas, v: &View, x: f32, top: f32) -> f32 {
             None => {
                 y += match st.rows.iter().position(|r| *r == Row::CantRead) {
                     Some(i) => {
-                        let text = format!("des-k can't read the {} setting, so it leaves every gesture to Windows. The log has the details.", setup::ROWS[i].0);
+                        let text = format!("des-k can't read the {} setting, so it leaves every gesture to Windows. The log has the details (tray icon › Open log).", setup::ROWS[i].0);
                         c.para(x, y, CARD_IN, 20.0, &[(&text, F::Body, t.text)])
                     }
                     None => c.para(
@@ -840,56 +939,39 @@ fn card(c: &mut Canvas, v: &View, x: f32, top: f32) -> f32 {
                 };
             }
         }
-        y += 14.0;
-        y += rows(c, v, x, y);
-        if v.back.is_none() {
-            // Only while des-k reads the touchpad: after a give back it runs nothing.
-            let edits = "What des-k runs now. Choose my own changes them, and changes apply at once.";
-            y += 12.0 + c.para(x, y + 12.0, CARD_IN, 16.0, &[(edits, F::Small, t.dim)]);
-            let after = match all {
-                _ if !st.pad => None,
-                true => (!st.saved).then_some("You set them to Nothing yourself, so Quit has nothing to give back."),
-                false => Some("des-k runs them once all four are off, even over admin windows. After that, quitting des-k gives them back from your next sign in."),
-            };
-            if let Some(a) = after {
-                y += 6.0 + c.para(x, y + 6.0, CARD_IN, 16.0, &[(a, F::Small, t.dim)]);
-            }
-        }
-        let primary = match v.back {
-            Some(b) if b.failed() => Some((AGAIN, true)),
-            _ if !st.pad => Some((USE, false)),
-            _ if all => None,
-            None if st.saved => Some((OPEN, true)),
-            _ => Some((USE, true)),
-        };
-        (primary, false)
+    }
+    // The caption above the rows says which part is des-k's, and whether it runs it now.
+    let caption = if !st.enabled {
+        "Under each gesture: what des-k would run. Touchpad reading is off, so it runs none of them."
+    } else if v.back.is_some() {
+        "Under each gesture: what des-k would run. It stopped reading gestures when you gave them back."
+    } else {
+        "Under each gesture: what des-k runs for it. Choose my own changes them, and changes apply at once."
     };
-    // The buttons on one line, Choose my own wrapping below when it doesn't fit.
-    y += 12.0;
-    let mut bx = x;
-    if let Some((label, enabled)) = primary {
-        let w = c.pill_w(label, Kind::Primary);
-        c.place(Place { id: ID_CARD, kind: Kind::Primary, x: bx, y, w, h: 32.0, back: t.card, label, enabled });
-        bx += w + 8.0;
+    y += 14.0;
+    y += c.para(x, y, CARD_IN, 20.0, &[(caption, F::Body, t.text)]) + 12.0;
+    y += rows(c, v, x, y);
+    if st.enabled && v.back.is_none() {
+        let after = match all {
+            _ if !st.pad => None,
+            true => (!st.saved).then_some("You set them to Nothing yourself, so Quit has nothing to give back."),
+            false => Some("des-k runs them once all four are off, even over admin windows. After that, quitting des-k gives them back from your next sign in."),
+        };
+        if let Some(a) = after {
+            y += 12.0 + c.para(x, y + 12.0, CARD_IN, 16.0, &[(a, F::Small, t.dim)]);
+        }
     }
-    if open {
-        let w = c.pill_w(OPEN, Kind::Quiet);
-        c.place(Place { id: ID_CARD2, kind: Kind::Quiet, x: bx, y, w, h: 32.0, back: t.card, label: OPEN, enabled: true });
-        bx += w + 8.0;
+    if inline {
+        y += 12.0 + buttons(c, v, x, y + 12.0, CARD_IN, t.card);
     }
-    let w = c.pill_w(OWN, Kind::Quiet);
-    if bx + w > x + CARD_IN {
-        (bx, y) = (x, y + 32.0 + 8.0);
-    }
-    c.place(Place { id: ID_OWN, kind: Kind::Quiet, x: bx, y, w, h: 32.0, back: t.card, label: OWN, enabled: true });
-    y + 32.0 - top
+    y - top
 }
 
 /// "des-k runs these gestures", with a big check. Returns its height.
 fn ok_block(c: &mut Canvas, x: f32, y: f32) -> f32 {
     let t = c.t;
     let (tx, tw) = (x + 42.0, CARD_IN - 42.0);
-    let line = "Three and four finger swipes and taps now do what settings.toml says.";
+    let line = "Three and four finger swipes and taps now do what you set in des-k's settings, under Touchpad.";
     let th = 20.0 + measure(c, |c| c.para(tx, y, tw, 16.0, &[(line, F::Small, t.dim)]));
     let h = th.max(32.0);
     let cy = y + h / 2.0;
@@ -957,10 +1039,11 @@ fn rows(c: &Canvas, v: &View, x: f32, top: f32) -> f32 {
                 Wrote::Part => ("Part written", false, t.chip_on, t.chip_on_fg),
                 Wrote::NotOne => ("Not written", false, t.chip_err, t.chip_err_fg),
             },
+            // Windows' own value, named as Windows', so it never reads as what des-k does.
             None => match v.st.rows[i] {
-                Row::Nothing => ("Nothing", true, t.chip_off, t.chip_off_fg),
-                Row::StillOn => ("Still on", false, t.chip_on, t.chip_on_fg),
-                Row::CantRead => ("Can't read", false, t.chip_err, t.chip_err_fg),
+                Row::Nothing => ("Windows: Nothing", true, t.chip_off, t.chip_off_fg),
+                Row::StillOn => ("Windows: still on", false, t.chip_on, t.chip_on_fg),
+                Row::CantRead => ("Windows: can't read", false, t.chip_err, t.chip_err_fg),
             },
         };
         let lw = c.width(label, F::SmallBold);
@@ -1004,7 +1087,7 @@ fn foot(c: &mut Canvas, v: &View, top: f32) -> f32 {
                 c.place(Place { id: ID_GIVE, kind: Kind::Quiet, x: SIDE, y, w, h: 32.0, back: t.foot, label: GIVE, enabled: true });
                 h += 36.0;
             }
-            let line = "Gives back what you had the first time you chose Use, from your next sign in.";
+            let line = "Gives back what Windows had before des-k saved your values, from your next sign in.";
             h += c.para(SIDE, y + h, 300.0, 16.0, &[(line, F::Small, t.dim)]);
         } else if v.first {
             let runs = [("You can open this again in des-k's settings, under Touchpad: ", F::Small, t.dim), ("Touchpad setup", F::SmallBold, t.dim), (".", F::Small, t.dim)];
@@ -1062,16 +1145,55 @@ fn read_view(first: bool) -> View {
     View { st, first, back: LAST.get() }
 }
 
-/// The screen's height in dip and its buttons, measured with a screen DC.
-fn layout(w: &Win) -> (f32, Vec<Place>) {
+/// How the screen fits and its buttons, measured with a screen DC. `cap`: the most client
+/// height, in dip, its screen has room for.
+fn layout(w: &Win, cap: f32) -> (Fit, Vec<Place>) {
     unsafe {
         let dc = GetDC(None);
         let mut c = Canvas::new(dc, false, w.scale, w.theme, &w.fonts);
-        let h = compose(&mut c, &w.view);
+        let mut fit = compose(&mut c, &w.view, None, 0.0);
+        if fit.height > cap + 0.5 {
+            c.places.clear();
+            fit = compose(&mut c, &w.view, Some(cap), w.scroll);
+        }
         let places = std::mem::take(&mut c.places);
         drop(c);
         ReleaseDC(None, dc);
-        (h, places)
+        (fit, places)
+    }
+}
+
+/// The work area of the screen `at` is on, else the window's own screen.
+fn work_area(h: HWND, at: Option<RECT>) -> Option<RECT> {
+    unsafe {
+        let mon = match at {
+            Some(r) => MonitorFromRect(&r, MONITOR_DEFAULTTONEAREST),
+            None => MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST),
+        };
+        let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+        GetMonitorInfoW(mon, &mut mi).as_bool().then_some(mi.rcWork)
+    }
+}
+
+/// The client height, in dip, that fits under the title bar in `work` px of screen height.
+fn client_cap(work: i32, dpi: u32, s: f32) -> f32 {
+    let mut r = RECT::default();
+    unsafe { let _ = AdjustWindowRectExForDpi(&mut r, STYLE, false, WINDOW_EX_STYLE(0), dpi); }
+    (work - (r.bottom - r.top)) as f32 / s
+}
+
+/// Scrolls the middle of a short window by `dy` dip. Only the window itself repaints: its
+/// buttons are all pinned, so none of them moves.
+fn scroll_by(dy: f32) {
+    let moved = set(|w| {
+        let s = (w.scroll + dy).clamp(0.0, (w.fit.content - w.fit.shown).max(0.0));
+        (s != w.scroll).then(|| {
+            w.scroll = s;
+            w.hwnd
+        })
+    });
+    if let Some(Some(h)) = moved {
+        unsafe { let _ = InvalidateRect(Some(h), None, false); }
     }
 }
 
@@ -1083,12 +1205,18 @@ fn default_id(places: &[Place]) -> i32 {
     }
 }
 
-/// Lays the screen out again and fits the window and its buttons to it; `to` moves it too.
-fn relayout(to: Option<(i32, i32)>) {
-    let Some((h, s, dpi, height, places, buttons)) = set(|w| {
-        let (height, places) = layout(w);
+/// Lays the screen out again and fits the window and its buttons to it, never taller than its
+/// screen's work area; `to` (WM_DPICHANGED's rectangle) moves it too.
+fn relayout(to: Option<RECT>) {
+    let Some((h, s, dpi)) = get(|w| (w.hwnd, w.scale, w.dpi)) else { return };
+    let work = work_area(h, to);
+    let cap = work.map_or(f32::INFINITY, |r| client_cap(r.bottom - r.top, dpi, s));
+    let Some((height, places, buttons)) = set(|w| {
+        let (fit, places) = layout(w, cap);
+        w.scroll = w.scroll.clamp(0.0, (fit.content - fit.shown).max(0.0));
+        w.fit = fit;
         w.places.clone_from(&places);
-        (w.hwnd, w.scale, w.dpi, height, places, w.buttons.clone())
+        (fit.height, places, w.buttons.clone())
     }) else {
         return;
     };
@@ -1096,9 +1224,15 @@ fn relayout(to: Option<(i32, i32)>) {
     unsafe {
         let mut r = RECT { left: 0, top: 0, right: px(W), bottom: px(height) };
         let _ = AdjustWindowRectExForDpi(&mut r, STYLE, false, WINDOW_EX_STYLE(0), dpi);
-        let (x, y) = to.unwrap_or_default();
-        let flags = SWP_NOZORDER | SWP_NOACTIVATE | if to.is_none() { SWP_NOMOVE } else { SET_WINDOW_POS_FLAGS(0) };
-        let _ = SetWindowPos(h, None, x, y, r.right - r.left, r.bottom - r.top, flags);
+        let (ww, wh) = (r.right - r.left, r.bottom - r.top);
+        let mut now = RECT::default();
+        let _ = GetWindowRect(h, &mut now);
+        let (x, mut y) = to.map_or((now.left, now.top), |t| (t.left, t.top));
+        // A window that grew past its screen's bottom moves up, so its buttons stay on it.
+        if let Some(wk) = work.filter(|_| wh > now.bottom - now.top || to.is_some()) {
+            y = y.min(wk.bottom - wh).max(wk.top);
+        }
+        let _ = SetWindowPos(h, None, x, y, ww, wh, SWP_NOZORDER | SWP_NOACTIVATE);
         for (id, b) in &buttons {
             match places.iter().find(|p| p.id == *id) {
                 Some(p) => {
@@ -1141,9 +1275,25 @@ pub fn refresh() {
     }
 }
 
-/// Main loop: the screen's keys (Tab, Enter, Esc, Space) through the dialog manager.
+/// Main loop: the screen's keys (Tab, Enter, Esc, Space) through the dialog manager, and
+/// Page Up and Page Down scrolling a short window's middle.
 pub fn key(msg: &MSG) -> bool {
-    hwnd().is_some_and(|h| unsafe { IsDialogMessageW(h, msg) }.as_bool())
+    let Some(h) = hwnd() else { return false };
+    unsafe {
+        if msg.message == WM_KEYDOWN && (msg.hwnd == h || IsChild(h, msg.hwnd).as_bool()) {
+            let page = get(|w| (w.fit.shown - 40.0).max(20.0)).unwrap_or(0.0);
+            let dy = match VIRTUAL_KEY(msg.wParam.0 as u16) {
+                VK_PRIOR => Some(-page),
+                VK_NEXT => Some(page),
+                _ => None,
+            };
+            if let Some(dy) = dy {
+                scroll_by(dy);
+                return true;
+            }
+        }
+        IsDialogMessageW(h, msg).as_bool()
+    }
 }
 
 pub(crate) fn dark_title(h: HWND, t: &Theme) {
@@ -1194,7 +1344,7 @@ pub fn show(first: bool) {
         let theme = theme();
         dark_title(h, &theme);
         let view = read_view(first);
-        WIN.with_borrow_mut(|w| *w = Some(Win { hwnd: h, first, dpi, scale, theme, fonts: Fonts::new(scale), view, places: vec![], buttons, focus: None }));
+        WIN.with_borrow_mut(|w| *w = Some(Win { hwnd: h, first, dpi, scale, theme, fonts: Fonts::new(scale), view, places: vec![], buttons, focus: None, fit: Fit::default(), scroll: 0.0 }));
         relayout(None);
         let mut r = RECT::default();
         let _ = GetWindowRect(h, &mut r);
@@ -1273,13 +1423,19 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                     buffered(dc, 0, 0, r.right, r.bottom, |mem| {
                         let mut c = Canvas::new(mem, true, w.scale, w.theme, &w.fonts);
                         c.boxed((0.0, 0.0, r.right as f32 / w.scale + 1.0, r.bottom as f32 / w.scale + 1.0), 0.0, w.theme.surface, None);
-                        compose(&mut c, &w.view);
+                        compose(&mut c, &w.view, w.fit.short.then_some(w.fit.height), w.scroll);
                     })
                 });
                 let _ = EndPaint(h, &ps);
                 LRESULT(0)
             }
             WM_ERASEBKGND => LRESULT(1),
+            // A button with focus hands the wheel on to here.
+            WM_MOUSEWHEEL => {
+                let delta = ((wp.0 >> 16) & 0xFFFF) as i16 as f32;
+                scroll_by(-delta / 120.0 * 48.0);
+                LRESULT(0)
+            }
             WM_DRAWITEM => {
                 on_draw_item(&*(lp.0 as *const DRAWITEMSTRUCT));
                 LRESULT(1)
@@ -1328,7 +1484,7 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                     w.scale = dpi as f32 / 96.0;
                     w.fonts = Fonts::new(w.scale);
                 });
-                relayout(Some((to.left, to.top)));
+                relayout(Some(to));
                 LRESULT(0)
             }
             WM_SETTINGCHANGE | WM_SYSCOLORCHANGE => {
@@ -1377,21 +1533,34 @@ pub(crate) mod tests {
         ];
         let night_sky = Theme { hc: true, ..hc_like(0x000000, 0xFFFFFF, 0x1AEBFF, 0x3FF23F) };
         let mut heights = vec![];
+        // "short": a 1080p laptop screen at 150% (672 dip of work area under the taskbar), so
+        // the window is capped and its middle scrolls; "short-end" is scrolled to the end.
         for (tname, theme) in [("light", LIGHT), ("dark", DARK), ("hc", night_sky)] {
-            for scale in [1.0f32, 1.5] {
+            for (scale, fit) in [(1.0f32, ""), (1.5, ""), (1.5, "short"), (1.5, "short-end")] {
                 for (sname, v) in &states {
-                    if scale > 1.0 && !matches!(*sname, "s1" | "s7") {
+                    let wanted = match fit {
+                        "" => scale == 1.0 || matches!(*sname, "s1" | "s7"),
+                        "short" => matches!(*sname, "s1" | "s2" | "s6"),
+                        _ => *sname == "s1",
+                    };
+                    if !wanted {
                         continue;
                     }
                     let fonts = Fonts::new(scale);
-                    let fake = Win { hwnd: HWND::default(), first: v.first, dpi: (96.0 * scale) as u32, scale, theme, fonts, view: *v, places: vec![], buttons: vec![], focus: None };
-                    let (h, places) = layout(&fake);
-                    heights.push(format!("{tname} {sname} {}% {h} dip", scale * 100.0));
+                    let dpi = (96.0 * scale) as u32;
+                    let scroll = if fit == "short-end" { f32::MAX } else { 0.0 };
+                    let fake = Win { hwnd: HWND::default(), first: v.first, dpi, scale, theme, fonts, view: *v, places: vec![], buttons: vec![], focus: None, fit: Fit::default(), scroll };
+                    let cap = if fit.is_empty() { f32::INFINITY } else { client_cap((672.0 * scale) as i32, dpi, scale) };
+                    let (got, places) = layout(&fake, cap);
+                    let h = got.height;
+                    let note = if got.short { format!(", capped at {cap} dip, middle {} of {} dip shows", got.shown, got.content) } else { String::new() };
+                    heights.push(format!("{tname} {sname}{} {}% {h} dip{note}", if fit.is_empty() { String::new() } else { format!(" {fit}") }, scale * 100.0));
                     let (pw, ph) = ((W * scale).round() as i32, (h * scale).round() as i32);
-                    save_png(pw, ph, &dir.join(format!("{sname}-{tname}-{}.png", scale * 100.0)), |dc| {
+                    let file = if fit.is_empty() { format!("{sname}-{tname}-{}.png", scale * 100.0) } else { format!("{sname}-{fit}-{tname}-{}.png", scale * 100.0) };
+                    save_png(pw, ph, &dir.join(file), |dc| {
                         let mut c = Canvas::new(dc, true, scale, theme, &fake.fonts);
                         c.boxed((0.0, 0.0, W + 1.0, h + 1.0), 0.0, theme.surface, None);
-                        compose(&mut c, v);
+                        compose(&mut c, v, got.short.then_some(h), scroll);
                         let default = default_id(&places);
                         for pl in &places {
                             let focus = *sname == "s1" && pl.id == default;
