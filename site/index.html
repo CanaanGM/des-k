@@ -515,7 +515,7 @@ footer .footnote:empty { display: none; }
     <h1>Every screen gets its <em>own</em> desktops</h1>
     <p>des-k lets each monitor switch its own workspaces. The other screens stay where they are. This page shows how to install it, use it and remove it.</p>
     <div class="pills"><span class="pill">Runs on <b>Windows 11</b></span><span class="pill">Built with <b>Rust</b></span><span class="pill">Windows stay <b>floating</b></span></div>
-    <p class="meta"><span class="chip sage">Reviewed</span><span>Updated <time datetime="2026-11-03">3 Nov 2026</time></span><span>8 min read</span></p>
+    <p class="meta"><span class="chip sage">Reviewed</span><span>Updated <time datetime="2026-11-03">3 Nov 2026</time></span><span>9 min read</span></p>
   </header>
   <aside class="related" aria-label="Related"><p class="toc-title">Related</p><ul><li><a href="https://github.com/CanaanGM/des-k">The code on GitHub</a></li><li><a href="https://github.com/CanaanGM/des-k#readme">The README</a></li></ul></aside>
   <main class="sections">
@@ -739,6 +739,7 @@ cd des-k</code></pre></li>
     <li>When a hidden window comes to the front by itself, des-k switches its screen to that workspace.</li>
     <li>After a restart of the PC, des-k puts reopened windows back where they were, for the first 3 minutes after sign in.</li>
     <li>The tray icon menu has <strong>Settings</strong>, <strong>Open log</strong> and <strong>Quit</strong>.</li>
+    <li>des-k keeps the title, app and class of each window it tracks in <code>state.txt</code>, and its log names the windows it moves. Both stay in <code>%LOCALAPPDATA%\des-k</code> on this PC. Nothing leaves it.</li>
   </ul>
 </section>
 

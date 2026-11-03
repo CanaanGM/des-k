@@ -216,7 +216,14 @@ fn middle(c: &mut Pass, v: &View, top: f32, inline: bool) -> f32 {
     let intro = "des-k gives each of your screens its own set of workspaces. You switch the screen under your mouse, and your other screens stay where they are. des-k never moves or resizes your windows. It only hides and shows them.";
     y += c.para(SIDE, y, IN, 20.0, &[(intro, F::Body, t.text)]) + 16.0;
     tiles(c, y);
-    y += 56.0 + 16.0;
+    y += 56.0 + 8.0;
+    // Before any shortcut surprises you: which of Windows' own des-k takes over.
+    let takes = [
+        ("These keys, and Win+1 … 9 with or without Shift or Ctrl, take over Windows' own: its desktops, Task View, Feedback Hub and the taskbar's apps. Change any of them in des-k's settings, under ", F::Small, t.dim),
+        ("Shortcuts", F::SmallBold, t.dim),
+        (".", F::Small, t.dim),
+    ];
+    y += c.para(SIDE, y, IN, 16.0, &takes) + 16.0;
     // The heading, with the count at its right: Windows' own values, in every state.
     pad_icon(c, SIDE, y + 1.0, op(t.text));
     c.text(SIDE + 28.0, y, 22.0, "Your touchpad gestures", F::H2, t.text);

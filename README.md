@@ -146,7 +146,8 @@ away. To record a shortcut, click **+ Add** and press the combo; if another acti
 uses it, the page asks before moving it. Indicator's **Play** shows the dots as they are set.
 
 des-k checks the file once a second and applies every change right away, except restore,
-which applies from des-k's next start (run `install.ps1` again, or sign out and back in). If
+which applies from des-k's next start (Quit it from the tray and start **des-k** from the Start
+menu, or sign out and back in). If
 you change the file by hand while the page is open, a banner says what changed. If you type a
 bad value, only that one setting
 goes back to its default; the page and the log say which. If the file can't be read at all,
@@ -162,6 +163,8 @@ des-k keeps the settings it had and the page turns read only until you fix it.
 - After a restart, des-k puts reopened windows back on the workspaces they were on, for the
   first few minutes after you sign in.
 - The tray icon menu has **Settings**, **Open log** and **Quit**.
+- des-k keeps the title, app and class of each window it tracks in `state.txt`, and its log names
+  the windows it moves, all in `%LOCALAPPDATA%\des-k` on this PC only. Nothing leaves it.
 
 ## Stopping and uninstalling
 

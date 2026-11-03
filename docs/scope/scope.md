@@ -35,6 +35,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 15 | Setup exe installer | Slice 8 | in-progress |
 | 16 | Site guide follows the installer | Slice 8 | done |
 | 17 | Pin a window to every workspace | Slice 9 | in-progress |
+| 18 | Check for updates from the tray | Slice 9 | in-progress |
 
 ## Already built
 
@@ -243,6 +244,17 @@ spec [0014](../specs/0014-pin-window.md) · code in `src/ws.rs`, `src/keys.rs`, 
   - [x] `P` lines: kept over a restart, matched after a reboot (AC-5)
   - [ ] Tried on your screens (all ACs)
 
+### 18. Check for updates from the tray · in-progress · from spec 0015
+A tray item asks GitHub whether a newer des-k is out and answers in a balloon; a click on it opens the release page. Nothing runs by itself, nothing is downloaded.
+**Done when:** on your machine a check says newer (a dev build set to `0.0.1`), newest, and why when offline, and the page opens in your browser.
+spec [0015](../specs/0015-check-for-updates.md) · code in `src/update.rs`, `src/tray.rs`, `Cargo.toml`
+- [x] Design it (spec): `/architect check for updates`
+- [ ] Build it: `/develop check for updates`
+  - [ ] Version, tag and answer rules with unit tests (AC-2, AC-3, AC-4, AC-7)
+  - [ ] WinHTTP fetch on a worker thread, the posted answer, log lines (AC-1, AC-4, AC-6, AC-8)
+  - [ ] Tray item, balloons, balloon click, the broken warning kept (AC-1, AC-2, AC-3, AC-6, AC-7, AC-9)
+  - [ ] AGENTS.md, README, site guide; tried on your machine (AC-5, all ACs)
+
 ## Deferred
 Out of scope for the current build pass, kept so the plan stays honest.
 - **Indicator redesign**: a nicer popup look, asked for later · needs a decision
@@ -250,7 +262,6 @@ Out of scope for the current build pass, kept so the plan stays honest.
 - **Per app follow exclusions**: a `settings.toml` list of apps that never trigger follow activation, only if one keeps stealing focus (from spec 0002) · needs a decision
 - **Dimmed wallpaper behind the overview**: draw your wallpaper instead of solid dark (from spec 0010) · needs a decision
 - **Mouse wheel in the window finder**: scroll the finder's list with the wheel, only if the keys feel slow with many windows (from spec 0007) · needs a decision
-- **Owned dialogs on hidden workspaces**: des-k never hides a hidden window's dialogs, so they float over the wrong workspace; check when building feature 4 (from spec 0002) · needs a decision
 - **Relaunch apps after a reboot**: start apps that don't reopen their own windows, so restore has something to match (from spec 0003) · needs a decision
 - **Stable screen names**: `DISPLAY1` and `DISPLAY2` can swap after a reboot or a dock change; key saved screens by something stable, only if they get mixed up (from spec 0003) · needs a decision
 - **Restart after a crash**: Task Scheduler's restart on failure does not restart a task whose program exits with an error code (tried 2026-11-03), so it would not help; the Start menu entry starts des-k again by hand · needs a decision

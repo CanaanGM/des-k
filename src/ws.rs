@@ -356,6 +356,7 @@ fn app_windows() -> Vec<HWND> {
     let mut all = Vec::new();
     unsafe { let _ = EnumWindows(Some(push), LPARAM(&mut all as *mut _ as isize)); }
     let shell = unsafe { GetShellWindow() };
+    let me = std::process::id();
     all.into_iter()
         .filter(|&h| unsafe {
             let ex = GetWindowLongPtrW(h, GWL_EXSTYLE) as u32;
@@ -367,6 +368,9 @@ fn app_windows() -> Vec<HWND> {
                 // Never hide the desktop or taskbars.
                 && h != shell
                 && !matches!(class_name(h).as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd")
+                // Never des-k's own settings page or welcome screen: a hidden one is one the
+                // tray's Settings would focus where you cannot see it.
+                && pid_of(h) != me
         })
         .collect()
 }
