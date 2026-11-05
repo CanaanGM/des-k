@@ -36,6 +36,8 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 16 | Site guide follows the installer | Slice 8 | done |
 | 17 | Pin a window to every workspace | Slice 9 | in-progress |
 | 18 | Check for updates from the tray | Slice 9 | in-progress |
+| 19 | Return windows to their screens | Slice 10 | in-progress |
+| 20 | Look B screens | Slice 11 | in-progress |
 
 ## Already built
 
@@ -235,7 +237,7 @@ spec [0013](../specs/0013-setup-exe-installer.md) · code in `site/guide-content
 ## Slice 9: From the review
 
 ### 17. Pin a window to every workspace · in-progress · from spec 0014
-Win+Ctrl+P keeps the focused window in view on every workspace of its screen (a call, music, notes); again unpins it.
+Win+Ctrl+U keeps the focused window in view on every workspace of its screen (a call, music, notes); again unpins it.
 **Done when:** a pinned window stays through switches both ways, survives a restart, and a send unpins it.
 spec [0014](../specs/0014-pin-window.md) · code in `src/ws.rs`, `src/keys.rs`, `src/settings.rs`, `src/indicator.rs`
 - [x] Design it (spec): `/architect pin window`
@@ -247,13 +249,42 @@ spec [0014](../specs/0014-pin-window.md) · code in `src/ws.rs`, `src/keys.rs`, 
 ### 18. Check for updates from the tray · in-progress · from spec 0015
 A tray item asks GitHub whether a newer des-k is out and answers in a balloon; a click on it opens the release page. Nothing runs by itself, nothing is downloaded.
 **Done when:** on your machine a check says newer (a dev build set to `0.0.1`), newest, and why when offline, and the page opens in your browser.
-spec [0015](../specs/0015-check-for-updates.md) · code in `src/update.rs`, `src/tray.rs`, `Cargo.toml`
+spec [0015](../specs/0015-check-for-updates/index.md) · code in `src/update.rs`, `src/tray.rs`, `Cargo.toml`
 - [x] Design it (spec): `/architect check for updates`
 - [ ] Build it: `/develop check for updates`
-  - [ ] Version, tag and answer rules with unit tests (AC-2, AC-3, AC-4, AC-7)
-  - [ ] WinHTTP fetch on a worker thread, the posted answer, log lines (AC-1, AC-4, AC-6, AC-8)
-  - [ ] Tray item, balloons, balloon click, the broken warning kept (AC-1, AC-2, AC-3, AC-6, AC-7, AC-9)
-  - [ ] AGENTS.md, README, site guide; tried on your machine (AC-5, all ACs)
+  - [x] Version, tag and answer rules with unit tests (AC-2, AC-3, AC-4, AC-7)
+  - [x] WinHTTP fetch on a worker thread, the posted answer, log lines (AC-1, AC-4, AC-6, AC-8)
+  - [x] Tray item, balloons, balloon click, the broken warning kept (AC-1, AC-2, AC-3, AC-6, AC-7, AC-9)
+  - [x] AGENTS.md, README, site guide (AC-5, AC-7)
+  - [ ] Tried on your machine: newer, newest, offline (all ACs)
+
+## Slice 10: Docking
+
+### 19. Return windows to their screens · in-progress · from spec 0016
+Unplugging a screen folds its windows onto the main display by workspace number; plugging it back (after a sleep, a reboot, a crash or a power cut too) sends each window home to its workspace, spot and state, unless you moved it. Screens are known by the monitor's own ID, and the settings page lists the ones des-k is waiting for.
+**Done when:** with your three screens, undock, use the laptop, dock again: every window is back where it was; the same after a power cut while undocked; a window you sent while undocked stays put.
+spec [0016](../specs/0016-return-windows-to-their-screens/index.md) · code in `src/ws.rs`, `src/restore.rs`, `src/indicator.rs`, `src/tray.rs`, `src/settings_page.rs`
+- [x] Design it (spec): `/architect return windows to their screens and workspaces after unplug, replug, sleep or crash`
+- [ ] Build it: `/develop return windows to their screens`
+  - [x] Monitor IDs and spots: screens keyed by ID, positions saved, old `state.txt` upgraded (AC-1, AC-15, AC-17)
+  - [x] Fold and return in one run, with your moves winning, retries and the wake grace (AC-2 to AC-7, AC-11, AC-12, AC-14, AC-16, AC-18)
+  - [x] Remembered across restarts, quits, reboots and crashes (AC-8, AC-10)
+  - [x] Indicator note, balloon, settings page list with Forget, docs (AC-9, AC-13, AC-17)
+  - [ ] Tried on your screens: undock and dock, sleep, power cut while undocked (all ACs)
+
+## Slice 11: Look B
+
+### 20. Look B screens · in-progress · from spec 0017
+Every des-k window rebuilt to its approved look B design (first run, Shortcut hints, settings page, indicator, finder, overview, tray menu), one shared drawing layer in `ui.rs`, Narrator support, a `fastest` switch and an overview fade time, released together as 0.4.0.
+**Done when:** each screen matches its approved design in light, dark and high contrast on your screens, Narrator reads them, `fastest` makes every fade instant, and the overview logs at most 100 ms on the screens you have.
+spec [0017](../specs/0017-look-b-screens/index.md) · code in `src/ui.rs`, `src/uia.rs`, `src/indicator.rs`, `src/finder.rs`, `src/overview.rs`, `src/tray.rs`, `src/hints.rs`, `src/settings_page.rs`, `src/welcome.rs`, `src/settings.rs`, `src/keys.rs`, `src/main.rs`, `src/ws.rs`
+- [x] Design it (spec): `/architect the new screens`
+- [ ] Build it: `/develop look b screens`
+  - [ ] Design side first: cross flow review of the seven boards, and the rows for `fastest` and the overview fade time approved (AC-11)
+  - [ ] Indicator with the shared layer: tokens, fonts, popup helper, theme check, motion, screen names, the start of the Narrator layer, `fastest` and `[indicator] style` (AC-1 to AC-6, AC-10)
+  - [ ] Finder and overview, with `[overview] fade_ms`, the repaint rules and the timing log line (AC-1, AC-4 to AC-8, AC-10)
+  - [ ] Tray menu popup and Shortcut hints, with `[shortcuts] hints`, `WM_APP + 14` and version 4 tray messages (AC-1, AC-4, AC-5, AC-10)
+  - [ ] Settings page and first run, with `first_run_seen`; then 0.4.0 (AC-1, AC-2, AC-5, AC-9 to AC-12)
 
 ## Deferred
 Out of scope for the current build pass, kept so the plan stays honest.
@@ -265,6 +296,7 @@ Out of scope for the current build pass, kept so the plan stays honest.
 - **Relaunch apps after a reboot**: start apps that don't reopen their own windows, so restore has something to match (from spec 0003) · needs a decision
 - **Stable screen names**: `DISPLAY1` and `DISPLAY2` can swap after a reboot or a dock change; key saved screens by something stable, only if they get mixed up (from spec 0003) · needs a decision
 - **Restart after a crash**: Task Scheduler's restart on failure does not restart a task whose program exits with an error code (tried 2026-11-03), so it would not help; the Start menu entry starts des-k again by hand · needs a decision
+- **Overview speed on the 4K screens**: measure the overview again against spec 0017 AC-8 when the three 43 inch screens arrive; if it misses, Direct2D for the overview alone (from spec 0017) · needs a decision
 - **Code signing**: sign the setup exe and `des-k.exe` so SmartScreen stops warning (SignPath Foundation, Azure Trusted Signing, Certum open source, plus a winget manifest), put off for now (from spec 0013) · needs a decision
 
 ## Legend

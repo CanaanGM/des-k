@@ -2,6 +2,7 @@
 
 **Date**: 2026-10-28
 **Status**: Accepted
+**Amended by**: [0017](../0017-look-b-screens/0017-finder.md): AC-13 (look) and the `S · W` part of AC-3.
 
 ## Summary
 

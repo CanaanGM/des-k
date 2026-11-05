@@ -449,7 +449,7 @@ mod tests {
         assert_eq!(decide(&s, c(WIN, b'3' as u16)), Some((WM_JUMP, 2, 0)));
         assert_eq!(decide(&s, c(WIN | SHIFT, VK_NUMPAD9.0)), Some((WM_SEND_TO, 8, 1)));
         assert_eq!(decide(&s, c(WIN | CTRL, b'1' as u16)), Some((WM_SEND_TO, 0, 0)));
-        assert_eq!(decide(&s, c(WIN | CTRL, b'P' as u16)), Some((WM_PIN, 0, 0)));
+        assert_eq!(decide(&s, c(WIN | CTRL, b'U' as u16)), Some((WM_PIN, 0, 0)));
     }
 
     // Everything des-k does not own must reach Windows and the apps: an extra modifier is

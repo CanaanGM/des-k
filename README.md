@@ -56,7 +56,7 @@ Everything works on **the screen under your mouse**.
 | `Win+Shift+Left` / `Right` | Move a window to another screen (this one is Windows' own) |
 | `Win+F` | **Finder**: search every window on every screen and workspace |
 | `Win+Tab` | **Overview**: see every workspace of every screen at once |
-| `Win+Ctrl+P` | **Pin** the focused window: it stays on every workspace of its screen; again to unpin |
+| `Win+Ctrl+U` | **Pin** the focused window: it stays on every workspace of its screen; again to unpin |
 
 Each switch shows a small row of dots for a moment, so you can see which workspace you're on.
 After a pin, every dot lights up: the window is on all of them. Sending a pinned window to a
@@ -162,9 +162,22 @@ des-k keeps the settings it had and the page turns read only until you fix it.
   window's workspace.
 - After a restart, des-k puts reopened windows back on the workspaces they were on, for the
   first few minutes after you sign in.
-- The tray icon menu has **Settings**, **Open log** and **Quit**.
-- des-k keeps the title, app and class of each window it tracks in `state.txt`, and its log names
-  the windows it moves, all in `%LOCALAPPDATA%\des-k` on this PC only. Nothing leaves it.
+- When you unplug a screen (or close the laptop lid), its windows move to the main display after
+  10 seconds (30 just after a wake from sleep): what was hidden on its workspace 2 goes hidden into
+  the main display's workspace 2, and what you were looking at stays in view. Plug the screen in
+  again, even after a sleep, a reboot or a power cut, and 2 seconds later every one of its windows
+  goes back to its workspace, place and size, unless you moved it to another screen yourself. A
+  note on the screen and a tray balloon say what moved. **Settings** lists the screens des-k is
+  waiting for, with **Forget** for one you will not plug in again. des-k knows a screen by the
+  monitor's own model and serial, so another port or dock is still the same screen.
+- The tray icon menu has **Settings**, **Open log**, **Check for updates** and **Quit**.
+- **Check for updates** asks GitHub which des-k release is newest and answers in a balloon. If a
+  newer one is out, click the balloon to open its page, then download and install it yourself.
+  des-k checks only when you click, and downloads and runs nothing.
+- des-k keeps the title, app, class, place and size of each window it tracks, and the model and
+  serial of each screen, in `state.txt`, and its log names the windows it moves, all in `%LOCALAPPDATA%\des-k` on this PC only. None of it leaves your PC.
+  The only thing des-k sends out is the update check you click: a request to github.com that
+  carries your address and des-k's version, nothing else.
 
 ## Stopping and uninstalling
 
@@ -199,7 +212,7 @@ Your settings and log stay in `%LOCALAPPDATA%\des-k`; delete that folder too if 
 
 des-k uses an undocumented part of Windows to hide windows. It works on Windows 11 25H2, but a
 big Windows update could change that. If it does, the tray shows a warning and switching hides
-nothing until des-k is updated.
+nothing until des-k is updated. Tray → **Check for updates** tells you when a fix is out.
 
 ## License
 

@@ -209,7 +209,7 @@ impl Default for Settings {
             send_to_stay: Some(WIN | CTRL),
             finder: vec![Combo { mods: WIN, vk: b'F' as u16 }],
             overview: vec![Combo { mods: WIN, vk: VK_TAB.0 }],
-            pin: vec![Combo { mods: WIN | CTRL, vk: b'P' as u16 }],
+            pin: vec![Combo { mods: WIN | CTRL, vk: b'U' as u16 }],
             indicator_enabled: true,
             hold_ms: 550,
             fade_ms: 200,
@@ -251,7 +251,7 @@ finder = ["Win+F"]
 # Every workspace of every screen at once, like Task View (which it replaces on Win+Tab).
 overview = ["Win+Tab"]
 # Keep the focused window on every workspace of its screen; press again to undo.
-pin = ["Win+Ctrl+P"]
+pin = ["Win+Ctrl+U"]
 
 [indicator]
 enabled = true

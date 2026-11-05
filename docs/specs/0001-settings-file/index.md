@@ -4,6 +4,7 @@
 **Updated**: 2026-10-28, settings moved to `%LOCALAPPDATA%\des-k` by [spec 0008](../0008-run-des-k-as-admin/index.md)
 **Updated**: 2026-11-01, [spec 0012](../0012-settings-page/index.md) makes settings live: des-k reads the file again whenever it changes, and the settings page edits values in place. AC-2 and "read once at start" no longer hold.
 **Status**: Accepted
+**Amended by**: [0017](../0017-look-b-screens/0017-settings-page.md): plain problem titles made from each log line (AC-SET-5), and new keys `fastest`, `first_run_seen`, `[shortcuts] hints`, `[indicator] style`, `[overview] fade_ms`.
 
 ## Summary
 

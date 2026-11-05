@@ -3,6 +3,7 @@
 **Date**: 2026-11-01
 **Updated**: 2026-11-01, after the approved design (r4): the open points A1 to A14 are settled in the ACs below, and AC-18 to AC-21 are new. 2026-11-03, after a usability review: see Change of 2026-11-03 under the ACs.
 **Status**: In Progress
+**Amended by**: [0017](../0017-look-b-screens/0017-settings-page.md): the look, AC-1 size, AC-10 bars, AC-13, and the counts in AC-2.
 
 ## Summary
 

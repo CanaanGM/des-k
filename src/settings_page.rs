@@ -317,6 +317,7 @@ enum Ctl {
     Twice(usize),
     Play,        // the indicator's Play: the real dots on this screen (AC-19)
     DismissEdit, // the hand edit banner (AC-20)
+    Forget(usize), // a screen not plugged in, by its place in View::waiting (spec 0016 AC-9)
 }
 
 impl Ctl {
@@ -771,6 +772,7 @@ impl Ctx<'_, '_> {
                 let x = CX + 16.0;
                 let n = c.s.workspaces.to_string();
                 let mut h = 14.0 + c.pictures(y + 14.0) + 4.0;
+                h += c.unplugged(y + h);
                 h += c.c.para(x, y + h, CW - 32.0, 20.0, &[("Workspaces per screen", F::Bold, t.text), (" workspaces", F::Mono, t.dim)]);
                 h += c.c.para(x, y + h, CW - 32.0, 20.0, &[("Every screen has ", F::Body, t.text), (&n, F::Bold, t.text), (" workspaces ", F::Body, t.text), ("(2 to 9)", F::Small, t.dim)]);
                 let e = c.measured(|c| c.extras("workspaces", x, 0.0, CW - 32.0));
@@ -929,6 +931,29 @@ impl Ctx<'_, '_> {
         }
         self.ring((x0 - 8.0, y - 6.0, wmax + 16.0, h + 4.0), 8.0, Ctl::Stepper("workspaces"));
         h
+    }
+
+    /// The screens not plugged in that windows wait for (spec 0016 AC-9), each with Forget:
+    /// nothing des-k remembers is out of sight.
+    fn unplugged(&mut self, y: f32) -> f32 {
+        let t = self.c.t;
+        let w = self.w;
+        if w.pics.view.waiting.is_empty() {
+            return 0.0;
+        }
+        let (x0, wmax) = (CX + 16.0, CW - 32.0);
+        let mut h = self.c.para(x0, y, wmax, 20.0, &[("Screens not plugged in", F::Bold, t.text)]);
+        let why = "Their windows go back to them when you plug them in again. Forget leaves those windows where they are now.";
+        h += self.c.para(x0, y + h, wmax, 18.0, &[(why, F::Small, t.dim)]) + 8.0;
+        let bw = self.c.width("Forget", F::Body) + 28.0;
+        for (i, (_, name, n)) in w.pics.view.waiting.iter().enumerate() {
+            let wait = if *n == 1 { "1 window waits for it".to_string() } else { format!("{n} windows wait for it") };
+            let label = self.fit(&format!("{name}: {wait}"), F::Body, wmax - bw - 12.0);
+            self.c.text(x0, y + h, 32.0, &label, F::Body, t.text);
+            self.button(Ctl::Forget(i), x0 + wmax - bw, y + h, Some(bw), "Forget", 1);
+            h += 40.0;
+        }
+        h + 8.0
     }
 
     /// Before a removal, what moves where on each screen, since there is no undo (AC-6):
@@ -1918,6 +1943,12 @@ fn act(ctl: Ctl) {
             let _ = set(|w| w.edited = None);
             refresh();
         }
+        Ctl::Forget(i) => {
+            if let Some(id) = get(|w| w.pics.view.waiting.get(i).map(|x| x.0.clone())).flatten() {
+                crate::ws::forget(&id);
+                update_pictures(true);
+            }
+        }
     }
 }
 
@@ -2443,6 +2474,7 @@ mod tests {
                     ("DISPLAY2".into(), 2, r(4000, 200, 6700, 2100)),
                 ],
                 removals: vec![vec!["Screen 2: 1 window from 4 moves to 3".into()], vec![]],
+                waiting: vec![],
             },
             pad: Some(crate::setup::State { pad: true, enabled: true, rows: [crate::setup::Row::Nothing, crate::setup::Row::StillOn, crate::setup::Row::Nothing, crate::setup::Row::Nothing], off: false, saved: false }),
         };
@@ -2478,6 +2510,8 @@ mod tests {
                 };
                 let mut win = win;
                 if *sname == "pictures" {
+                    // Two screens unplugged, one window each way of counting (spec 0016 AC-9).
+                    win.pics.view.waiting = vec![("DEL-4123-ABC".into(), "DELL U2720Q".into(), 9), ("SAM-0F2E".into(), "Hotel TV".into(), 1)];
                     win.hover = Some(Ctl::Minus("workspaces"));
                     win.edited = Some(("14:32".into(), vec!["indicator.hold_ms: 800 → 550".into(), "workspaces: 5 → 4".into(), "Screen 1: 2 windows from 5 move to 4".into()]));
                 }

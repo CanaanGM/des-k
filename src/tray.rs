@@ -1,8 +1,9 @@
-// Tray icon near the clock: shows des-k is running, with Settings, Open log and Quit, and
-// warns once when hiding windows stopped working. Lives on the main thread (its messages come
+// Tray icon near the clock: shows des-k is running, with Settings, Open log, Check for updates
+// (spec 0015) and Quit, and warns once when hiding windows stopped working. Lives on the main thread (its messages come
 // through main's loop), adds itself again whenever explorer restarts, and has des-k hide its
 // windows again then.
-use std::cell::Cell;
+use crate::update::{self, Answer};
+use std::cell::{Cell, RefCell};
 use std::path::Path;
 use windows::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM},
@@ -14,7 +15,8 @@ use windows::Win32::{
     },
     UI::{
         Shell::{
-            CSIDL_DESKTOP, IShellBrowser, IShellDispatch2, IShellFolderViewDual, IShellWindows, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_WARNING,
+            CSIDL_DESKTOP, IShellBrowser, IShellDispatch2, IShellFolderViewDual, IShellWindows, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIIF_WARNING,
+            NIN_BALLOONUSERCLICK,
             NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, SID_STopLevelBrowser, SVGIO_BACKGROUND, SWC_DESKTOP, SWFO_NEEDDISPATCH, ShellWindows,
             Shell_NotifyIconW,
         },
@@ -31,12 +33,18 @@ const WM_TRAY: u32 = WM_APP + 11;
 const ID_SETTINGS: usize = 1;
 const ID_LOG: usize = 2;
 const ID_QUIT: usize = 3;
+const ID_UPDATE: usize = 4;
 
 thread_local! {
     static WND: Cell<Option<HWND>> = const { Cell::new(None) };
     static ICON: Cell<Option<HICON>> = const { Cell::new(None) };
     static TASKBAR_CREATED: Cell<u32> = const { Cell::new(0) };
     static BROKEN: Cell<bool> = const { Cell::new(false) }; // warned that hiding does not work
+    /// What a click on the current balloon opens: only a "newer" balloon has one.
+    static BALLOON_URL: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// A newer release found while the broken warning shows (AC-9): the menu item's label
+    /// and the page it opens, instead of "Check for updates".
+    static UPDATE_ITEM: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
 }
 
 const TIP: &str = "des-k";
@@ -47,6 +55,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         match msg {
             WM_TRAY if matches!(lp.0 as u32, WM_LBUTTONUP | WM_RBUTTONUP) => {
                 menu(hwnd);
+                LRESULT(0)
+            }
+            // Legacy callback: lParam is the notification itself.
+            WM_TRAY if lp.0 as u32 == NIN_BALLOONUSERCLICK => {
+                if let Some(url) = BALLOON_URL.take() {
+                    open(Path::new(&url));
+                }
+                LRESULT(0)
+            }
+            update::WM_UPDATE => {
+                answered(update::unpack(wp, lp).unwrap_or(Answer::Failed(update::Fail::Crashed)));
                 LRESULT(0)
             }
             // Explorer restarted (or the taskbar changed scale): the old icon is gone, and the
@@ -132,17 +151,55 @@ pub fn warn_if_broken() {
     }
     BROKEN.set(true);
     eprintln!("hiding windows does not work: Windows refuses des-k's SetCloak call, most likely after an update changed it. Switching hides nothing until des-k is updated.");
+    balloon(
+        "des-k cannot hide windows",
+        "A Windows update most likely changed what des-k uses to hide windows. Switching hides nothing until des-k is updated. The log says more.",
+        true,
+        None,
+    );
+}
+
+/// Screens came or went and windows moved with them (spec 0016 AC-13): one balloon, a line per
+/// screen. Never over the warning that hiding does not work: then the indicator and the log say it.
+pub fn screens_changed(lines: &[String]) {
+    if BROKEN.get() {
+        return println!("tray: no balloon over the hiding warning: {}", lines.join("; "));
+    }
+    balloon("Screens changed", &lines.join("\n"), false, None);
+}
+
+/// A balloon from the icon; a click on it opens `url`, if any. Sets the tooltip too, so the
+/// broken one stays (BROKEN is set before its balloon).
+fn balloon(title: &str, text: &str, warn: bool, url: Option<String>) {
+    BALLOON_URL.replace(url);
     let Some(h) = WND.get() else { return };
     let mut nid = data(h);
     nid.uFlags = NIF_TIP | NIF_INFO;
-    nid.dwInfoFlags = NIIF_WARNING;
-    copy(&mut nid.szTip, BROKEN_TIP);
-    copy(&mut nid.szInfoTitle, "des-k cannot hide windows");
-    copy(&mut nid.szInfo, "A Windows update most likely changed what des-k uses to hide windows. Switching hides nothing until des-k is updated. The log says more.");
+    nid.dwInfoFlags = if warn { NIIF_WARNING } else { NIIF_INFO };
+    copy(&mut nid.szTip, if BROKEN.get() { BROKEN_TIP } else { TIP });
+    copy(&mut nid.szInfoTitle, title);
+    copy(&mut nid.szInfo, text);
     unsafe {
         if !Shell_NotifyIconW(NIM_MODIFY, &nid).as_bool() {
-            eprintln!("tray: warning not shown");
+            eprintln!("tray: balloon {title:?} not shown");
         }
+    }
+}
+
+/// The update check's answer (spec 0015). The worker already logged it. While the broken
+/// warning shows, a balloon would replace it, so a newer release goes on the menu item (AC-9).
+fn answered(a: Answer) {
+    let ours = update::ours().map_or_else(|| env!("CARGO_PKG_VERSION").to_string(), |v| v.to_string());
+    if BROKEN.get() {
+        if let Answer::Newer(v) = a {
+            UPDATE_ITEM.replace(Some((format!("Update to {v} (open page)"), update::page(v))));
+        }
+        return;
+    }
+    match a {
+        Answer::Newer(v) => balloon("des-k update", &format!("des-k {v} is out (you have {ours}). Click here to open its page."), false, Some(update::page(v))),
+        Answer::Newest(_) => balloon("des-k is up to date", &format!("You have the newest des-k ({ours})."), false, None),
+        Answer::Failed(f) => balloon("Could not check for updates", &f.words(), true, None),
     }
 }
 
@@ -196,6 +253,13 @@ fn menu(hwnd: HWND) {
         let _ = AppendMenuW(m, MF_STRING, ID_SETTINGS, w!("Settings"));
         // Debug builds with a console log there instead of to the file.
         let _ = AppendMenuW(m, flag(log.exists()), ID_LOG, w!("Open log"));
+        let item = UPDATE_ITEM.with_borrow(Clone::clone);
+        let (on, label) = match &item {
+            _ if update::running() => (false, "Checking for updates…"),
+            Some((label, _)) => (true, label.as_str()),
+            None => (true, "Check for updates"),
+        };
+        let _ = AppendMenuW(m, flag(on), ID_UPDATE, &HSTRING::from(label));
         let _ = AppendMenuW(m, MF_SEPARATOR, 0, PCWSTR::null());
         // With Windows' gestures off, quitting leaves the touchpad with none: say for how long.
         let st = crate::setup::state();
@@ -214,6 +278,10 @@ fn menu(hwnd: HWND) {
         match cmd.0 as usize {
             ID_SETTINGS => crate::settings_page::open(None),
             ID_LOG => open(&log),
+            ID_UPDATE => match item {
+                Some((_, url)) => open(Path::new(&url)),
+                None => update::check(hwnd),
+            },
             // Main's loop breaks on WM_CLOSE, the same path as `des-k --quit`.
             ID_QUIT => { let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)); }
             _ => {}

@@ -22,7 +22,7 @@ After a reboot, a crash of Windows, or a sign out, every window gets a new handl
 - **AC-5**: A reopened window that best matches a window that was visible before the reboot stays visible, even when the same app also had hidden windows.
 - **AC-6**: A window that opens after the restore period ends is never hidden by restore. When the period ends, every unmatched saved entry is removed from `state.txt`.
 - **AC-7**: Restarting des-k within the same sign in (crash, `install.ps1` update) never starts a new restore. The layout is adopted by window handle exactly as today.
-- **AC-8**: A window whose saved screen is missing, or whose saved workspace no longer exists (count lowered), stays visible. A window that is on a different screen than the saved one stays visible unless it moves to the saved screen before the period ends.
+- **AC-8**: A window whose saved screen is missing, or whose saved workspace no longer exists (count lowered), stays visible. A window that is on a different screen than the saved one stays visible unless it moves to the saved screen before the period ends. The missing screen case is now governed by [spec 0016 AC-10](../0016-return-windows-to-their-screens/index.md): the window waits for its screen on the main display and goes home when it returns.
 - **AC-9**: If a window had keyboard focus when restore hid it, focus moves to the top visible window on that screen (or the desktop), and the screen does not jump to the hidden window (follow activation, spec 0002, ignores it).
 - **AC-10**: `[restore] enabled = false` in `settings.toml` turns restore off. `[restore] minutes` sets the period (1 to 30, default 3). A bad value resets only that key, with a log line (spec 0001).
 - **AC-11**: Every window hidden by restore, every window left visible because the match was unclear, and the final counts are written to `des-k.log`. Nothing pops up on screen.
@@ -88,7 +88,7 @@ A `V` winner: the window stays visible, the entry is used up, and the window goe
 **Each tick** (`ws::restore_tick`): list candidate windows on every screen, bottom of z order first, skipping `resolved`. Pass 1 applies only rule 3 (exact title) to all of them; pass 2 applies rules 2 and 4 to the windows left. So a guess never takes an entry that an exact title match in the same tick would have taken.
 
 **Placement rules** for a `W` winner:
-- The saved device is missing, or the saved workspace is not below the current count: the window stays visible, the entry is used up, the window goes in `resolved` (AC-8).
+- The saved device is missing, or the saved workspace is not below the current count: the window stays visible, the entry is used up, the window goes in `resolved` (AC-8). Since spec 0016, a missing screen that des-k remembers makes the window an away window instead (0016 AC-10).
 - The saved workspace is that screen's active one (you switched there during the restore): the window stays visible, the entry is used up, the window goes in `resolved`.
 - The window is on another screen right now (`MonitorFromWindow`): nothing is used up; the window is checked again next tick, since apps often open on the main screen and move a moment later.
 - Otherwise des-k cloaks the window, puts it at the top of `hidden[ws]`, records it in `restored` and `resolved`, uses up the entry, and saves. If the cloak fails (a brand new window fails `GetViewForHwnd` for a moment), nothing is used up and the next tick tries again.
@@ -154,7 +154,7 @@ minutes = 3      # how long after start to keep matching (1 to 30)
 - Unclear: two saved Edge windows whose titles changed completely: both stay visible, log says unclear. Verifies **AC-4**, **AC-11**.
 - Late window: open Notepad by hand 5 minutes after login: it stays visible. Verifies **AC-6**.
 - Restart only: `install.ps1` while windows are hidden: adopted by handle, no matching in the log. Verifies **AC-7**.
-- Undocked boot: windows saved on an external screen stay visible when booting without it. Verifies **AC-8**.
+- Undocked boot: replaced by spec 0016's power cut test (the windows wait on the main display and go home on dock). Verifies **AC-8** as changed by 0016 AC-10.
 - Focus: a reopened window takes focus and is hidden: focus lands on a visible window, the screen stays put. Verifies **AC-9**.
 - Settings: `enabled = false`, then `minutes = 0`: off, then a log line and the default 3. Verifies **AC-10**.
 - Double restart: reboot again within the period: unmatched entries survive and match after the second boot. Verifies **AC-12**.
@@ -210,7 +210,7 @@ Tracer Bullet: tasks 1 and 2 give a working end to end restore (reboot, a single
 
 ## Follow-up
 
-- [ ] Screen names (`DISPLAY1`, `DISPLAY2`) can be numbered differently after a reboot or a dock change. If saved screens get mixed up, key screens by hardware id instead (affects feature G too). Needs a decision.
+- [x] Screen names (`DISPLAY1`, `DISPLAY2`) can be numbered differently after a reboot or a dock change. If saved screens get mixed up, key screens by hardware id instead (affects feature G too). Decided in spec 0016: screens are keyed by the monitor's own id.
 - [ ] Relaunch apps that don't come back on their own: added to the scope's Deferred list. Needs a decision.
 - [ ] An explorer crash may drop cloaks entirely. Not covered here; worth one test by hand.
 

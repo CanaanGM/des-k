@@ -11,7 +11,7 @@ First, you may want to run `install.ps1` and confirm `des-k.exe` is running (`Ge
 - [ ] Use two saved Edge windows whose titles changed completely → both stay visible, and the log shows `unclear match` once for each → AC-4, AC-11
 - [ ] Open Notepad by hand 5 minutes after you sign in → it stays visible, and the log shows `restore: done` before that → AC-6
 - [ ] Run `install.ps1` while windows are hidden → the log shows `loaded saved layout` and no `restore:` line → AC-7
-- [ ] Hide windows on an external screen, then boot without it → they stay visible, and the log says `is not connected` → AC-8
+- [ ] Hide windows on an external screen, then boot without it → they wait on the main display (`waits for <name>` in the log) and go home when you dock; steps in spec 0016's verify.md → AC-8 as changed by 0016 AC-10
 - [ ] Lower `workspaces` below a saved workspace, then reboot → that window stays visible, and the log says `no longer exists` → AC-8
 - [ ] When a reopened window takes focus and restore hides it → focus lands on a visible window, the screen stays put, and the log may show `follow: restore just hid` → AC-9
 - [ ] Set `[restore] enabled = false`, then reboot → no `restore:` lines. Set `minutes = 0` → the log shows the settings warning and `restore.minutes=3` → AC-10

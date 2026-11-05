@@ -5,7 +5,7 @@
 // Win+F opens the window finder: search every window on every screen and workspace.
 // Win+Tab opens the workspace overview on every screen: every workspace and its windows.
 // Three and four finger touchpad gestures run what settings.toml maps them to, read by des-k itself (spec 0011).
-// Win+Ctrl+P pins the focused window to every workspace of its screen (spec 0014).
+// Win+Ctrl+U pins the focused window to every workspace of its screen (spec 0014).
 // The Copilot key acts as Right Ctrl. `des-k --quit` (or Ctrl+C in a console) shows
 // every hidden window again and exits; `des-k --start` (the Start menu entry) starts the
 // installed des-k through its logon task, so it runs as admin. Release builds have no
@@ -25,6 +25,7 @@ mod setup;
 mod touchpad;
 mod tray;
 mod ui;
+mod update;
 mod welcome;
 mod ws;
 

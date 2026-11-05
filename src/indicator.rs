@@ -1,8 +1,9 @@
 // On-screen workspace indicator: a row of dots centered on the switched monitor,
 // the active one drawn as a wider bright pill, and the workspace a window was just sent to
 // in an accent color, or every other one for a window just pinned. Holds briefly, then fades out.
+// A note (spec 0016: a screen unplugged or back) adds lines of text under the dots and holds 3 s.
 // Lives on the main thread (its messages come through main's loop).
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use windows::Win32::{
     Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::{
@@ -16,6 +17,8 @@ use windows::Win32::{
     },
 };
 use windows::core::w;
+
+use crate::ui;
 
 use crate::settings;
 
@@ -38,6 +41,7 @@ thread_local! {
     static SCALE: Cell<f32> = const { Cell::new(1.0) };
     static ALPHA: Cell<u8> = const { Cell::new(0) };
     static STEP: Cell<u8> = const { Cell::new(OPAQUE) }; // alpha lost per fade tick
+    static NOTE: RefCell<String> = const { RefCell::new(String::new()) }; // lines under the dots
 }
 
 // Sizes at 96 dpi.
@@ -45,6 +49,9 @@ const DOT: f32 = 10.0;
 const ACTIVE_W: f32 = 28.0;
 const GAP: f32 = 12.0;
 const PAD: f32 = 18.0;
+const TEXT: f32 = 14.0; // a note's text height
+const LINE: f32 = 20.0; // and its line height
+const NOTE_MS: u32 = 3000; // long enough to read a line
 
 fn px(v: f32) -> i32 {
     (v * SCALE.get()).round() as i32
@@ -78,6 +85,22 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 let _ = DeleteObject(on.into());
                 let _ = DeleteObject(off.into());
                 let _ = DeleteObject(sent.into());
+                let note = NOTE.with_borrow(|n| n.clone());
+                if !note.is_empty() {
+                    let font = ui::font(w!("Segoe UI"), TEXT * SCALE.get(), FW_NORMAL.0 as i32);
+                    let old = SelectObject(hdc, font.into());
+                    SetBkMode(hdc, TRANSPARENT);
+                    SetTextColor(hdc, COLORREF(0x00F0F0F0));
+                    let mut y = top + d + px(GAP);
+                    for line in note.lines() {
+                        let mut wide: Vec<u16> = line.encode_utf16().collect();
+                        let mut r = RECT { left: px(PAD), top: y, right: rc.right - px(PAD), bottom: y + px(LINE) };
+                        DrawTextW(hdc, &mut wide, &mut r, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+                        y += px(LINE);
+                    }
+                    SelectObject(hdc, old);
+                    let _ = DeleteObject(font.into());
+                }
                 let _ = EndPaint(hwnd, &ps);
                 LRESULT(0)
             }
@@ -93,6 +116,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), a, LWA_ALPHA);
                 }
                 LRESULT(0)
+            }
+            // Screens can take a while to light up after a wake (spec 0016 AC-18).
+            WM_POWERBROADCAST if wp.0 as u32 == PBT_APMRESUMEAUTOMATIC => {
+                crate::ws::woke();
+                LRESULT(1)
             }
             WM_DISPLAYCHANGE => {
                 let _ = PostMessageW(Some(hwnd), WM_DISPLAY_CHANGED, WPARAM(0), LPARAM(0));
@@ -134,17 +162,27 @@ fn window() -> Option<HWND> {
 /// `sent` (0-based, never `active`) in the accent color.
 pub fn show(mon: HMONITOR, active: usize, count: usize, sent: Option<usize>) {
     ALL.set(false);
-    show_now(mon, active, count, sent);
+    NOTE.with_borrow_mut(String::clear);
+    show_now(mon, active, count, sent, None);
+}
+
+/// A screen unplugged or back (spec 0016 AC-13): `active` of `count` on `mon` with `text`, one
+/// line or more, under the dots, held 3 s. Replaces whatever the indicator shows.
+pub fn show_note(mon: HMONITOR, active: usize, count: usize, text: &str) {
+    ALL.set(false);
+    NOTE.set(text.to_string());
+    show_now(mon, active, count, None, Some(NOTE_MS));
 }
 
 /// After a pin (spec 0014): every workspace but `active` in the accent color while `pinned`,
 /// the window being on all of them; plain dots after an unpin.
 pub fn show_pin(mon: HMONITOR, active: usize, count: usize, pinned: bool) {
     ALL.set(pinned);
-    show_now(mon, active, count, None);
+    NOTE.with_borrow_mut(String::clear);
+    show_now(mon, active, count, None, None);
 }
 
-fn show_now(mon: HMONITOR, active: usize, count: usize, sent: Option<usize>) {
+fn show_now(mon: HMONITOR, active: usize, count: usize, sent: Option<usize>, hold: Option<u32>) {
     let st = settings::get();
     if !st.indicator_enabled {
         return;
@@ -162,8 +200,24 @@ fn show_now(mon: HMONITOR, active: usize, count: usize, sent: Option<usize>) {
         SENT.set(sent);
         ALPHA.set(OPAQUE);
 
-        let w = px(PAD * 2.0 + ACTIVE_W + (count as f32 - 1.0) * (DOT + GAP));
-        let ht = px(PAD * 2.0 + DOT);
+        let mut w = px(PAD * 2.0 + ACTIVE_W + (count as f32 - 1.0) * (DOT + GAP));
+        let mut ht = px(PAD * 2.0 + DOT);
+        let note = NOTE.with_borrow(|n| n.clone());
+        if !note.is_empty() {
+            let dc = GetDC(None);
+            let font = ui::font(w!("Segoe UI"), TEXT * SCALE.get(), FW_NORMAL.0 as i32);
+            let old = SelectObject(dc, font.into());
+            for line in note.lines() {
+                let wide: Vec<u16> = line.encode_utf16().collect();
+                let mut size = windows::Win32::Foundation::SIZE::default();
+                let _ = GetTextExtentPoint32W(dc, &wide, &mut size);
+                w = w.max(size.cx + px(PAD * 2.0));
+            }
+            SelectObject(dc, old);
+            let _ = DeleteObject(font.into());
+            ReleaseDC(None, dc);
+            ht += px(GAP) + note.lines().count() as i32 * px(LINE);
+        }
         let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
         let _ = GetMonitorInfoW(mon, &mut mi);
         let r = mi.rcWork;
@@ -172,6 +226,6 @@ fn show_now(mon: HMONITOR, active: usize, count: usize, sent: Option<usize>) {
         let _ = SetLayeredWindowAttributes(h, COLORREF(0), OPAQUE, LWA_ALPHA);
         let _ = SetWindowPos(h, Some(HWND_TOPMOST), x, y, w, ht, SWP_NOACTIVATE | SWP_SHOWWINDOW);
         let _ = InvalidateRect(Some(h), None, true);
-        SetTimer(Some(h), FADE_TIMER, st.hold_ms, None);
+        SetTimer(Some(h), FADE_TIMER, hold.unwrap_or(st.hold_ms), None);
     }
 }
