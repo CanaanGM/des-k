@@ -443,7 +443,7 @@ pub fn show(mon: HMONITOR, card: Card) {
         let _ = InvalidateRect(Some(h), None, false);
         SetTimer(Some(h), FADE_TIMER, hold, None);
     }
-    crate::uia::notify(h, &text);
+    crate::uia::notify(h, &text, "des-k indicator", false);
 }
 
 #[cfg(test)]

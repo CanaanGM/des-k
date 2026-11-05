@@ -1012,6 +1012,9 @@ pub struct Place {
     pub device: String,
     pub workspace: usize, // 0 based
     pub on_screen: bool,
+    pub screen: String, // its screen's name, as `label` gives it (spec 0017)
+    pub pinned: bool,
+    pub unplugged: bool, // hidden on a screen that left and has not folded yet
 }
 
 /// Every listed window on screen (front to back), then every live window des-k hid, by
@@ -1027,23 +1030,32 @@ fn windows_in(s: &mut State) -> Vec<Place> {
             let device = device_name(unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) });
             let id = id_of(s, &device);
             let workspace = mon_mut(s, &id).active;
-            Place { hwnd: h, device, workspace, on_screen: true }
+            Place { hwnd: h, device, workspace, on_screen: true, screen: label(s, &id), pinned: s.pinned.contains(&(h.0 as isize)), unplugged: false }
         })
         .collect();
     // By device name, as before screens had ids; a screen only just unplugged keeps its old one.
-    let mut screens: Vec<(String, &Monitor)> = s.monitors.iter().map(|(id, m)| (m.device.clone().unwrap_or_else(|| id.clone()), m)).collect();
+    let mut screens: Vec<(String, &String, &Monitor)> = s.monitors.iter().map(|(id, m)| (m.device.clone().unwrap_or_else(|| id.clone()), id, m)).collect();
     screens.sort_by(|a, b| a.0.cmp(&b.0));
-    for (dev, m) in screens {
+    for (dev, id, m) in screens {
+        let (screen, unplugged) = (label(s, id), !s.present.iter().any(|p| &p.id == id));
         for (ws, list) in m.hidden.iter().enumerate() {
             for &raw in list {
                 let h = HWND(raw as *mut _);
                 if unsafe { IsWindow(Some(h)) }.as_bool() {
-                    out.push(Place { hwnd: h, device: dev.clone(), workspace: ws, on_screen: false });
+                    out.push(Place { hwnd: h, device: dev.clone(), workspace: ws, on_screen: false, screen: screen.clone(), pinned: false, unplugged });
                 }
             }
         }
     }
     out
+}
+
+/// How many screens are plugged in, and the main display's name: the finder's screen column
+/// and its unplugged note (spec 0017 AC-FND-3, AC-FND-7).
+pub fn present() -> (usize, String) {
+    let s = state();
+    let main = s.present.iter().find(|p| p.primary).map_or_else(String::new, |p| label(&s, &p.id));
+    (s.present.len(), main)
 }
 
 /// Every present screen's device and full rectangle.
@@ -1328,6 +1340,7 @@ fn spot_of(h: HWND) -> Spot {
 pub enum Miss {
     Gone,
     CantMove,
+    Unplugged, // hidden on a screen that just left: check_screens folds it soon (spec 0017 AC-FND-7)
 }
 
 fn work_area(mon: HMONITOR) -> RECT {
@@ -1437,7 +1450,7 @@ pub fn go_to(hwnd: HWND) -> Result<(), Miss> {
     let (name, ws) = match hidden_on(&s, hwnd.0 as isize) {
         Some((name, ws)) => {
             // Its screen left: check_screens folds it onto the main display if the screen stays gone.
-            let Some(mon) = mon_of(&s, &name) else { return Err(Miss::Gone) };
+            let Some(mon) = mon_of(&s, &name) else { return Err(Miss::Unplugged) };
             switch_to(&mut s, mon, &name, ws, Some(hwnd), None);
             (name, ws)
         }
@@ -1469,6 +1482,11 @@ fn show_on(hwnd: HWND, device: &str, activate: bool, who: &str) -> Result<(), Mi
     let raw = hwnd.0 as isize;
     let t = title(hwnd);
     let hidden = hidden_on(&s, raw);
+    if let Some((id, _)) = &hidden
+        && !s.present.iter().any(|p| &p.id == id)
+    {
+        return Err(Miss::Unplugged);
+    }
     let from = match &hidden {
         // A screen only just unplugged keeps its old device name: no monitor has it now.
         Some((id, _)) => s.monitors[id].device.clone().unwrap_or_else(|| id.clone()),

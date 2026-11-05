@@ -1,7 +1,7 @@
 // The drawing layer des-k's own windows share: the theme (Windows' light, dark or high contrast
 // colors, read once and checked again each second) and look B's tokens (spec 0017), the fonts and
 // icons, motion, the rounded popup, the Canvas that draws shapes through GDI+ and text through
-// GDI, the back buffer, plain GDI text for the finder and overview, and the try_borrow accessors
+// GDI, the back buffer, plain GDI text for the overview, and the try_borrow accessors
 // for window state that a message can re-enter. Sizes on the Canvas are in dip (1/96 inch).
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -83,6 +83,10 @@ pub(crate) struct B {
     pub(crate) hi: u32,
     pub(crate) warn: u32,
     pub(crate) good: u32,
+    /// A key line's band, and a key cap with its edge.
+    pub(crate) band: u32,
+    pub(crate) key: u32,
+    pub(crate) key_edge: u32,
     /// A popup's 1 px edge: 10% black (light) or white (dark) over the card.
     pub(crate) edge: u32,
     /// The indicator's bars and dots that are not lit.
@@ -113,6 +117,9 @@ const B_LIGHT: B = B {
     hi: 0xFFFFFF,
     warn: 0x9D5D00,
     good: 0x0F7B0F,
+    band: 0xEBEBEB,
+    key: 0xFFFFFF,
+    key_edge: 0xD1D1D1,
     edge: 0xE6E6E6,
     bar_off: 0x949494,
     ws: WS,
@@ -135,6 +142,9 @@ const B_DARK: B = B {
     hi: 0x3F3F3F,
     warn: 0xFCE100,
     good: 0x6CCB5F,
+    band: 0x1B1B1B,
+    key: 0x353535,
+    key_edge: 0x4C4C4C,
     edge: 0x404040,
     bar_off: 0x9A9A9A,
     ws: WS,
@@ -262,6 +272,9 @@ pub(crate) fn high_contrast(sys: [u32; 5]) -> Theme {
             hi: hl,
             warn: fg,
             good: fg,
+            band: bg,
+            key: bg,
+            key_edge: fg,
             edge: fg,
             bar_off: fg,
             ws: [hl; 9],
@@ -394,7 +407,8 @@ pub(crate) fn popup(class: PCWSTR, proc: WNDPROC, ex: WINDOW_EX_STYLE, layered: 
         let wc = WNDCLASSW { lpfnWndProc: proc, hInstance: inst.into(), lpszClassName: class, hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(), ..Default::default() };
         RegisterClassW(&wc);
         let ex = ex | WS_EX_TOOLWINDOW | if layered { WS_EX_LAYERED } else { WINDOW_EX_STYLE(0) };
-        let h = CreateWindowExW(ex, class, w!(""), WS_POPUP, 0, 0, 0, 0, None, None, Some(inst.into()), None).ok()?;
+        // Clip children: a popup's own paint never covers its text box (the finder's).
+        let h = CreateWindowExW(ex, class, w!(""), WS_POPUP | WS_CLIPCHILDREN, 0, 0, 0, 0, None, None, Some(inst.into()), None).ok()?;
         let round = DWMWCP_ROUND;
         let _ = DwmSetWindowAttribute(h, DWMWA_WINDOW_CORNER_PREFERENCE, &round as *const _ as _, size_of_val(&round) as u32);
         transitions(h, true);
@@ -408,7 +422,7 @@ pub(crate) fn border(h: HWND, c: u32) {
     unsafe { let _ = DwmSetWindowAttribute(h, DWMWA_BORDER_COLOR, &c as *const COLORREF as _, size_of::<COLORREF>() as u32); }
 }
 
-/// The finder's and overview's chosen color until their look B slices (spec 0017).
+/// The overview's chosen color until its look B slice (spec 0017).
 pub(crate) const ACCENT: COLORREF = COLORREF(0x00FA_A560); // RGB(96, 165, 250), COLORREF is 0x00BBGGRR
 
 pub(crate) fn cref(c: u32) -> COLORREF {
@@ -451,14 +465,15 @@ pub(crate) enum F {
     H2,
     Title,  // the settings page's headings
     Mono,   // setting names as the file spells them
-    Number, // the indicator's workspace number
-    Icon,   // Segoe Fluent Icons
+    Number,    // the indicator's workspace number
+    Icon,      // Segoe Fluent Icons
+    IconSmall, // a 12 px icon, like the finder's pin chip
 }
 
 /// Per F: face (0 text, 1 display, 2 mono, 3 icons), size in dip, weight: 400 or 600 only
 /// (spec 0017 AC-3).
-const FACES: [(u8, f32, i32); 11] =
-    [(0, 14.0, 400), (0, 14.0, 600), (0, 12.0, 400), (0, 12.0, 600), (0, 14.0, 600), (1, 28.0, 600), (1, 16.0, 600), (1, 20.0, 600), (2, 12.0, 400), (1, 36.0, 600), (3, 16.0, 400)];
+const FACES: [(u8, f32, i32); 12] =
+    [(0, 14.0, 400), (0, 14.0, 600), (0, 12.0, 400), (0, 12.0, 600), (0, 14.0, 600), (1, 28.0, 600), (1, 16.0, 600), (1, 20.0, 600), (2, 12.0, 400), (1, 36.0, 600), (3, 16.0, 400), (3, 12.0, 400)];
 
 /// Every F at one scale; deleted when dropped.
 pub(crate) struct Fonts([HFONT; FACES.len()]);
@@ -853,6 +868,21 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// A one pixel line `w` long whose top is the pixel row at `y`: crisp at any scale.
+    pub(crate) fn rule(&self, x: f32, y: f32, w: f32, argb: u32) {
+        let s = self.s;
+        self.fill_rr((x, (y * s).round() / s, w, 1.0 / s), 0.0, argb);
+    }
+
+    /// An app's icon, `size` dip square, at x, y.
+    pub(crate) fn icon(&self, x: f32, y: f32, size: f32, icon: HICON) {
+        if !self.draw || icon.is_invalid() {
+            return;
+        }
+        let (px, py, side) = ((x * self.s).round() as i32, (y * self.s).round() as i32, (size * self.s).round() as i32);
+        self.with_dc(|dc| unsafe { let _ = DrawIconEx(dc, px, py, icon, side, side, 0, None, DI_NORMAL); });
+    }
+
     /// A check mark in a `size` square at x, y.
     pub(crate) fn check(&self, x: f32, y: f32, size: f32, width: f32, argb: u32) {
         self.lines(&[(x, y + size * 0.55), (x + size * 0.36, y + size * 0.9), (x + size, y + size * 0.12)], width, argb);
@@ -880,7 +910,7 @@ pub(crate) fn buffered(dc: HDC, x: i32, y: i32, w: i32, h: i32, f: impl FnOnce(H
     }
 }
 
-/// One line of GDI text in `r`, cut with … when too long: the finder's and overview's.
+/// One line of GDI text in `r`, cut with … when too long: the overview's.
 pub(crate) fn text(dc: HDC, s: &str, mut r: RECT, color: COLORREF, align: DRAW_TEXT_FORMAT) {
     let mut wide: Vec<u16> = s.encode_utf16().collect();
     unsafe {

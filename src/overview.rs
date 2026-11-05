@@ -20,7 +20,7 @@ use windows::Win32::{
 };
 use windows::core::{BOOL, PCWSTR, w};
 
-use crate::finder::{self, BG, DIM, TEXT};
+use crate::finder;
 use crate::ui::ACCENT;
 use crate::settings::{self, Animation, Labels};
 use crate::ui::{self, text};
@@ -29,7 +29,11 @@ use crate::ws::{self, Miss};
 const CLASS: PCWSTR = w!("des-k-overview");
 const CLOSE_CLASS: PCWSTR = w!("des-k-overview-close");
 const GHOST_CLASS: PCWSTR = w!("des-k-overview-ghost");
-const TILE_BG: COLORREF = COLORREF(0x0034_3434); // the finder's line grey
+// The finder's old colors, kept here until the overview's look B slice (spec 0017).
+const BG: COLORREF = COLORREF(0x0020_2020);
+const TEXT: COLORREF = COLORREF(0x00F0_F0F0);
+const DIM: COLORREF = COLORREF(0x0090_9090);
+const TILE_BG: COLORREF = COLORREF(0x0034_3434); // the finder's old line grey
 const CLOSING_TIMER: usize = 1;
 const CLOSING_POLL_MS: u32 = 200; // as the finder's
 const CLOSE_WAIT: Duration = Duration::from_secs(2); // still open after this (it asked to save, say): shown again
@@ -831,7 +835,7 @@ fn go(hwnd: HWND) {
             finder::used(hwnd); // our own focus change: the foreground hook skips it
             close(false);
         }
-        Err(Miss::Gone | Miss::CantMove) => {
+        Err(Miss::Gone | Miss::CantMove | Miss::Unplugged) => {
             println!("overview: a window is gone");
             rebuild();
         }
@@ -1122,7 +1126,7 @@ fn drop_at(d: Drag) {
             println!("overview: a window is gone");
             rebuild();
         }
-        Err(Miss::CantMove) => note(popup, "Can't move this window"),
+        Err(Miss::CantMove | Miss::Unplugged) => note(popup, "Can't move this window"),
     }
 }
 
