@@ -25,6 +25,7 @@ mod setup;
 mod touchpad;
 mod tray;
 mod ui;
+mod uia;
 mod update;
 mod welcome;
 mod ws;
@@ -255,6 +256,10 @@ fn main() -> windows::core::Result<()> {
                 }
             }
             WM_TIMER if msg.hwnd.is_invalid() && watch_timer != 0 && msg.wParam.0 == watch_timer => {
+                // The theme broadcast may never reach an admin des-k (spec 0017 AC-2).
+                if ui::refresh() {
+                    ui::repaint_all();
+                }
                 settings::watch();
                 ws::check_screens(true);
                 ws::resync();

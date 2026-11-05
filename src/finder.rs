@@ -25,7 +25,7 @@ use windows::Win32::{
 };
 use windows::core::{PCWSTR, w};
 
-use crate::indicator::ACCENT;
+use crate::ui::ACCENT;
 use crate::restore;
 use crate::ui::{self, text};
 use crate::ws::{self, Miss};

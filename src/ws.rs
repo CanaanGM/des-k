@@ -24,7 +24,7 @@ use windows::Win32::{
 use windows::core::BOOL;
 
 use crate::cloak::Shell;
-use crate::indicator;
+use crate::indicator::{self, Card, Line as Says};
 use crate::restore::{self, Entry, Fp, Pick};
 use crate::settings;
 
@@ -151,10 +151,13 @@ struct Away {
     pid: u32,
 }
 
-/// A line for the indicator on `device`, showing `active`: made under the lock, shown after it.
+/// A line for the indicator on screen `id` (`device`), showing `active`: made under the lock,
+/// shown after it. `line` is the card's (spec 0017 AC-IND-4), `text` the tray balloon's.
 struct Note {
     device: String,
+    id: String,
     active: usize,
+    line: Says,
     text: String,
 }
 
@@ -229,6 +232,38 @@ fn id_of(s: &mut State, device: &str) -> String {
 /// A present screen's monitor, by id.
 fn mon_of(s: &State, id: &str) -> Option<HMONITOR> {
     s.present.iter().find(|p| p.id == id).and_then(|p| monitor_named(&p.device))
+}
+
+/// The name des-k shows for a screen (spec 0017): Windows' friendly name, with " #1", " #2" left
+/// to right when two present screens share it. A screen that is not present keeps its last name.
+fn label(s: &State, id: &str) -> String {
+    let Some(p) = s.present.iter().find(|p| p.id == id) else {
+        return s.monitors.get(id).map_or_else(|| id.to_string(), |m| m.name.clone());
+    };
+    let name = if p.name.is_empty() { p.device.trim_start_matches(r"\\.\").to_string() } else { p.name.clone() };
+    // present is sorted left to right.
+    let twins: Vec<&Screen> = s.present.iter().filter(|q| q.name == p.name).collect();
+    match twins.iter().position(|q| q.id == p.id) {
+        Some(i) if twins.len() > 1 => format!("{name} #{}", i + 1),
+        _ => name,
+    }
+}
+
+/// The indicator's card for screen `id`: named only when two or more screens are plugged in.
+fn card(s: &State, id: &str, active: usize, count: usize) -> Card {
+    Card::new(active, count, (s.present.len() > 1).then(|| label(s, id)))
+}
+
+/// The indicator on `mon` as it is now: the settings page's Show (spec 0012 AC-19).
+pub fn show_indicator(mon: HMONITOR) {
+    let count = settings::get().workspaces;
+    let c = {
+        let mut s = state();
+        let id = id_of(&mut s, &device_name(mon));
+        let active = mon_mut(&mut s, &id).active;
+        card(&s, &id, active, count)
+    };
+    indicator::show(mon, c);
 }
 
 /// You moved an away window yourself (spec 0016 AC-6): it stays where you put it.
@@ -667,10 +702,10 @@ pub fn switch(dir: isize) {
     let count = settings::get().workspaces;
     let mut s = state();
     let name = id_of(&mut s, &dev);
-    let m = mon_mut(&mut s, &name);
-    let target = (m.active as isize + dir).clamp(0, count as isize - 1) as usize;
-    if target == m.active {
-        indicator::show(mon, m.active, count, None); // at the edge: still show where we are
+    let active = mon_mut(&mut s, &name).active;
+    let target = (active as isize + dir).clamp(0, count as isize - 1) as usize;
+    if target == active {
+        indicator::show(mon, card(&s, &name, active, count)); // at the edge: still show where we are
         return;
     }
     switch_to(&mut s, mon, &name, target, None, None);
@@ -687,8 +722,11 @@ pub fn jump(index: usize) {
     if index >= count {
         println!("jump: no workspace {} ({count} workspaces)", index + 1);
     }
-    if index >= count || index == active {
-        return indicator::show(mon, active, count, None);
+    if index >= count {
+        return indicator::show(mon, card(&s, &name, active, count).with(Says::NoWorkspace { n: index + 1 }));
+    }
+    if index == active {
+        return indicator::show(mon, card(&s, &name, active, count));
     }
     switch_to(&mut s, mon, &name, index, None, None);
 }
@@ -807,7 +845,7 @@ fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize, focus: Opt
         None => {}
     }
     println!("{name}: workspace {}/{count} ({} shown)", target + 1, shown.len());
-    indicator::show(mon, target, count, None);
+    indicator::show(mon, card(s, name, target, count));
     s.sent = None;
     save(s);
     true
@@ -859,7 +897,7 @@ pub fn pin() {
     let active = mon_mut(&mut s, &name).active;
     let how = if pinned { "pinned to every workspace".to_string() } else { format!("unpinned, stays on workspace {}", active + 1) };
     println!("pin: \"{}\" on {name} {how}", title(h));
-    indicator::show_pin(mon, active, count, pinned);
+    indicator::show(mon, card(&s, &name, active, count).with(if pinned { Says::Pinned } else { Says::Unpinned }));
     save(&mut s);
 }
 
@@ -907,17 +945,18 @@ pub fn send(to: To, follow: bool) {
         To::Index(i) if i < count => i,
         To::Index(i) => {
             println!("send: no workspace {} ({count} workspaces)", i + 1);
-            return indicator::show(mon, s.monitors[&name].active, count, None);
+            return indicator::show(mon, card(&s, &name, s.monitors[&name].active, count).with(Says::NoWorkspace { n: i + 1 }));
         }
     };
     let t = title(h);
-    if s.pinned.remove(&(h.0 as isize)) {
+    let unpinned = s.pinned.remove(&(h.0 as isize));
+    if unpinned {
         println!("send: \"{t}\" unpinned, it goes to one workspace");
     }
     // Without this, a stay press would hide the window into the shown workspace's own list.
     if !is_repeat && target == from {
         println!("send: \"{t}\" already on {name} workspace {}/{count}", from + 1);
-        return indicator::show(mon, from, count, None);
+        return indicator::show(mon, card(&s, &name, from, count).with(Says::Already));
     }
     let line = |how: &str| format!("send: \"{t}\" {name} workspace {}/{count} -> {}/{count}, {how}", from + 1, target + 1);
     claim(&mut s, h.0 as isize, "you sent it");
@@ -961,7 +1000,8 @@ pub fn send(to: To, follow: bool) {
     }
     m.desktop.clear();
     s.sent = Some((raw, Instant::now()));
-    indicator::show(mon, active, count, (target != active).then_some(target));
+    let said = if target == active { Says::SentBack } else { Says::Sent { to: target, unpinned } };
+    indicator::show(mon, card(&s, &name, active, count).with(said));
     println!("{}", line("stay"));
     save(&mut s);
 }
@@ -2104,10 +2144,21 @@ pub fn check_screens(tick: bool) {
         return;
     }
     let lines: Vec<String> = notes.iter().map(|n| n.text.clone()).collect();
-    // One indicator: a note per screen would replace the one before, so the last carries every line.
+    // One indicator: a note per screen would replace the one before, so the last carries every
+    // line. A line about another screen names where its windows went instead of "here".
     let last = notes.last().expect("not empty");
     if let Some(mon) = monitor_named(&last.device) {
-        indicator::show_note(mon, last.active, settings::get().workspaces, &lines.join("\n"));
+        let mut c = card(&state(), &last.id, last.active, settings::get().workspaces);
+        for n in &notes {
+            let mut line = n.line.clone();
+            match &mut line {
+                Says::ScreenGone { to, .. } if n.device == last.device => *to = None,
+                Says::ScreenBack { here, .. } => *here = n.device == last.device,
+                _ => {}
+            }
+            c = c.with(line);
+        }
+        indicator::show(mon, c);
     }
     crate::tray::screens_changed(&lines);
 }
@@ -2305,7 +2356,13 @@ fn fold(s: &mut State, id: &str, notes: &mut Vec<Note>) {
     let waiting = s.away.values().filter(|a| a.home == id).count();
     println!("{name} ({id}) unplugged: {} it hid moved to {} ({}), {} wait for it", words(n), main.name, main.id, words(waiting));
     if waiting > 0 {
-        notes.push(Note { device: main.device.clone(), active: main_active, text: format!("{name} unplugged: {} moved here", words(waiting)) });
+        notes.push(Note {
+            device: main.device.clone(),
+            id: main.id.clone(),
+            active: main_active,
+            line: Says::ScreenGone { name: name.clone(), moved: waiting, to: Some(label(s, &main.id)) },
+            text: format!("{name} unplugged: {} moved here", words(waiting)),
+        });
     }
 }
 
@@ -2403,7 +2460,13 @@ fn give_back(s: &mut State, id: &str, last: bool, notes: &mut Vec<Note>) -> bool
         let stuck = if left > 0 { format!(", {left} could not be moved") } else { String::new() };
         println!("{} ({id}) is back: {} returned{stuck}", p.name, words(total));
         if total > 0 || left > 0 {
-            notes.push(Note { device: p.device.clone(), active, text: format!("{} is back: {} returned{stuck}", p.name, words(total)) });
+            notes.push(Note {
+                device: p.device.clone(),
+                id: p.id.clone(),
+                active,
+                line: Says::ScreenBack { name: label(s, &p.id), moved: total, left, here: true },
+                text: format!("{} is back: {} returned{stuck}", p.name, words(total)),
+            });
         }
     }
     changed

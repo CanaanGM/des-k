@@ -1952,12 +1952,10 @@ fn act(ctl: Ctl) {
     }
 }
 
-/// The real dots on the screen the page is on, with the current hold and fade (AC-19).
+/// The real indicator on the screen the page is on, with the current hold and fade (AC-19).
 fn play() {
     let Some(h) = hwnd() else { return };
-    let mon = unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) };
-    let active = crate::ws::active(&crate::ws::device_name(mon));
-    crate::indicator::show(mon, active, settings::get().workspaces, None);
+    crate::ws::show_indicator(unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) });
 }
 
 /// The keyboard stops in one area, in order, each with its top: the side list and its file
@@ -2115,6 +2113,7 @@ pub fn open(section: Option<Section>) {
         let scale = GetDpiForWindow(h) as f32 / 96.0;
         let t = theme();
         dark_title(h, &t);
+        crate::ui::transitions(h, false); // `fastest` turns off its open animation (spec 0017 AC-6)
         WIN.set(Some(Win {
             hwnd: h,
             scale,
@@ -2352,6 +2351,7 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                 LRESULT(0)
             }
             WM_SETTINGCHANGE | WM_SYSCOLORCHANGE => {
+                crate::ui::refresh();
                 let t = theme();
                 if set(|w| std::mem::replace(&mut w.theme, t) != t) == Some(true) {
                     dark_title(h, &t);
@@ -2490,10 +2490,7 @@ mod tests {
         ];
         // The welcome screen's High contrast Night sky render theme, so the two can be compared.
         let (bg, fg) = (0x000000, 0xFFFFFF);
-        let night_sky = Theme {
-            dark: true, hc: true, surface: bg, text: fg, dim: fg, stroke: fg, accent: 0x1AEBFF, on_accent: bg, band_a: bg, band_b: bg, on_band: fg, card: bg, card_edge: fg, tile: bg, tile_ico: bg, tile_ico_fg: fg,
-            chip_on: bg, chip_on_fg: fg, chip_off: bg, chip_off_fg: fg, chip_err: bg, chip_err_fg: fg, note: bg, note_edge: fg, warn: bg, warn_edge: fg, btn: bg, btn_edge: fg, foot: bg, disabled: 0x3FF23F,
-        };
+        let night_sky = ui::high_contrast([bg, fg, 0x1AEBFF, bg, 0x3FF23F]);
         // Light and dark at 100% for every state; High contrast and 150% for the two that
         // carry the most kinds of parts.
         let mut runs: Vec<(&str, Theme, f32)> = vec![("light", ui::LIGHT, 1.0), ("dark", ui::DARK, 1.0)];

@@ -809,6 +809,7 @@ pub fn show(first: bool) {
         let scale = dpi as f32 / 96.0;
         let theme = theme();
         dark_title(h, &theme);
+        crate::ui::transitions(h, false); // `fastest` turns off its open animation (spec 0017 AC-6)
         let view = read_view(first);
         WIN.with_borrow_mut(|w| *w = Some(Win { hwnd: h, first, dpi, scale, theme, fonts: Fonts::new(scale), view, places: vec![], buttons, focus: None, fit: Fit::default(), scroll: 0.0 }));
         relayout(None);
@@ -951,6 +952,7 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                 LRESULT(0)
             }
             WM_SETTINGCHANGE | WM_SYSCOLORCHANGE => {
+                crate::ui::refresh();
                 let t = theme();
                 if set(|w| std::mem::replace(&mut w.theme, t) != t) == Some(true) {
                     dark_title(h, &t);
@@ -1036,6 +1038,6 @@ mod tests {
     }
 
     fn hc_like(bg: u32, fg: u32, hi: u32, gray: u32) -> Theme {
-        Theme { dark: true, hc: true, surface: bg, text: fg, dim: fg, stroke: fg, accent: hi, on_accent: bg, band_a: bg, band_b: bg, on_band: fg, card: bg, card_edge: fg, tile: bg, tile_ico: bg, tile_ico_fg: fg, chip_on: bg, chip_on_fg: fg, chip_off: bg, chip_off_fg: fg, chip_err: bg, chip_err_fg: fg, note: bg, note_edge: fg, warn: bg, warn_edge: fg, btn: bg, btn_edge: fg, foot: bg, disabled: gray }
+        Theme { dark: true, ..crate::ui::high_contrast([bg, fg, hi, bg, gray]) }
     }
 }

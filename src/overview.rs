@@ -21,7 +21,7 @@ use windows::Win32::{
 use windows::core::{BOOL, PCWSTR, w};
 
 use crate::finder::{self, BG, DIM, TEXT};
-use crate::indicator::ACCENT;
+use crate::ui::ACCENT;
 use crate::settings::{self, Animation, Labels};
 use crate::ui::{self, text};
 use crate::ws::{self, Miss};
@@ -455,8 +455,13 @@ fn ease(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(2)
 }
 
+/// Done at once with `fastest` on (spec 0017 AC-6).
 fn progress(start: Instant) -> f32 {
-    ease((start.elapsed().as_secs_f32() * 1000.0 / FADE_MS as f32).min(1.0))
+    let ms = crate::ui::motion_ms(FADE_MS);
+    if ms == 0 {
+        return 1.0;
+    }
+    ease((start.elapsed().as_secs_f32() * 1000.0 / ms as f32).min(1.0))
 }
 
 fn intersect(a: RECT, b: RECT) -> Option<RECT> {

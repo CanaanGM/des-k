@@ -43,6 +43,15 @@ pub enum Animation {
 
 pub const ANIMATIONS: &[(&str, Animation)] = &[("off", Animation::Off), ("fade", Animation::Fade)];
 
+/// How the indicator looks (spec 0017): the card, or the dots.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Style {
+    Card,
+    Dots,
+}
+
+pub const STYLES: &[(&str, Style)] = &[("card", Style::Card), ("dots", Style::Dots)];
+
 /// What three or four fingers did on the touchpad (spec 0011).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Motion {
@@ -145,6 +154,7 @@ pub struct Settings {
     pub workspaces: usize,
     pub copilot_as_right_ctrl: bool,
     pub follow_activation: bool,
+    pub fastest: bool, // every des-k fade and move instant (spec 0017)
     pub previous: Vec<Combo>,
     pub next: Vec<Combo>,
     pub send_previous: Vec<Combo>, // these two switch along with the window
@@ -159,6 +169,7 @@ pub struct Settings {
     pub overview: Vec<Combo>, // opens the workspace overview (spec 0010)
     pub pin: Vec<Combo>,      // keeps the focused window on every workspace (spec 0014)
     pub indicator_enabled: bool,
+    pub indicator_style: Style,
     pub hold_ms: u32,
     pub fade_ms: u32,
     pub restore_enabled: bool,
@@ -198,6 +209,7 @@ impl Default for Settings {
             workspaces: 4,
             copilot_as_right_ctrl: true,
             follow_activation: true,
+            fastest: false,
             previous: vec![Combo { mods: WIN | CTRL, vk: VK_LEFT.0 }],
             next: vec![Combo { mods: WIN | CTRL, vk: VK_RIGHT.0 }],
             send_previous: vec![Combo { mods: WIN | CTRL | SHIFT, vk: VK_LEFT.0 }],
@@ -211,6 +223,7 @@ impl Default for Settings {
             overview: vec![Combo { mods: WIN, vk: VK_TAB.0 }],
             pin: vec![Combo { mods: WIN | CTRL, vk: b'U' as u16 }],
             indicator_enabled: true,
+            indicator_style: Style::Card,
             hold_ms: 550,
             fade_ms: 200,
             restore_enabled: true,
@@ -232,6 +245,7 @@ const DEFAULT_FILE: &str = r#"# des-k settings. A saved change applies within tw
 workspaces = 4              # 2 to 9, every screen
 copilot_as_right_ctrl = true
 follow_activation = true    # switch to a hidden window's workspace when it comes to the front
+fastest = false             # true: every des-k fade and move is instant
 
 [shortcuts]
 # Keep these two if you switch with the touchpad swipe.
@@ -255,6 +269,7 @@ pin = ["Win+Ctrl+U"]
 
 [indicator]
 enabled = true
+style = "card"              # "card" or "dots"
 hold_ms = 550               # 0 to 5000
 fade_ms = 200               # 0 to 2000
 
@@ -333,9 +348,9 @@ tap = true
 do = "notifications"
 "#;
 
-const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activation", "shortcuts", "indicator", "restore", "overview", "touchpad", "gesture"];
+const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activation", "fastest", "shortcuts", "indicator", "restore", "overview", "touchpad", "gesture"];
 const SHORTCUT_KEYS: &[&str] = &["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "jump", "send_to", "send_to_stay", "finder", "overview", "pin"];
-const INDICATOR_KEYS: &[&str] = &["enabled", "hold_ms", "fade_ms"];
+const INDICATOR_KEYS: &[&str] = &["enabled", "style", "hold_ms", "fade_ms"];
 const RESTORE_KEYS: &[&str] = &["enabled", "minutes"];
 const OVERVIEW_KEYS: &[&str] = &["animation", "labels", "live"];
 const TOUCHPAD_KEYS: &[&str] = &["enabled", "swipe_mm", "twice_ms"];
@@ -543,6 +558,9 @@ fn apply(old: &Settings, changes: &[Change]) -> Vec<String> {
     if has("gestures") || has("touchpad.twice_ms") {
         crate::touchpad::drop_pending();
     }
+    if has("fastest") {
+        crate::ui::transitions_all();
+    }
     crate::welcome::refresh();
     moves
 }
@@ -694,6 +712,7 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
     s.workspaces = int(&top, "workspaces", "workspaces", 2, 9, s.workspaces as i64, &mut warn) as usize;
     s.copilot_as_right_ctrl = boolean(&top, "copilot_as_right_ctrl", "copilot_as_right_ctrl", s.copilot_as_right_ctrl, &mut warn);
     s.follow_activation = boolean(&top, "follow_activation", "follow_activation", s.follow_activation, &mut warn);
+    s.fastest = boolean(&top, "fastest", "fastest", s.fastest, &mut warn);
 
     if let Some(t) = section(&top, "shortcuts", &mut warn) {
         unknown_keys(t, "shortcuts.", SHORTCUT_KEYS, &mut warn);
@@ -751,6 +770,7 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
     if let Some(t) = section(&top, "indicator", &mut warn) {
         unknown_keys(t, "indicator.", INDICATOR_KEYS, &mut warn);
         s.indicator_enabled = boolean(t, "enabled", "indicator.enabled", s.indicator_enabled, &mut warn);
+        s.indicator_style = choice(t, "style", "indicator.style", STYLES, s.indicator_style, &mut warn);
         s.hold_ms = int(t, "hold_ms", "indicator.hold_ms", 0, 5000, s.hold_ms as i64, &mut warn) as u32;
         s.fade_ms = int(t, "fade_ms", "indicator.fade_ms", 0, 2000, s.fade_ms as i64, &mut warn) as u32;
     }
@@ -1243,6 +1263,7 @@ impl Settings {
             ("workspaces", self.workspaces.to_string()),
             ("copilot_as_right_ctrl", self.copilot_as_right_ctrl.to_string()),
             ("follow_activation", self.follow_activation.to_string()),
+            ("fastest", self.fastest.to_string()),
             ("shortcuts.previous", list(&self.previous)),
             ("shortcuts.next", list(&self.next)),
             ("shortcuts.send_previous", list(&self.send_previous)),
@@ -1256,6 +1277,7 @@ impl Settings {
             ("shortcuts.overview", list(&self.overview)),
             ("shortcuts.pin", list(&self.pin)),
             ("indicator.enabled", self.indicator_enabled.to_string()),
+            ("indicator.style", word(STYLES.iter().find(|(_, v)| *v == self.indicator_style).map(|(w, _)| *w))),
             ("indicator.hold_ms", self.hold_ms.to_string()),
             ("indicator.fade_ms", self.fade_ms.to_string()),
             ("restore.enabled", self.restore_enabled.to_string()),
@@ -1323,6 +1345,19 @@ mod tests {
         assert_eq!((s.overview_labels, s.overview_live), (Labels::None, true));
         assert_eq!(warn.len(), 1, "{warn:?}");
         assert!(warn[0].starts_with("overview.live:"), "{warn:?}");
+    }
+
+    // The indicator style and `fastest` are read like every key: a bad value resets only itself
+    // (spec 0017), so a typo never turns the card into the dots or the fades off.
+    #[test]
+    fn style_and_fastest_reset_only_themselves() {
+        let (s, warn) = parse("fastest = true\n[indicator]\nstyle = \"Dots\"\n");
+        assert_eq!((s.fastest, s.indicator_style), (true, Style::Dots));
+        assert!(warn.is_empty(), "{warn:?}");
+        let (s, warn) = parse("fastest = \"yes\"\n[indicator]\nstyle = \"pill\"\nhold_ms = 900\n");
+        assert_eq!((s.fastest, s.indicator_style, s.hold_ms), (false, Style::Card, 900));
+        assert_eq!(warn.len(), 2, "{warn:?}");
+        assert!(warn[1].starts_with("indicator.style: \"pill\" is not one of \"card\", \"dots\""), "{warn:?}");
     }
 
     // Off must stay the default (the overview opens at once unless you ask), a chosen style
@@ -1782,6 +1817,6 @@ do = "previous"
         let mut unique = names.clone();
         unique.sort();
         unique.dedup();
-        assert_eq!((names.len(), unique.len()), (27, 27));
+        assert_eq!((names.len(), unique.len()), (29, 29));
     }
 }

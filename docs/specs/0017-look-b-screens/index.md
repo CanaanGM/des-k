@@ -1,7 +1,7 @@
 # 0017. Look B screens: every des-k window rebuilt to the approved look B designs
 
 **Date**: 2026-11-05
-**Status**: Proposed
+**Status**: In Progress
 
 ## Summary
 
