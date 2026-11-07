@@ -57,6 +57,11 @@ impl IRawElementProviderSimple_Impl for Text_Impl {
     }
 }
 
+/// Whether Narrator or another screen reader listens: words cost nothing to make until one does.
+pub(crate) fn listening() -> bool {
+    unsafe { UiaClientsAreListening() }.as_bool()
+}
+
 /// Narrator reads `text` now, without the window taking focus; `queue` lets it finish what it
 /// was saying first, otherwise the newest words replace any not yet read. `who` names the
 /// window to Narrator. Nothing is made while no screen reader listens.

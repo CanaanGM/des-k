@@ -27,6 +27,7 @@ mod tray;
 mod ui;
 mod uia;
 mod update;
+mod wallpaper;
 mod welcome;
 mod ws;
 

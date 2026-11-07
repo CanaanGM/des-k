@@ -442,7 +442,7 @@ fn stem(exe: &str) -> String {
 /// The app's name (AC-FND-4): its exe's file description, else the exe name without .exe. A
 /// Store app's frame names the hosted app's package, else shows the window title. Read once per
 /// exe while des-k runs.
-fn program(hwnd: HWND) -> String {
+pub(crate) fn program(hwnd: HWND) -> String {
     let exe = |h: HWND| {
         let mut pid = 0;
         unsafe { GetWindowThreadProcessId(h, Some(&mut pid)) };

@@ -177,6 +177,7 @@ pub struct Settings {
     pub overview_animation: Animation,
     pub overview_labels: Labels,
     pub overview_live: bool, // false: the list is taken once, at open
+    pub overview_fade_ms: u32, // with animation = "fade" (spec 0017 AC-7)
     // Spec 0011. Safe on by default: a gesture acts only while Windows' own gestures read off.
     pub touchpad_enabled: bool,
     pub swipe_mm: u32,
@@ -231,6 +232,7 @@ impl Default for Settings {
             overview_animation: Animation::Off,
             overview_labels: Labels::Hover,
             overview_live: true,
+            overview_fade_ms: 250,
             touchpad_enabled: true,
             swipe_mm: 15,
             twice_ms: 300,
@@ -281,6 +283,7 @@ minutes = 3                 # how long after start to keep matching (1 to 30)
 animation = "off"           # "off" or "fade"
 labels = "hover"            # "hover", "always" or "none"
 live = true                 # false: the list is taken when the overview opens
+fade_ms = 250               # 0 to 1000, with animation = "fade"
 
 [touchpad]
 # des-k reads three and four finger gestures itself, so they work over admin windows too.
@@ -352,7 +355,7 @@ const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activ
 const SHORTCUT_KEYS: &[&str] = &["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "jump", "send_to", "send_to_stay", "finder", "overview", "pin"];
 const INDICATOR_KEYS: &[&str] = &["enabled", "style", "hold_ms", "fade_ms"];
 const RESTORE_KEYS: &[&str] = &["enabled", "minutes"];
-const OVERVIEW_KEYS: &[&str] = &["animation", "labels", "live"];
+const OVERVIEW_KEYS: &[&str] = &["animation", "labels", "live", "fade_ms"];
 const TOUCHPAD_KEYS: &[&str] = &["enabled", "swipe_mm", "twice_ms"];
 const GESTURE_KEYS: &[&str] = &["fingers", "swipe", "tap", "times", "do"];
 
@@ -786,6 +789,7 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
         s.overview_animation = choice(t, "animation", "overview.animation", ANIMATIONS, s.overview_animation, &mut warn);
         s.overview_labels = choice(t, "labels", "overview.labels", LABELS, s.overview_labels, &mut warn);
         s.overview_live = boolean(t, "live", "overview.live", s.overview_live, &mut warn);
+        s.overview_fade_ms = int(t, "fade_ms", "overview.fade_ms", 0, 1000, s.overview_fade_ms as i64, &mut warn) as u32;
     }
 
     if let Some(t) = section(&top, "touchpad", &mut warn) {
@@ -1285,6 +1289,7 @@ impl Settings {
             ("overview.animation", word(ANIMATIONS.iter().find(|(_, v)| *v == self.overview_animation).map(|(w, _)| *w))),
             ("overview.labels", word(LABELS.iter().find(|(_, v)| *v == self.overview_labels).map(|(w, _)| *w))),
             ("overview.live", self.overview_live.to_string()),
+            ("overview.fade_ms", self.overview_fade_ms.to_string()),
             ("touchpad.enabled", self.touchpad_enabled.to_string()),
             ("touchpad.swipe_mm", self.swipe_mm.to_string()),
             ("touchpad.twice_ms", self.twice_ms.to_string()),
@@ -1358,6 +1363,21 @@ mod tests {
         assert_eq!((s.fastest, s.indicator_style, s.hold_ms), (false, Style::Card, 900));
         assert_eq!(warn.len(), 2, "{warn:?}");
         assert!(warn[1].starts_with("indicator.style: \"pill\" is not one of \"card\", \"dots\""), "{warn:?}");
+    }
+
+    // The overview's fade time is yours to shorten (0 is instant) but never past a second; a
+    // bad value goes back to 250, and only it, so a typo never costs the animation itself
+    // (spec 0017 AC-7).
+    #[test]
+    fn a_bad_overview_fade_time_only_resets_itself() {
+        assert_eq!(parse("").0.overview_fade_ms, 250);
+        let (s, warn) = parse("[overview]\nfade_ms = 0\n");
+        assert_eq!(s.overview_fade_ms, 0);
+        assert!(warn.is_empty(), "{warn:?}");
+        let (s, warn) = parse("[overview]\nanimation = \"fade\"\nfade_ms = 1500\n");
+        assert_eq!((s.overview_animation, s.overview_fade_ms), (Animation::Fade, 250));
+        assert_eq!(warn.len(), 1, "{warn:?}");
+        assert!(warn[0].starts_with("overview.fade_ms:"), "{warn:?}");
     }
 
     // Off must stay the default (the overview opens at once unless you ask), a chosen style
@@ -1817,6 +1837,6 @@ do = "previous"
         let mut unique = names.clone();
         unique.sort();
         unique.dedup();
-        assert_eq!((names.len(), unique.len()), (29, 29));
+        assert_eq!((names.len(), unique.len()), (30, 30));
     }
 }

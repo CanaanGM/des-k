@@ -1,4 +1,4 @@
-# Verify: Look B screens · spec 0017 · updated 2026-11-05 (slice 2)
+# Verify: Look B screens · spec 0017 · updated 2026-11-06 (slice 3)
 _Steps derived from spec 0017 acceptance criteria. `/check verify` runs these; `/test` locks the durable ones. Each slice adds its own section._
 
 ## Slice 1: indicator and the shared layer
@@ -79,6 +79,51 @@ Same build and start as slice 1. The finder is des-k's first popup that is not l
 - [ ] App name: a second window of the same exe → the same name, read once (no new log lines) → AC-FND-4
 - [ ] Narrator names: the words read equal the row's painted words → AC-FND-9
 
+## Slice 3: overview
+
+Same build and start as slice 1. Turn on `[overview] animation = "fade"` for the fade steps.
+
+### UI / manual
+- [ ] Win Tab with two screens → each screen: a card colored band with a 1 px rule, tiles with a chip under each (full chip on the shown workspace, soft on the others), the shown tile ringed in the text color, the page grey under the band → AC-OVR-1, AC-OVR-2
+- [ ] Purple shows only on the chosen window's ring and on drop targets; workspace colors only on the chips → AC-OVR-1
+- [ ] Spread windows have a 1 px edge and a soft floating shadow; the spread starts under the band and stops above the key bar; labels are 14 px regular → AC-OVR-2, AC-OVR-3
+- [ ] With `animation = "fade"`, watch the shadows while the overview fades in and out: no black boxes, no flashing (spec "check on the real machine") → AC-OVR-3
+- [ ] `fastest = true` → no fade and no painted shadows; off again → both come back → AC-6, AC-OVR-3
+- [ ] Each tile shows that screen's wallpaper behind its windows, fitted as the desktop shows it; a solid color desktop shows that color; a slideshow shows the background color → AC-OVR-3
+- [ ] Spotlight on the desktop → tiles show the background color, not the picture. Note: des-k reads `DesktopSpotlight\Settings\EnabledState` to know; if Spotlight's picture shows instead, say so → AC-OVR-3
+- [ ] Change the wallpaper, open again → the new picture; open twice more → no `wallpaper:` log lines (nothing decoded again) → AC-OVR-3
+- [ ] Point at a window → a grey ring 3 px off it, its title, and the X (28 dip square, round corners); point at the X → it turns red; move off → back → AC-OVR-2, AC-OVR-6
+- [ ] Labels "hover": the chosen window is labeled too, and a long title runs up to its cell's width before it is cut; a pinned window shows a pin before its title → AC-OVR-6
+- [ ] Point at a tile → a thin grey edge; high contrast: dotted → AC-OVR-4
+- [ ] Drag a window: its picture fades to 40% (high contrast: a dashed outline), the chosen ring hides, the bar reads "Drop on a workspace · Esc Cancel"; over a tile of another workspace → that tile gets the purple ring; over its own tile or its own spread → no ring → AC-OVR-4, AC-OVR-7
+- [ ] Drag over the band → the moving picture shrinks to its tile size; back over the spread → 240 dip wide again; move along the band's rule: no flicker (spec "check on the real machine") → AC-OVR-5
+- [ ] The moving picture has a 1 px edge in the text color, round corners and Windows' shadow → AC-OVR-5
+- [ ] Drag onto the other screen's spread → that spread gets a purple ring 16 dip outside it; the bar moves to that screen → AC-OVR-4, AC-OVR-7
+- [ ] The key bar shows only on the screen under the mouse and moves with it; it reads Enter Go to, Drag Move (dashed cap), 1 to N Show workspace, Ctrl W Close window, Esc Cancel → AC-OVR-7
+- [ ] Open on an empty workspace → Enter and Ctrl W are greyed; a screen with no window at all also greys Drag → AC-OVR-7
+- [ ] Drop an admin window (dev copy, not admin) → "Can't move this window" / "It stays where it was." in that screen's bar for 2 s → AC-OVR-8
+- [ ] Ctrl W on an admin window from a non admin dev copy → "Can't close an admin window" / "It stays open." → AC-OVR-8
+- [ ] Ctrl W on Notepad with unsaved text → its place empties; after 2 s it comes back chosen, with "A window didn't close" / "It may be asking you something. Enter goes to it." on the screen you asked on; Enter goes to it → AC-OVR-8
+- [ ] Narrator on, Win Tab → it reads the overview, the shown workspace, the window count, and the chosen window; arrows read each window once; a drag and a note are read when they appear; scan mode shows a Workspaces list and a Windows list → AC-OVR-11, AC-5
+- [ ] With the overview open, switch Windows mode dark to light → within about 1 s it repaints in light → AC-2
+- [ ] A 150% and a 100% screen → sharp, and the same size in dip on each → AC-4
+
+### Speed (spec "check on the real machine")
+- [ ] Open the overview ten times on the screens you have, the first right after start (cold wallpaper cache) → every `overview: shown on N screens in M ms` line in `%LOCALAPPDATA%\des-k\des-k.log` is at most 100 ms; a slower one ends `(over the 100 ms limit)` → AC-8, AC-OVR-10
+- [ ] Move the mouse over windows and tiles quickly → no stutter (only the changed spots repaint) → AC-OVR-10
+
+### Commands
+- [ ] `cargo test` → all pass, including `a_partial_repaint_matches_the_whole_paint`, `the_spread_leaves_room_for_the_band_and_the_bar`, `only_access_denied_says_admin`, `the_speed_line_flags_an_open_over_the_limit`, `the_shadow_fades_out_and_is_full_under_the_box`, `the_bar_shows_on_the_selected_screen_and_a_note_on_its_own`, `the_bar_greys_what_cannot_act`, `a_bad_overview_fade_time_only_resets_itself` → AC-OVR-10, AC-OVR-2, AC-OVR-8, AC-8, AC-OVR-3, AC-OVR-7, AC-7
+- [ ] `cargo test render -- --ignored` → `target/overview/` holds 17 states in light, dark, Aquatic, Desert and light 150%; compare with `pdesk-design/restart/captures/ovr3-*` → AC-1
+
+### Value sourcing
+- [ ] Colors: set apps dark and Windows light → the overview is dark (it follows the apps' mode) → AC-2
+- [ ] Fade length: `[overview] fade_ms = 1000` fades slowly; `0` is instant; `1500` resets to 250 with a note in the settings page's Overview section → AC-7
+- [ ] Speed clock: open the overview while des-k is busy (right after a screen change) → the logged time includes the wait → AC-8
+- [ ] Workspace chips: workspace 2's chip is #DDB43C, full on the shown tile, soft on the others → index tokens
+- [ ] Wallpaper: set Fit, then Fill, then Span on two screens → each tile matches its screen's desktop → AC-OVR-3
+- [ ] Narrator names: the words read equal the painted title and the app name the finder shows → AC-OVR-11
 ## Acceptance-criteria coverage
+- Slice 3: AC-OVR-1 to AC-OVR-11 the overview steps · AC-1 its render step · AC-2, AC-4, AC-5, AC-6, AC-7, AC-8 its theme, scaling, Narrator, fastest, fade time and speed steps
 - Slice 2: AC-FND-1 to AC-FND-9 the finder steps · AC-1 its render step · AC-2, AC-4, AC-5 its theme, scaling and Narrator steps
 - AC-1 render step · AC-2 theme steps · AC-4 corners, shadow, scaling · AC-5 and AC-IND-9 Narrator · AC-6 and AC-IND-8 `fastest` · AC-IND-1 to AC-IND-7 the card steps · AC-IND-10 is built in the settings page and first run slices (the drawing call exists: `indicator::draw_preview`)

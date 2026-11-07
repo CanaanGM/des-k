@@ -1,14 +1,14 @@
 // The drawing layer des-k's own windows share: the theme (Windows' light, dark or high contrast
 // colors, read once and checked again each second) and look B's tokens (spec 0017), the fonts and
 // icons, motion, the rounded popup, the Canvas that draws shapes through GDI+ and text through
-// GDI, the back buffer, plain GDI text for the overview, and the try_borrow accessors
-// for window state that a message can re-enter. Sizes on the Canvas are in dip (1/96 inch).
+// GDI, the back buffer, per pixel alpha popups, and the try_borrow accessors for window state
+// that a message can re-enter. Sizes on the Canvas are in dip (1/96 inch).
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::thread::LocalKey;
 use windows::Win32::{
-    Foundation::{COLORREF, ERROR_SUCCESS, HWND, LPARAM, RECT, SIZE, WPARAM},
+    Foundation::{COLORREF, ERROR_SUCCESS, HWND, LPARAM, POINT, SIZE, WPARAM},
     Graphics::{
         Dwm::{
             DWMWA_BORDER_COLOR, DWMWA_TRANSITIONS_FORCEDISABLED, DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
@@ -422,9 +422,6 @@ pub(crate) fn border(h: HWND, c: u32) {
     unsafe { let _ = DwmSetWindowAttribute(h, DWMWA_BORDER_COLOR, &c as *const COLORREF as _, size_of::<COLORREF>() as u32); }
 }
 
-/// The overview's chosen color until its look B slice (spec 0017).
-pub(crate) const ACCENT: COLORREF = COLORREF(0x00FA_A560); // RGB(96, 165, 250), COLORREF is 0x00BBGGRR
-
 pub(crate) fn cref(c: u32) -> COLORREF {
     COLORREF((c & 0xFF) << 16 | (c & 0xFF00) | (c >> 16 & 0xFF))
 }
@@ -621,6 +618,7 @@ pub(crate) struct Canvas<'a> {
     pub(crate) s: f32,
     pub(crate) t: Theme,
     fonts: &'a Fonts,
+    o: (i32, i32), // the pixel drawn at the DC's 0, 0 (see `shifted`)
 }
 
 impl Drop for Canvas<'_> {
@@ -643,12 +641,22 @@ impl<'a> Canvas<'a> {
                 }
             }
         }
-        Canvas { dc, g, draw, s, t, fonts }
+        Canvas { dc, g, draw, s, t, fonts, o: (0, 0) }
+    }
+
+    /// The same canvas drawing the part of the picture whose top left pixel is x, y: a back
+    /// buffer that holds only the part to repaint.
+    pub(crate) fn shifted(mut self, x: i32, y: i32) -> Canvas<'a> {
+        if !self.g.is_null() {
+            unsafe { gp::GdipTranslateWorldTransform(self.g, -x as f32, -y as f32, gp::MatrixOrderPrepend) };
+        }
+        self.o = (x, y);
+        self
     }
 
     /// The same canvas, measuring only: a layout can size a part before drawing it.
     pub(crate) fn measuring(&self) -> Canvas<'a> {
-        Canvas { dc: self.dc, g: std::ptr::null_mut(), draw: false, s: self.s, t: self.t, fonts: self.fonts }
+        Canvas { dc: self.dc, g: std::ptr::null_mut(), draw: false, s: self.s, t: self.t, fonts: self.fonts, o: self.o }
     }
 
     pub(crate) fn shapes(&self) -> bool {
@@ -706,7 +714,7 @@ impl<'a> Canvas<'a> {
             SetTextColor(dc, cref(color));
             SetBkMode(dc, TRANSPARENT);
             let top = (y * self.s + (lh * self.s - tm.tmHeight as f32) / 2.0).round() as i32;
-            let _ = TextOutW(dc, (x * self.s).round() as i32, top, &wide);
+            let _ = TextOutW(dc, (x * self.s).round() as i32 - self.o.0, top - self.o.1, &wide);
             SelectObject(dc, old);
         });
     }
@@ -821,6 +829,21 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// Like `stroke_rr`, dotted or dashed: high contrast's marks, a mouse action's key cap.
+    pub(crate) fn stroke_dash(&self, bx: Bx, r: f32, width: f32, argb: u32, style: gp::DashStyle) {
+        if !self.shapes() {
+            return;
+        }
+        let (p, pen) = (self.rr_path(bx, r), self.pen(argb, width));
+        unsafe {
+            gp::GdipSetPenLineCap197819(pen, gp::LineCapFlat, gp::LineCapFlat, gp::DashCapFlat);
+            gp::GdipSetPenDashStyle(pen, style);
+            gp::GdipDrawPath(self.g, pen, p);
+            gp::GdipDeletePen(pen);
+            gp::GdipDeletePath(p);
+        }
+    }
+
     pub(crate) fn circle(&self, cx: f32, cy: f32, r: f32, fill: Option<u32>, edge: Option<(u32, f32)>) {
         if !self.shapes() {
             return;
@@ -874,12 +897,38 @@ impl<'a> Canvas<'a> {
         self.fill_rr((x, (y * s).round() / s, w, 1.0 / s), 0.0, argb);
     }
 
+    /// `p` in a box with round corners `r`, its top left at the box's; `p` is already the
+    /// box's size in pixels, so nothing is scaled.
+    pub(crate) fn picture_rr(&self, (x, y, w, h): Bx, r: f32, p: &Picture) {
+        if !self.shapes() || p.px.len() != (p.w * p.h) as usize {
+            return;
+        }
+        unsafe {
+            let mut image = std::ptr::null_mut();
+            // Reads p's pixels in place; dropped before p can be.
+            gp::GdipCreateBitmapFromScan0(p.w, p.h, p.w * 4, ARGB, Some(p.px.as_ptr().cast()), &mut image);
+            if image.is_null() {
+                return;
+            }
+            let mut brush = std::ptr::null_mut();
+            gp::GdipCreateTexture(image.cast(), gp::WrapModeClamp, &mut brush);
+            if !brush.is_null() {
+                gp::GdipTranslateTextureTransform(brush, (x * self.s).round(), (y * self.s).round(), gp::MatrixOrderAppend);
+                let path = self.rr_path((x, y, w, h), r);
+                gp::GdipFillPath(self.g, brush.cast(), path);
+                gp::GdipDeletePath(path);
+                gp::GdipDeleteBrush(brush.cast());
+            }
+            gp::GdipDisposeImage(image.cast());
+        }
+    }
+
     /// An app's icon, `size` dip square, at x, y.
     pub(crate) fn icon(&self, x: f32, y: f32, size: f32, icon: HICON) {
         if !self.draw || icon.is_invalid() {
             return;
         }
-        let (px, py, side) = ((x * self.s).round() as i32, (y * self.s).round() as i32, (size * self.s).round() as i32);
+        let (px, py, side) = ((x * self.s).round() as i32 - self.o.0, (y * self.s).round() as i32 - self.o.1, (size * self.s).round() as i32);
         self.with_dc(|dc| unsafe { let _ = DrawIconEx(dc, px, py, icon, side, side, 0, None, DI_NORMAL); });
     }
 
@@ -910,12 +959,57 @@ pub(crate) fn buffered(dc: HDC, x: i32, y: i32, w: i32, h: i32, f: impl FnOnce(H
     }
 }
 
-/// One line of GDI text in `r`, cut with … when too long: the overview's.
-pub(crate) fn text(dc: HDC, s: &str, mut r: RECT, color: COLORREF, align: DRAW_TEXT_FORMAT) {
-    let mut wide: Vec<u16> = s.encode_utf16().collect();
+// GDI+'s pixel formats (gdipluspixelformats.h), which the windows crate leaves out.
+const ARGB: i32 = 0x0026_200A;
+const PARGB: i32 = 0x000E_200B;
+
+/// A picture in pixels, top row first, each 0xAARRGGBB (opaque): a tile's wallpaper.
+pub(crate) struct Picture {
+    pub(crate) w: i32,
+    pub(crate) h: i32,
+    pub(crate) px: Vec<u32>,
+}
+
+/// Paints a popup whose every pixel has its own opacity (`UpdateLayeredWindow`), w by h px at
+/// x, y on screen: `f` draws shapes on a clear image. Shapes only: GDI text would come out
+/// see through, since GDI writes no alpha.
+pub(crate) fn layered(hwnd: HWND, (x, y, w, h): (i32, i32, i32, i32), s: f32, t: Theme, f: impl FnOnce(&Canvas)) {
+    if GDIPLUS.get() != Some(true) || w <= 0 || h <= 0 {
+        return;
+    }
     unsafe {
-        SetTextColor(dc, color);
-        DrawTextW(dc, &mut wide, &mut r, align | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+        let screen = GetDC(None);
+        let mem = CreateCompatibleDC(Some(screen));
+        let info = BITMAPINFO { bmiHeader: BITMAPINFOHEADER { biSize: size_of::<BITMAPINFOHEADER>() as u32, biWidth: w, biHeight: -h, biPlanes: 1, biBitCount: 32, ..Default::default() }, ..Default::default() };
+        let mut bits = std::ptr::null_mut();
+        let Ok(bmp) = CreateDIBSection(Some(mem), &info, DIB_RGB_COLORS, &mut bits, None, 0) else {
+            let _ = DeleteDC(mem);
+            ReleaseDC(None, screen);
+            return;
+        };
+        let old = SelectObject(mem, bmp.into());
+        let mut image = std::ptr::null_mut();
+        gp::GdipCreateBitmapFromScan0(w, h, w * 4, PARGB, Some(bits.cast_const().cast()), &mut image);
+        let mut g = std::ptr::null_mut();
+        if !image.is_null() {
+            gp::GdipGetImageGraphicsContext(image.cast(), &mut g);
+        }
+        if !g.is_null() {
+            gp::GdipSetSmoothingMode(g, gp::SmoothingModeAntiAlias);
+            gp::GdipSetPixelOffsetMode(g, gp::PixelOffsetModeHalf);
+            let fonts = fonts(s);
+            f(&Canvas { dc: mem, g, draw: true, s, t, fonts: &fonts, o: (0, 0) }); // its drop deletes g
+            let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8, ..Default::default() };
+            let (at, size, from) = (POINT { x, y }, SIZE { cx: w, cy: h }, POINT::default());
+            let _ = UpdateLayeredWindow(hwnd, Some(screen), Some(&at), Some(&size), Some(mem), Some(&from), COLORREF(0), Some(&blend), ULW_ALPHA);
+        }
+        if !image.is_null() {
+            gp::GdipDisposeImage(image.cast());
+        }
+        SelectObject(mem, old);
+        let _ = DeleteObject(bmp.into());
+        let _ = DeleteDC(mem);
+        ReleaseDC(None, screen);
     }
 }
 
