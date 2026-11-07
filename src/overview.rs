@@ -1882,7 +1882,7 @@ fn chip(c: &Canvas, cx: f32, top: f32, ws: usize, full: bool) {
     let w = (tw + 10.0).max(20.0);
     let at = (cx - w / 2.0, top, w, CHIP_H);
     let (fill, edge, ink) = match () {
-        _ if full => (color, (b.ws_edge > 0.0).then(|| mix(color, 0, b.ws_edge)), b.on_ws),
+        _ if full => (color, (b.ws_edge > 0.0).then(|| mix(color, 0, b.ws_edge)), b.on_ws[ws.min(8)]),
         _ if hc => (b.card, Some(b.tx), b.tx),
         _ => (mix(b.card, color, 0.4), Some(mix(b.card, color, 0.7)), b.tx),
     };

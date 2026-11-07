@@ -66,11 +66,12 @@ pub enum Section {
     Indicator,
     Restore,
     Overview,
+    Colors,
     Motion,
     Touchpad,
 }
 
-const SECTIONS: [Section; 7] = [Section::Workspaces, Section::Shortcuts, Section::Indicator, Section::Restore, Section::Overview, Section::Motion, Section::Touchpad];
+const SECTIONS: [Section; 8] = [Section::Workspaces, Section::Shortcuts, Section::Indicator, Section::Restore, Section::Overview, Section::Colors, Section::Motion, Section::Touchpad];
 
 impl Section {
     fn name(self) -> &'static str {
@@ -80,6 +81,7 @@ impl Section {
             Section::Indicator => "Indicator",
             Section::Restore => "Restore",
             Section::Overview => "Overview",
+            Section::Colors => "Colors",
             Section::Motion => "Motion",
             Section::Touchpad => "Touchpad",
         }
@@ -92,6 +94,7 @@ impl Section {
             Section::Indicator => "\u{E712}",
             Section::Restore => "\u{E777}",
             Section::Overview => "\u{E7C4}",
+            Section::Colors => "\u{E790}",
             Section::Motion => "\u{EC4A}",
             Section::Touchpad => "\u{EFA5}",
         }
@@ -104,6 +107,7 @@ impl Section {
             Section::Indicator => "Shows the workspace for a moment after a switch, a send or a pin, and when a screen comes or goes.",
             Section::Restore => "Puts windows back on their workspaces after a reboot or sign-in.",
             Section::Overview => "Every workspace of every screen at once.",
+            Section::Colors => "des-k's accent and each workspace's color, in every des-k window. One color serves light and dark.",
             Section::Motion => "How des-k's fades and moves play. Windows' own Animation effects setting doesn't change them.",
             Section::Touchpad => "What 3- and 4-finger gestures do on a precision touchpad.",
         }
@@ -118,6 +122,7 @@ fn home(key: &str) -> Option<Section> {
         "indicator" => Section::Indicator,
         "restore" => Section::Restore,
         "overview" => Section::Overview,
+        "colors" => Section::Colors,
         "fastest" => Section::Motion,
         "touchpad" | "gesture" => Section::Touchpad,
         _ => return None,
@@ -497,6 +502,151 @@ fn fix_line(key: &str, s: &Settings) -> String {
     }
 }
 
+// ---- Colors and Where it shows (spec 0020) ----
+
+pub(crate) const ACCENT: &str = "colors.accent";
+pub(crate) const WS_KEYS: [&str; 9] = ["colors.ws1", "colors.ws2", "colors.ws3", "colors.ws4", "colors.ws5", "colors.ws6", "colors.ws7", "colors.ws8", "colors.ws9"];
+/// des-k's own workspace colors by name, as a default row says them.
+const WS_NAMES: [&str; 9] = ["blue", "gold", "green", "violet", "orange", "cyan", "pink", "taupe", "red"];
+
+// The place rows' keys; MODE is the page's Spots or Custom, never a key in the file.
+pub(crate) const SPOT: &str = "indicator.spot";
+pub(crate) const GAP: &str = "indicator.gap";
+pub(crate) const ACROSS: &str = "indicator.x";
+pub(crate) const DOWN: &str = "indicator.y";
+const MODE: &str = "indicator.mode";
+const SPOT_NAMES: [&str; 10] = ["Top left", "Top", "Top right", "Left", "Center", "Right", "Bottom left", "Bottom", "Bottom right", "Custom"];
+
+fn is_place(key: &str) -> bool {
+    matches!(key, SPOT | GAP | ACROSS | DOWN | MODE)
+}
+
+/// A problem a row of Colors or Where it shows shows itself, so no section note repeats it.
+fn shown_in_row(key: &str) -> bool {
+    key == ACCENT || WS_KEYS.contains(&key) || is_place(key) || (key.starts_with("indicator.screens.\"") && key.matches('"').count() == 2)
+}
+
+fn ws_index(key: &str) -> Option<usize> {
+    WS_KEYS.iter().position(|k| *k == key)
+}
+
+fn path_of(key: &str) -> Vec<String> {
+    key.split('.').map(String::from).collect()
+}
+
+/// What a hex box saves (AC-12): a workspace's own des-k color takes its key out, so the file
+/// only holds what differs.
+pub(crate) fn color_edit(key: &'static str, c: u32) -> Edit {
+    match ws_index(key) {
+        Some(i) if c == ui::WS[i] => Edit::Remove(path_of(key)),
+        _ => Edit::At(path_of(key), format!("#{c:06X}").into()),
+    }
+}
+
+/// Six hex digits as a color.
+fn hex_color(digits: &str) -> Option<u32> {
+    (digits.len() == 6).then(|| u32::from_str_radix(digits, 16).ok()).flatten()
+}
+
+/// What a paste puts in a hex box: exactly six hex digits once spaces and a leading # are
+/// trimmed, in upper case; anything else is refused.
+pub(crate) fn pasted(text: &str) -> Option<String> {
+    let t = text.trim();
+    let t = t.strip_prefix('#').unwrap_or(t).trim();
+    (t.len() == 6 && t.chars().all(|c| c.is_ascii_hexdigit())).then(|| t.to_ascii_uppercase())
+}
+
+fn spot_index(spot: settings::Spot) -> usize {
+    settings::SPOTS.iter().position(|(_, s)| *s == spot).unwrap_or(4)
+}
+
+/// A place key's name inside a table: "spot", "gap", "x" or "y".
+fn leaf(key: &str) -> &str {
+    key.rsplit('.').next().unwrap_or(key)
+}
+
+/// A place key's value as a number: a spot by its place in SPOTS.
+fn pos_get(p: settings::Pos, key: &str) -> f64 {
+    match leaf(key) {
+        "spot" => spot_index(p.spot) as f64,
+        "gap" => p.gap as f64,
+        "x" => p.x,
+        _ => p.y,
+    }
+}
+
+fn ov_get(o: &settings::PosOverride, key: &str) -> Option<f64> {
+    match leaf(key) {
+        "spot" => o.spot.map(|s| spot_index(s) as f64),
+        "gap" => o.gap.map(f64::from),
+        "x" => o.x,
+        _ => o.y,
+    }
+}
+
+fn place_value(key: &str, v: f64) -> toml_edit::Value {
+    match leaf(key) {
+        "spot" => settings::SPOTS[v as usize].0.into(),
+        _ if v.fract() == 0.0 => (v as i64).into(),
+        _ => v.into(),
+    }
+}
+
+/// The place a screen uses: its own keys over All screens' (spec 0020 AC-9).
+fn pos_of(s: &Settings, screen: Option<&str>) -> settings::Pos {
+    let d = s.indicator_pos;
+    screen.and_then(|id| s.indicator_screens.get(id)).map_or(d, |o| o.over(d))
+}
+
+/// What setting a place key to `v` writes, None when nothing changes. All screens writes
+/// [indicator]. A screen writes its own table, but a value equal to All screens' takes that
+/// key out instead, so the screen follows All screens again; never the table's last key, so
+/// walking the spots or stepping a number can't drop a kept place.
+pub(crate) fn place_edit(s: &Settings, screen: Option<&str>, key: &str, v: f64) -> Option<Edit> {
+    if pos_get(pos_of(s, screen), key) == v && screen.is_none_or(|id| s.indicator_screens.get(id).is_none_or(|o| ov_get(o, key).is_some())) {
+        return None;
+    }
+    let Some(id) = screen else { return Some(Edit::At(path_of(key), place_value(key, v))) };
+    let path = vec!["indicator".to_string(), "screens".into(), id.to_string(), leaf(key).to_string()];
+    let all = pos_get(s.indicator_pos, key);
+    let o = s.indicator_screens.get(id);
+    let own = o.and_then(|o| ov_get(o, key));
+    let keys = o.map_or(0, |o| [o.spot.is_some(), o.gap.is_some(), o.x.is_some(), o.y.is_some()].iter().filter(|b| **b).count());
+    match () {
+        _ if v != all => Some(Edit::At(path, place_value(key, v))),
+        _ if own.is_none() => None,  // it follows All screens already
+        _ if keys > 1 => Some(Edit::Remove(path)),
+        _ if own == Some(v) => None, // its last key, kept
+        _ => Some(Edit::At(path, place_value(key, v))),
+    }
+}
+
+/// A line of the screen chooser: All screens (no id), then the screens left to right, then
+/// remembered ones not plugged in, then ids in the file des-k never saw.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct ScreenChoice {
+    pub(crate) id: Option<String>,
+    pub(crate) name: String,
+    pub(crate) side: &'static str,
+    pub(crate) present: Option<usize>, // its place in View::present
+}
+
+pub(crate) fn screen_choices(view: &crate::ws::View, s: &Settings) -> Vec<ScreenChoice> {
+    let own = |id: &str| if s.indicator_screens.contains_key(id) { "Own place" } else { "" };
+    let mut out = vec![ScreenChoice { id: None, name: "All screens".into(), side: "", present: None }];
+    for (i, p) in view.present.iter().enumerate() {
+        out.push(ScreenChoice { id: Some(p.id.clone()), name: p.name.clone(), side: own(&p.id), present: Some(i) });
+    }
+    for w in view.waiting.iter().filter(|w| !view.present.iter().any(|p| p.id == w.id)) {
+        out.push(ScreenChoice { id: Some(w.id.clone()), name: w.name.clone(), side: "Not plugged in", present: None });
+    }
+    let unknown: Vec<&String> = s.indicator_screens.keys().filter(|id| !out.iter().any(|c| c.id.as_deref() == Some(id.as_str()))).collect();
+    for id in unknown {
+        out.push(ScreenChoice { id: Some(id.clone()), name: id.clone(), side: "Unknown screen", present: None });
+    }
+    out
+}
+
 // ---- What the page shows of des-k and Windows ----
 
 /// What the recorder is recording for (spec 0012 AC-7, AC-12).
@@ -522,6 +672,7 @@ enum Link {
     Skip, // the Skip animations switch
     Indicator,
     Overview,
+    Workspaces,
 }
 
 /// What a touchpad note's button does.
@@ -566,6 +717,13 @@ enum Ctl {
     Pad(Pad),
     Dismiss,     // the save error banner
     DismissEdit, // the hand edit banner
+    Hex(&'static str), // a color's hex box, by its key: ACCENT or one of WS_KEYS (spec 0020)
+    Screens,           // Where it shows' screen chooser: opens its menu
+    ScreenItem(usize), // a line of the open screen menu
+    SameAll,           // Same as all screens: takes out the chosen screen's table
+    Picture,           // focus only: the place picture is one stop; Left and Right move
+    Spot(usize),       // a third of the picture across and down, 0 to 8 in reading order
+    ShowThere,         // Show it there: the real indicator on the chosen screen
 }
 
 impl Ctl {
@@ -573,6 +731,8 @@ impl Ctl {
         match self {
             Ctl::Toggle(k) | Ctl::Minus(k) | Ctl::Plus(k) | Ctl::Stepper(k) | Ctl::Choice(k, _) | Ctl::Pick(k) | Ctl::Reset(k) => Some(k),
             Ctl::KeyRow(k) | Ctl::Key(k, _) | Ctl::KeyX(k, _) | Ctl::AddKey(k) | Ctl::WinSide(k, _) | Ctl::StopRec(k) | Ctl::Move(k) | Ctl::Cancel(k) => Some(k),
+            Ctl::Hex(k) => Some(k),
+            Ctl::Picture | Ctl::Spot(_) => Some(SPOT),
             _ => None,
         }
     }
@@ -584,6 +744,7 @@ impl Ctl {
             self,
             Ctl::Toggle(_) | Ctl::Minus(_) | Ctl::Plus(_) | Ctl::Choice(..) | Ctl::Reset(_) | Ctl::LastTile | Ctl::TileAdd | Ctl::TileRemove | Ctl::Forget(_)
                 | Ctl::KeyRow(_) | Ctl::Key(..) | Ctl::KeyX(..) | Ctl::AddKey(_) | Ctl::WinSide(..) | Ctl::Move(_) | Ctl::Picker(_) | Ctl::Item(_) | Ctl::Pad(Pad::ReadOn | Pad::GiveBack)
+                | Ctl::Hex(_) | Ctl::SameAll | Ctl::Picture | Ctl::Spot(_)
         )
     }
 
@@ -593,6 +754,7 @@ impl Ctl {
             Ctl::Minus(k) | Ctl::Plus(k) => Ctl::Stepper(k),
             Ctl::Choice(k, _) => Ctl::Pick(k),
             Ctl::LastTile | Ctl::TileAdd | Ctl::TileRemove => Ctl::Tiles,
+            Ctl::Spot(_) => Ctl::Picture,
             Ctl::Key(k, _) | Ctl::KeyX(k, _) | Ctl::AddKey(k) | Ctl::WinSide(k, _) => Ctl::KeyRow(k),
             c => c,
         }
@@ -832,6 +994,22 @@ struct Win {
     pics: Pics,
     edited: Option<(String, Vec<String>)>, // the last hand edit's banner: its time and lines
     tree: Tree,
+    hexes: Vec<Hex>,              // hex boxes holding digits not saved yet (spec 0020)
+    own: Option<u32>,             // the last own accent while the page is open (AC-12)
+    screen: Option<String>,       // the screen Where it shows changes, by id; None: All screens
+    chooser: Option<(Bx, usize)>, // the open screen menu: the chooser it opened from, its focused line
+    dragging: Option<(f64, f64)>, // Custom: where a drag on the picture has the card, in percent
+}
+
+/// A hex box being typed in: its digits, the caret and the other end of the selection, and
+/// the line under its row.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct Hex {
+    pub(crate) key: &'static str,
+    pub(crate) digits: String,
+    pub(crate) caret: usize,
+    pub(crate) anchor: usize,
+    pub(crate) line: Option<&'static str>,
 }
 
 thread_local! {
@@ -1156,16 +1334,16 @@ impl Ctx<'_, '_> {
     /// A card's tinted header: its title, and a caption on the right. `n`: the fingers' circle.
     fn header(&mut self, y: f32, title: &str, n: Option<u8>, cap: &str) -> f32 {
         let b = self.c.t.b;
-        let tint = if self.c.t.hc { b.card } else { mix(b.card, b.acc, 0.09) };
+        let tint = if self.c.t.hc { b.card } else { mix(b.card, b.acc_a, 0.09) };
         self.c.fill_rr((X0 + 1.0, y + 1.0, self.cw - 2.0, 36.0), 7.0, op(tint));
         self.c.fill_rr((X0 + 1.0, y + 20.0, self.cw - 2.0, 17.0), 0.0, op(tint));
         self.c.rule(X0 + 1.0, y + 37.0, self.cw - 2.0, op(b.line));
         let mut x = X0 + 16.0;
         if let Some(n) = n {
-            self.c.circle(x + 11.0, y + 19.0, 11.0, Some(op(b.acc)), None);
+            self.c.circle(x + 11.0, y + 19.0, 11.0, Some(op(b.acc_b)), None);
             let d = n.to_string();
             let dw = self.c.width(&d, F::SmallBold);
-            self.c.text(x + 11.0 - dw / 2.0, y + 8.0, 22.0, &d, F::SmallBold, b.on_acc);
+            self.c.text(x + 11.0 - dw / 2.0, y + 8.0, 22.0, &d, F::SmallBold, b.on_acc_b);
             x += 32.0;
         }
         self.c.text(x, y + 8.0, 22.0, title, F::Bold, b.tx);
@@ -1196,7 +1374,8 @@ impl Ctx<'_, '_> {
         let beside = bw > 0.0 && bw < w * 0.4;
         let tx = x + 28.0;
         let tw = if beside { w - 28.0 - bw - 4.0 } else { w - 28.0 };
-        let mut h = self.c.para(tx, y, tw, 20.0, &[(&n.title, F::Bold, b.tx)]);
+        // No title: the caption alone, on the icon's line (a hex box's typing line).
+        let mut h = if n.title.is_empty() { 2.0 } else { self.c.para(tx, y, tw, 20.0, &[(&n.title, F::Bold, b.tx)]) };
         if !n.lines.is_empty() {
             h += self.caption(tx, y + h, tw, &n.lines);
         }
@@ -1336,7 +1515,7 @@ impl Ctx<'_, '_> {
     fn chip(&mut self, x: f32, y: f32, icon: &str, text: &str) {
         let b = self.c.t.b;
         let w = 10.0 + 12.0 + 6.0 + self.c.width(text, F::Small) + 10.0;
-        let (fill, edge, ic) = if self.c.t.hc { (b.card, b.tx, b.tx) } else { (mix(b.card, b.acc, 0.10), mix(b.card, b.acc, 0.30), b.acc) };
+        let (fill, edge, ic) = if self.c.t.hc { (b.card, b.tx, b.tx) } else { (mix(b.card, b.acc_b, 0.10), mix(b.card, b.acc_b, 0.30), b.acc_b) };
         self.c.boxed((x, y, w, 24.0), 12.0, fill, Some(edge));
         self.icon(x + 10.0, y, 24.0, icon, F::IconSmall, ic);
         self.c.text(x + 28.0, y, 24.0, text, F::Small, b.tx);
@@ -1345,7 +1524,7 @@ impl Ctx<'_, '_> {
     /// This section's problems no row owns (a key des-k turned off), above its cards.
     fn section_notes(&mut self, sec: Section, y: f32) -> f32 {
         let mut h = 0.0;
-        let owned = |k: &str| find_row(k).is_some() || shortcut(k).is_some() || k == "workspaces";
+        let owned = |k: &str| find_row(k).is_some() || shortcut(k).is_some() || k == "workspaces" || shown_in_row(k);
         let list: Vec<&Problem> = settings::problems().iter().filter(|p| home(&p.key) == Some(sec) && !owned(&p.key)).collect();
         for p in list {
             let fix = match sec {
@@ -1364,8 +1543,12 @@ impl Ctx<'_, '_> {
         h += match sec {
             Section::Workspaces => self.card(y + h, |c, y| c.workspaces(y)),
             Section::Shortcuts => self.shortcuts(y + h),
-            Section::Indicator => self.card(y + h, |c, y| c.indicator(y)),
             Section::Restore => self.card(y + h, |c, y| c.restore(y)),
+            Section::Indicator => {
+                let first = self.card(y + h, |c, y| c.indicator(y)) + 12.0;
+                first + self.card(y + h + first, |c, y| c.place(y))
+            }
+            Section::Colors => self.colors(y + h),
             Section::Overview => self.card(y + h, |c, y| {
                 let mut h = c.overview_art(y);
                 for (i, key) in ["overview.labels", "overview.animation", "overview.fade_ms", "overview.live"].into_iter().enumerate() {
@@ -1412,7 +1595,7 @@ impl Ctx<'_, '_> {
         let hh = self.measured(|c| c.row(0.0, "Workspaces per screen", &cap, (0.0, 0.0), |_, _, _| {}, note.as_ref()));
         if note.is_some() {
             let b = self.c.t.b;
-            let tint = if self.c.t.hc { b.card } else { mix(b.card, b.acc, 0.06) };
+            let tint = if self.c.t.hc { b.card } else { mix(b.card, b.acc_a, 0.06) };
             self.c.fill_rr((X0 + 1.0, y + h + 1.0, self.cw - 2.0, hh - 1.0), 0.0, op(tint));
         }
         h += self.row(y + h, "Workspaces per screen", &cap, (0.0, 0.0), |_, _, _| {}, note.as_ref());
@@ -1485,7 +1668,6 @@ impl Ctx<'_, '_> {
         let n = counts.len();
         let tw = if n > 6 { 40.0 } else { 48.0 };
         let away = now.is_none();
-        let mark = ui::LIGHT.b.card;
         for (i, &k) in counts.iter().enumerate() {
             let tx = x + i as f32 * (tw + 6.0);
             let bx = (tx, y, tw, 34.0);
@@ -1494,7 +1676,7 @@ impl Ctx<'_, '_> {
                 _ if away => (b.track, b.tx2),
                 _ if t.hc && cur => (b.hi, b.on_acc),
                 _ if t.hc => (b.card, b.tx),
-                _ => (b.ws[i], b.on_ws),
+                _ => (b.ws[i], b.on_ws[i]),
             };
             if cur && !t.hc {
                 self.c.fill_rr((tx - 4.0, y - 4.0, tw + 8.0, 42.0), 8.0, op(b.tx));
@@ -1509,7 +1691,7 @@ impl Ctx<'_, '_> {
             let marks = k.min(3);
             for m in 0..marks {
                 let mx = tx + tw - 4.0 - (marks - m) as f32 * 10.0 + 2.0;
-                let col = if away { b.tx3 } else if t.hc { if cur { b.on_acc } else { b.tx } } else { mark };
+                let col = if away { b.tx3 } else if t.hc { if cur { b.on_acc } else { b.tx } } else { b.mk_ws[i] };
                 self.c.fill_rr((mx, y + 4.0, 8.0, 10.0), 2.0, ui::alpha(col, if away || t.hc { 1.0 } else { 0.9 }));
             }
             if gone.contains(&i) && !away {
@@ -1596,7 +1778,7 @@ impl Ctx<'_, '_> {
             }
             let a = self.active_on(&s.device);
             self.c.fill_rr((x, yy, w, h), 6.0, op(b.bez));
-            let (fill, ink) = if self.c.t.hc { (b.card, b.tx) } else { (b.ws[a.min(8)], b.on_ws) };
+            let (fill, ink) = if self.c.t.hc { (b.card, b.tx) } else { (b.ws[a.min(8)], b.on_ws[a.min(8)]) };
             self.c.fill_rr((x + 2.0, yy + 2.0, w - 4.0, h - 4.0), 4.0, op(fill));
             let name = self.name_of(s);
             if h >= 45.0 && self.c.width(&name, F::Small) <= w - 16.0 {
@@ -1738,8 +1920,8 @@ impl Ctx<'_, '_> {
         self.c.stroke_rr((tx(you) - 2.0, y0 - 2.0, tw + 4.0, th + 4.0), 5.0, 2.0, op(b.tx));
         self.c.circle(tx(you) + tw / 2.0, y + 5.0, 3.5, Some(op(b.tx)), None);
         if kind > 0 {
-            self.c.stroke_dash((tx(1) + 9.0, y0 + 6.0, tw - 18.0, th - 12.0), 2.0, 1.0, op(b.on_ws), DashStyleDash);
-            self.c.boxed((tx(2) + 9.0, y0 + 6.0, tw - 18.0, th - 12.0), 2.0, ui::LIGHT.b.card, Some(b.on_ws));
+            self.c.stroke_dash((tx(1) + 9.0, y0 + 6.0, tw - 18.0, th - 12.0), 2.0, 1.0, op(b.on_ws[1]), DashStyleDash);
+            self.c.boxed((tx(2) + 9.0, y0 + 6.0, tw - 18.0, th - 12.0), 2.0, ui::LIGHT.b.card, Some(b.on_ws[2]));
         }
         let (a, z, base) = (tx(1) + tw / 2.0, tx(2) + tw / 2.0, y0 + th + 6.0);
         let pts: Vec<(f32, f32)> = (0..=10).map(|j| {
@@ -1915,7 +2097,7 @@ impl Ctx<'_, '_> {
         let top = lh.max(kh).max(ROW - 16.0);
         let body_h = 8.0 + top + note.as_ref().map_or(0.0, |n| 6.0 + self.measured(|c| c.in_note(0.0, 0.0, c.cw - 32.0, n))) + 8.0;
         if active {
-            let tint = if self.c.t.hc { b.card } else { mix(b.card, b.acc, 0.06) };
+            let tint = if self.c.t.hc { b.card } else { mix(b.card, b.acc_a, 0.06) };
             self.c.fill_rr((X0 + 1.0, y + 0.5, self.cw - 2.0, body_h - 1.0), 0.0, op(tint));
         }
         wells(self, y + 8.0 + (top - kh) / 2.0);
@@ -2031,6 +2213,553 @@ impl Ctx<'_, '_> {
         h += 4.0 + 22.0 + 8.0 + 6.0 + 16.0 + 14.0;
         self.sep(y + h);
         h + self.setting("restore.minutes", y + h)
+    }
+
+    // ---- Where it shows (spec 0020 AC-13) ----
+
+    /// The indicator's place, for All screens or one screen: the chooser, the picture with
+    /// Spots or Custom, the distance, and Across and Down for Custom.
+    fn place(&mut self, y: f32) -> f32 {
+        let b = self.c.t.b;
+        let (choices, i) = chosen(self.w, self.s);
+        let ch = choices[i].clone();
+        self.header(y, "Where it shows", None, "");
+        let (lead, who) = match &ch.id {
+            None => ("For ", "all screens".to_string()),
+            Some(_) => ("For ", ch.name.clone()),
+        };
+        let rw = self.c.width(lead, F::Small) + self.c.width(&who, F::SmallBold);
+        self.c.para(X0 + self.cw - 16.0 - rw, y + 11.0, rw + 1.0, 16.0, &[(lead, F::Small, b.tx2), (&who, F::SmallBold, b.tx)]);
+        let mut h = 38.0;
+        if choices.len() > 2 {
+            h += self.chooser_row(y + h, &choices, i);
+            self.sep(y + h);
+        }
+        let id = ch.id.as_deref();
+        h += self.place_row(y + h, &ch);
+        self.sep(y + h);
+        h += self.place_num(GAP, y + h, &ch);
+        if pos_of(self.s, id).spot == settings::Spot::Custom {
+            for key in [ACROSS, DOWN] {
+                self.sep(y + h);
+                h += self.place_num(key, y + h, &ch);
+            }
+        }
+        h
+    }
+
+    fn chooser_row(&mut self, y: f32, choices: &[ScreenChoice], i: usize) -> f32 {
+        let ch = &choices[i];
+        let mut cap = vec![];
+        match &ch.id {
+            None => {
+                cap.push(t("The place for every screen without its own."));
+                let named: Vec<String> = settings::problems()
+                    .iter()
+                    .filter_map(|p| p.key.strip_prefix("indicator.screens.\"")?.split('"').next().map(String::from))
+                    .filter_map(|id| choices.iter().find(|c| c.id.as_deref() == Some(id.as_str())).map(|c| c.name.clone()))
+                    .collect();
+                if let Some(n) = named.first() {
+                    cap.push(P::Why(format!(" {n} has a value des-k can't use.")));
+                }
+            }
+            Some(id) => {
+                let has = self.s.indicator_screens.contains_key(id);
+                cap.push(t(match (ch.side, has) {
+                    ("Not plugged in", _) => "Not plugged in. Its place is kept for when it's back.",
+                    ("Unknown screen", _) => "des-k hasn't seen this screen. Its place is kept.",
+                    (_, true) => "This screen has its own place.",
+                    _ => "This screen uses All screens' place.",
+                }));
+                if has {
+                    cap.push(P::Link(" Same as all screens".into(), Ctl::SameAll));
+                }
+            }
+        }
+        let pw = 240.0;
+        let name = ch.name.clone();
+        self.say(Ctl::Screens, UIA_ComboBoxControlTypeId, "Screen", "", false, (None, Some(name.clone())));
+        self.row(y, "Screen", &cap, (pw, 32.0), |c, x, y| c.screen_picker(x, y, pw, &name), None)
+    }
+
+    /// The chooser: the touchpad's picker, with a screen for its mark. Never greyed: it only
+    /// picks which place you see (live with the indicator off and in read only).
+    fn screen_picker(&mut self, x: f32, y: f32, w: f32, name: &str) {
+        let b = self.c.t.b;
+        let ctl = Ctl::Screens;
+        if self.w.chooser.is_some() {
+            self.field((x, y, w, 32.0), b.card, Some(b.acc));
+        } else {
+            let fill = if self.hovered(ctl) { mix(b.track, b.tx, 0.05) } else { b.track };
+            self.field((x, y, w, 32.0), fill, None);
+        }
+        self.icon(x + 10.0, y, 32.0, "\u{E7F4}", F::Icon, b.tx2);
+        let shown = self.c.fit(name, F::Body, w - 36.0 - 26.0);
+        self.c.text(x + 36.0, y, 32.0, &shown, F::Body, b.tx);
+        let cw = self.c.width(I_CHEV, F::IconTiny);
+        self.icon(x + w - 10.0 - cw, y, 32.0, I_CHEV, F::IconTiny, b.tx2);
+        self.ring((x, y, w, 32.0), 6.0, ctl);
+        self.hit(ctl, (x, y, w, 32.0), 1);
+    }
+
+    /// The words a place value is shown in: "Top right", "24 px", "50 %".
+    fn place_shown(key: &str, v: f64) -> String {
+        match leaf(key) {
+            "spot" => SPOT_NAMES.get(v as usize).copied().unwrap_or("Center").to_string(),
+            "gap" => format!("{} px", v.round()),
+            _ => format!("{} %", v.round()),
+        }
+    }
+
+    /// The problem key a place row shows: [indicator]'s, or the chosen screen table's.
+    fn place_problem(key: &str, id: Option<&str>) -> String {
+        id.map_or(key.to_string(), |id| format!("indicator.screens.\"{id}\".{}", leaf(key)))
+    }
+
+    /// The end of a place row's caption: All screens says its default and Reset; a screen says
+    /// All screens' value and Reset for a key it sets, From All screens for one it doesn't.
+    fn place_pieces(&self, key: &'static str, ch: &ScreenChoice) -> Vec<P> {
+        let bad = settings::problems().iter().any(|p| p.key == Self::place_problem(key, ch.id.as_deref()));
+        match &ch.id {
+            None => {
+                let (v, d) = (pos_get(self.s.indicator_pos, key), pos_get(DEFAULTS.indicator_pos, key));
+                if v == d && !bad {
+                    return vec![];
+                }
+                vec![t(format!(" Default: {}.", Self::place_shown(key, d))), P::Link(" Reset".into(), Ctl::Reset(key))]
+            }
+            Some(id) => {
+                let own = self.s.indicator_screens.get(id).and_then(|o| ov_get(o, key));
+                if own.is_none() && !bad {
+                    return vec![t(" From All screens.")];
+                }
+                vec![t(format!(" All screens: {}.", Self::place_shown(key, pos_get(self.s.indicator_pos, key)))), P::Link(" Reset".into(), Ctl::Reset(key))]
+            }
+        }
+    }
+
+    fn place_bad(&self, key: &str, ch: &ScreenChoice) -> Option<NoteSpec> {
+        let p = settings::problems().iter().find(|p| p.key == Self::place_problem(key, ch.id.as_deref()))?;
+        let (title, fix) = match &ch.id {
+            None => {
+                let d = Self::place_shown(key, pos_get(DEFAULTS.indicator_pos, key));
+                (format!("des-k can't use this value, so it uses {d}"), format!(" Change it here, or Reset puts {d} back in the file."))
+            }
+            Some(_) => (format!("des-k can't use this value, so {} uses All screens' {}", ch.name, Self::place_shown(key, pos_get(self.s.indicator_pos, key))), " Change it here, or Reset removes the line.".into()),
+        };
+        Some(NoteSpec { tone: Tone::Warn, icon: I_WARN, title, lines: vec![P::Mono(p.message.clone()), t(fix)], buttons: vec![], group: 1 })
+    }
+
+    /// Place: what it is in words, Spots or Custom, then the picture in the chosen screen's
+    /// shape with the name, size and Show it there under it. The picture is drawn first so it
+    /// is the stop before Spots or Custom (Reset after both).
+    fn place_row(&mut self, y: f32, ch: &ScreenChoice) -> f32 {
+        let b = self.c.t.b;
+        let id = ch.id.as_deref();
+        let na = !self.s.indicator_enabled;
+        let mut pos = pos_of(self.s, id);
+        if let (Some((x, yy)), settings::Spot::Custom) = (self.w.dragging, pos.spot) {
+            (pos.x, pos.y) = (x, yy);
+        }
+        let custom = pos.spot == settings::Spot::Custom;
+        let mut cap = vec![t(match pos.spot {
+            settings::Spot::Custom => format!("Its center {} % across and {} % down. Click or drag on the screen to move it; Spots goes to the nearest spot.", pos.x.round(), pos.y.round()),
+            settings::Spot::Center => "Center. Click a spot on the screen.".to_string(),
+            s => format!("{}, {} px from the edges. Click a spot on the screen.", SPOT_NAMES[spot_index(s)], pos.gap),
+        })];
+        if custom && self.kept_inside(ch, pos) {
+            cap.push(t(" des-k keeps the card inside the screen, so it sits a little further in."));
+        }
+        cap.extend(self.place_pieces(SPOT, ch));
+        let note = self.place_bad(SPOT, ch);
+        let words = ["Spots", "Custom"];
+        let size = (self.seg_w(&words), 28.0);
+        let rh = self.measured(|c| c.row(y, "Place", &cap, size, |_, _, _| {}, note.as_ref()));
+        let (full, work, scale, label) = self.shape(ch);
+        let pw = 352.0;
+        let ph = (pw * (full.bottom - full.top) as f32 / (full.right - full.left).max(1) as f32).clamp(120.0, 300.0);
+        let (wx, ww) = (X0 + 16.0, self.cw - 32.0);
+        let wy = y + rh;
+        let well_h = 16.0 + ph + 12.0 + 32.0 + 12.0;
+        self.c.boxed((wx, wy, ww, well_h), 6.0, b.track, Some(b.line));
+        self.picture((wx + (ww - pw) / 2.0, wy + 16.0, pw, ph), (full, work, scale), pos, na);
+        let help = format!("{} {}", SPOT_NAMES[spot_index(pos.spot)], "Left and Right move it.");
+        self.say(Ctl::Picture, UIA_SpinnerControlTypeId, "Place", &help, na || self.ro, (None, Some(SPOT_NAMES[spot_index(pos.spot)].into())));
+        self.say(Ctl::Pick(MODE), UIA_ComboBoxControlTypeId, "Spots or Custom", "", na || self.ro, (None, Some(words[custom as usize].into())));
+        self.row(y, "Place", &cap, size, |c, x, y| c.seg(x, y, &words, Some(custom as usize), na, |i| Ctl::Choice(MODE, i), Ctl::Pick(MODE)), note.as_ref());
+        let by = wy + 16.0 + ph + 12.0;
+        let sw = self.btn_w("Show it there", None);
+        let line = self.c.fit(&label, F::Small, ww - 24.0 - sw - 12.0);
+        self.c.text(wx + 12.0, by, 32.0, &line, F::Small, b.tx2);
+        let off = na || (ch.id.is_some() && ch.present.is_none());
+        self.button(Ctl::ShowThere, wx + ww - 12.0 - sw, by, "Show it there", None, off, 1);
+        rh + well_h + 16.0
+    }
+
+    /// The chosen screen's whole rect, work area, scale and the line under the picture. All
+    /// screens and a screen not plugged in: 16:9 with the taskbar at the bottom.
+    fn shape(&self, ch: &ScreenChoice) -> (RECT, RECT, f32, String) {
+        let full = RECT { left: 0, top: 0, right: 1920, bottom: 1080 };
+        let plain = (full, RECT { bottom: 1032, ..full }, 1.0);
+        let present = ch.present.and_then(|i| self.w.pics.view.present.get(i));
+        let (full, work, scale) = present.map_or(plain, |p| {
+            let sc = self.w.pics.screens.iter().find(|s| s.device == p.device).map_or(1.0, |s| s.scale as f32 / 100.0);
+            (p.full, p.work, sc)
+        });
+        let label = match (&ch.id, present) {
+            (None, _) => "Any screen: des-k fits the place to each one. Show it there uses the screen this window is on.".to_string(),
+            (Some(_), Some(p)) => format!("{} · {} × {} · {}%", ch.name, p.full.right - p.full.left, p.full.bottom - p.full.top, (scale * 100.0).round()),
+            (Some(_), None) if ch.side == "Unknown screen" => format!("{} · des-k hasn't seen this screen", ch.name),
+            (Some(_), None) => format!("{} · not plugged in", ch.name),
+        };
+        (full, work, scale, label)
+    }
+
+    /// Whether des-k moves a Custom card inward on this screen: indicator::place with the plain
+    /// card's size at the screen's scale, against the unclamped center. All screens asks for
+    /// the screen this window is on.
+    fn kept_inside(&self, ch: &ScreenChoice, pos: settings::Pos) -> bool {
+        let view = &self.w.pics.view;
+        let p = match &ch.id {
+            Some(_) => ch.present.and_then(|i| view.present.get(i)),
+            None => self.w.pics.here.as_ref().and_then(|d| view.present.iter().find(|p| p.device.trim_start_matches(r"\\.\") == d.as_str())),
+        };
+        let Some(p) = p else { return false };
+        let scale = self.w.pics.screens.iter().find(|s| s.device == p.device).map_or(1.0, |s| s.scale as f32 / 100.0);
+        let card = crate::indicator::Card::new(0, self.s.workspaces, None);
+        let (cw, chh) = crate::indicator::draw_preview(&self.c.measuring(), 0.0, 0.0, self.s.indicator_style, &card);
+        let (w, h) = ((cw * scale).round() as i32, (chh * scale).round() as i32);
+        let (x, y) = crate::indicator::place(p.work, w, h, pos, scale);
+        let r = p.work;
+        let ux = r.left as f64 + pos.x / 100.0 * (r.right - r.left) as f64;
+        let uy = r.top as f64 + pos.y / 100.0 * (r.bottom - r.top) as f64;
+        ((x + w / 2) as f64 - ux).abs() > 1.5 || ((y + h / 2) as f64 - uy).abs() > 1.5
+    }
+
+    /// The place picture: a screen in the chosen shape, the taskbar on its edge, and the card
+    /// where des-k puts it, at a fixed 52 × 16 so it reads; the distance drawn to scale. Spots:
+    /// the other eight dashed, each third across and down picks one. Custom: the card's center
+    /// on two dotted lines, and the whole screen takes clicks and drags.
+    fn picture(&mut self, (x, y, pw, ph): Bx, (full, work, scale): (RECT, RECT, f32), pos: settings::Pos, na: bool) {
+        let b = self.c.t.b;
+        let hc = self.c.t.hc;
+        self.c.fill_rr((x, y, pw, ph), 6.0, op(b.bez));
+        let (sx, sy, sw, sh) = (x + 4.0, y + 4.0, pw - 8.0, ph - 8.0);
+        let screen = if hc { b.card } else { mix(b.card, b.tx, 0.12) };
+        self.c.fill_rr((sx, sy, sw, sh), 2.0, op(screen));
+        let k = sw / (full.right - full.left).max(1) as f32;
+        let kv = sh / (full.bottom - full.top).max(1) as f32;
+        let wl = sx + (work.left - full.left) as f32 * k;
+        let wt = sy + (work.top - full.top) as f32 * kv;
+        let wr = sx + (work.right - full.left) as f32 * k;
+        let wb = sy + (work.bottom - full.top) as f32 * kv;
+        let bar = if hc { b.tx } else { mix(b.card, b.tx, 0.40) };
+        for r in [(sx, sy, sw, wt - sy), (sx, wb, sw, sy + sh - wb), (sx, sy, wl - sx, sh), (wr, sy, sx + sw - wr, sh)] {
+            if r.2 > 0.5 && r.3 > 0.5 {
+                self.c.fill_rr(r, 0.0, op(bar));
+            }
+        }
+        let (cw, chh) = (52.0, 16.0);
+        let gap = (pos.gap as f32 * scale * k).max(2.0);
+        let at = |spot: usize| -> (f32, f32) {
+            let (x0, xc, x1) = (wl + gap, (wl + wr - cw) / 2.0, wr - gap - cw);
+            let (y0, yc, y1) = (wt + gap, (wt + wb - chh) / 2.0, wb - gap - chh);
+            let (px, py) = match spot {
+                9 => (wl + pos.x as f32 / 100.0 * (wr - wl) - cw / 2.0, wt + pos.y as f32 / 100.0 * (wb - wt) - chh / 2.0),
+                4 => (xc, yc),
+                s => ([x0, xc, x1][s % 3], [y0, yc, y1][s / 3]),
+            };
+            (px.clamp(wl, (wr - cw).max(wl)), py.clamp(wt, (wb - chh).max(wt)))
+        };
+        let chosen = spot_index(pos.spot);
+        let custom = chosen == 9;
+        if custom {
+            let (cx, cy) = at(9);
+            let (mx, my) = (cx + cw / 2.0, cy + chh / 2.0);
+            let line = op(if na { b.tx3 } else { b.tx2 });
+            self.c.dash_line((mx, wt), (mx, wb), 1.0, line);
+            self.c.dash_line((wl, my), (wr, my), 1.0, line);
+            self.c.text(mx + 4.0, wt + 1.0, 16.0, &format!("{} %", pos.x.round()), F::Small, b.tx);
+            self.c.text(wl + 4.0, my - 17.0, 16.0, &format!("{} %", pos.y.round()), F::Small, b.tx);
+            self.hit(Ctl::Picture, (wl, wt, wr - wl, wb - wt), 1);
+        } else {
+            for s in 0..9 {
+                if s != chosen {
+                    let (px, py) = at(s);
+                    self.c.stroke_dash((px, py, cw, chh), 2.0, 1.0, op(if na { b.tx3 } else { b.tx2 }), DashStyleDash);
+                }
+                let (tw, th) = ((wr - wl) / 3.0, (wb - wt) / 3.0);
+                self.hit(Ctl::Spot(s), (wl + (s % 3) as f32 * tw, wt + (s / 3) as f32 * th, tw, th), 1);
+            }
+        }
+        let (px, py) = at(chosen);
+        let n = self.s.workspaces;
+        let a = self.active_on(&self.w.pics.here.clone().unwrap_or_default()).min(8);
+        let (lit, off) = if na || hc { (b.tx3, b.tx3) } else { (b.ws[a], b.bar_off) };
+        self.c.boxed((px, py, cw, chh), 3.0, b.card, Some(if hc { b.tx } else { b.line }));
+        self.c.fill_rr((px + 3.0, py + 3.0, 10.0, 10.0), 2.0, op(lit));
+        for i in 0..n.min(3) {
+            self.c.fill_rr((px + 17.0 + i as f32 * 10.0, py + 6.5, 8.0, 3.0), 1.5, op(if i == 0 { lit } else { off }));
+        }
+        self.ring((px, py, cw, chh), 3.0, Ctl::Picture);
+    }
+
+    /// Distance from the edges, Across or Down: a number for the chosen screen, greyed with
+    /// the indicator off, and the distance with its reason for Center and Custom.
+    fn place_num(&mut self, key: &'static str, y: f32, ch: &ScreenChoice) -> f32 {
+        let pos = pos_of(self.s, ch.id.as_deref());
+        let (title, base, lo, hi, unit) = match key {
+            GAP => ("Distance from the edges", "From the screen's edges, above the taskbar, at 100% scale; des-k scales it with each screen. 0 to 400 px.", 0, 400, "px"),
+            ACROSS => ("Across", "Where the card's center sits, from the left edge. 0 to 100 %.", 0, 100, "%"),
+            _ => ("Down", "Where the card's center sits, from the top edge. 0 to 100 %.", 0, 100, "%"),
+        };
+        let v = pos_get(pos, key).round() as i64;
+        let mut cap = vec![t(base)];
+        let idle = key == GAP && matches!(pos.spot, settings::Spot::Center | settings::Spot::Custom);
+        if idle {
+            let why = if pos.spot == settings::Spot::Center { "Center sits in the middle" } else { "Custom places it by percent" };
+            cap.push(P::Why(format!(" Not in use: {why}.")));
+        }
+        cap.extend(self.place_pieces(key, ch));
+        let note = self.place_bad(key, ch);
+        let na = !self.s.indicator_enabled || idle;
+        let text = format!("{v} {unit}");
+        let size = (self.stepper_w(&text), 32.0);
+        self.say(Ctl::Stepper(key), UIA_SpinnerControlTypeId, title, base, self.ro || na, (None, Some(text)));
+        self.row(y, title, &cap, size, |c, x, y| c.stepper(key, x, y, (v, unit), (v > lo, v < hi), na), note.as_ref())
+    }
+
+    // ---- Colors (spec 0020 AC-12) ----
+
+    fn colors(&mut self, y: f32) -> f32 {
+        let mut h = 0.0;
+        if self.c.t.hc {
+            let n = NoteSpec { tone: Tone::Info, icon: I_INFO, title: "High contrast is on, so des-k uses Windows' contrast colors".into(), lines: vec![t("Your colors stay in the file and come back when it's off.")], buttons: vec![], group: 1 };
+            h += self.note(X0, y, self.cw, &n) + 12.0;
+        }
+        h += self.card(y + h, |c, y| {
+            let mut h = 0.0;
+            if !c.c.t.hc {
+                h += c.sample(y);
+                c.sep(y + h);
+            }
+            h += c.accent_row(y + h);
+            if matches!(c.s.accent, settings::Accent::Rgb(_)) {
+                c.sep(y + h);
+                h += c.hex_row(ACCENT, y + h);
+            }
+            h
+        });
+        h += 12.0;
+        h + self.card(y + h, |c, y| {
+            let mut h = c.header(y, "Workspace colors", None, "In every des-k window");
+            let n = c.s.workspaces;
+            for (i, key) in WS_KEYS.iter().take(n).enumerate() {
+                if i > 0 {
+                    c.sep(y + h);
+                }
+                h += c.hex_row(key, y + h);
+            }
+            let cap = [t(format!("One row per workspace you have ({n} now, set under ")), P::Link("Workspaces".into(), Ctl::Link(Link::Workspaces)), t("). Colors for workspaces you don't have are kept.")];
+            h + 4.0 + c.caption(X0 + 16.0, y + h + 4.0, c.cw - 32.0, &cap) + 14.0
+        })
+    }
+
+    /// des-k's own parts in the colors in use, and what each of the three colors paints.
+    fn sample(&mut self, y: f32) -> f32 {
+        let b = self.c.t.b;
+        let (wx, ww) = (X0 + 16.0, self.cw - 32.0);
+        let wy = y + 16.0;
+        let foot = "des-k makes both neighbors from the accent, and picks black or white text for each. The des-k logo keeps its own colors.";
+        let fh = self.measured(|c| c.c.para(0.0, 0.0, ww - 32.0, 16.0, &[(foot, F::Small, b.tx2)]));
+        let body = 3.0 * 44.0;
+        let well_h = 16.0 + body + 12.0 + 1.0 + 10.0 + fh + 12.0;
+        self.c.boxed((wx, wy, ww, well_h), 6.0, b.track, Some(b.line));
+        // The little card: a header with its badge, a row with a switch and a button.
+        let (cx, cy, cw) = (wx + 16.0, wy + 16.0 + (body - 80.0) / 2.0, 300.0);
+        self.c.boxed((cx, cy, cw, 80.0), 6.0, b.card, Some(b.line));
+        self.c.fill_rr((cx + 1.0, cy + 1.0, cw - 2.0, 34.0), 5.0, op(mix(b.card, b.acc_a, 0.09)));
+        self.c.fill_rr((cx + 1.0, cy + 20.0, cw - 2.0, 15.0), 0.0, op(mix(b.card, b.acc_a, 0.09)));
+        self.c.rule(cx + 1.0, cy + 35.0, cw - 2.0, op(b.line));
+        self.c.circle(cx + 23.0, cy + 18.0, 11.0, Some(op(b.acc_b)), None);
+        let dw = self.c.width("3", F::SmallBold);
+        self.c.text(cx + 23.0 - dw / 2.0, cy + 7.0, 22.0, "3", F::SmallBold, b.on_acc_b);
+        self.c.text(cx + 44.0, cy + 7.0, 22.0, "A section header", F::Bold, b.tx);
+        self.c.text(cx + 12.0, cy + 36.0, 44.0, "A row", F::Bold, b.tx);
+        let bw = self.c.width("Button", F::Body) + 28.0;
+        let bx = cx + cw - 12.0 - bw;
+        self.c.fill_rr((bx, cy + 42.0, bw, 32.0), 4.0, op(b.acc));
+        self.c.text(bx + 14.0, cy + 42.0, 32.0, "Button", F::Body, b.on_acc);
+        let sx = bx - 16.0 - 40.0;
+        self.c.fill_rr((sx, cy + 48.0, 40.0, 20.0), 10.0, op(b.acc));
+        self.c.circle(sx + 30.0, cy + 58.0, 6.0, Some(op(b.on_acc)), None);
+        // What each color paints.
+        let lx = cx + cw + 20.0;
+        let legend = [
+            (b.acc, "Buttons and switches", "the accent: also the chosen row and links"),
+            (b.acc_a, "Headers and bands", "the accent turned 30° one way"),
+            (b.acc_b, "Badges and marks", "the accent turned 30° the other way"),
+        ];
+        for (i, (col, name, line)) in legend.iter().enumerate() {
+            let ly = wy + 16.0 + i as f32 * 44.0;
+            self.c.fill_rr((lx, ly + 6.0, 28.0, 20.0), 4.0, op(*col));
+            self.c.text(lx + 38.0, ly, 22.0, name, F::Bold, b.tx);
+            self.c.text(lx + 38.0, ly + 21.0, 16.0, line, F::Small, b.tx2);
+        }
+        let ry = wy + 16.0 + body + 12.0;
+        self.c.rule(wx + 16.0, ry, ww - 32.0, op(b.line));
+        self.c.para(wx + 16.0, ry + 11.0, ww - 32.0, 16.0, &[(foot, F::Small, b.tx2)]);
+        16.0 + well_h + 16.0
+    }
+
+    /// A bad color in the file, as its row's note.
+    fn color_bad(&self, key: &str) -> Option<NoteSpec> {
+        let p = settings::problems().iter().find(|p| p.key == key)?;
+        let what = ws_index(key).map_or("Windows' accent".to_string(), |i| format!("des-k's {}", WS_NAMES[i]));
+        Some(NoteSpec { tone: Tone::Warn, icon: I_WARN, title: format!("des-k can't use this value, so it uses {what}"), lines: vec![P::Mono(p.message.clone()), t(" Type a color here, or Reset takes the line out.")], buttons: vec![], group: 1 })
+    }
+
+    /// Accent color: Windows or My own, one stop. Greyed and blank in high contrast.
+    fn accent_row(&mut self, y: f32) -> f32 {
+        let own = matches!(self.s.accent, settings::Accent::Rgb(_));
+        let hc = self.c.t.hc;
+        let note = self.color_bad(ACCENT);
+        let mut cap = vec![];
+        if own {
+            cap.push(t("Your own color, in light and dark. Default: Windows."));
+        } else if ui::look().accent.is_none() {
+            cap.push(t("des-k can't read Windows' accent color, so it uses des-k purple."));
+        } else {
+            cap.push(t("Follows Windows' accent color, in the shade Windows uses for light or dark: Settings › Personalization › Colors."));
+        }
+        if !own && let Some(c) = self.w.own {
+            cap.push(t(format!(" My own goes back to #{c:06X}.")));
+        }
+        if own || note.is_some() {
+            cap.push(P::Link(" Reset".into(), Ctl::Reset(ACCENT)));
+        }
+        let words = ["Windows", "My own"];
+        let size = (self.seg_w(&words), 28.0);
+        self.say(Ctl::Pick(ACCENT), UIA_ComboBoxControlTypeId, "Accent color", "", self.ro || hc, (None, Some(words[own as usize].into())));
+        self.row(y, "Accent color", &cap, size, |c, x, y| c.seg(x, y, &words, Some(own as usize), hc, |i| Ctl::Choice(ACCENT, i), Ctl::Pick(ACCENT)), note.as_ref())
+    }
+
+    /// Your accent or Workspace N: the swatch and the hex box, with the default and Reset; a
+    /// tinted band and a line under it while you type.
+    fn hex_row(&mut self, key: &'static str, y: f32) -> f32 {
+        let b = self.c.t.b;
+        let hc = self.c.t.hc;
+        let wi = ws_index(key);
+        let saved = match wi {
+            Some(i) => self.s.ws_colors[i],
+            None => match self.s.accent {
+                settings::Accent::Rgb(c) => Some(c),
+                settings::Accent::Windows => None,
+            },
+        };
+        let hex = self.w.hexes.iter().find(|x| x.key == key).cloned();
+        let focused = self.w.focus == Some(Ctl::Hex(key));
+        let title = wi.map_or("Your accent".to_string(), |i| format!("Workspace {}", i + 1));
+        let mut cap = vec![];
+        match (wi, saved) {
+            (None, _) => cap.push(t("Six digits 0–9 or A–F after the #, or paste a color.")),
+            (Some(i), None) => cap.push(t(format!("des-k's {}.", WS_NAMES[i]))),
+            (Some(i), Some(_)) => {
+                cap.push(t(format!("Your color. Default: #{:06X}.", ui::WS[i])));
+                cap.push(P::Link(" Reset".into(), Ctl::Reset(key)));
+            }
+        }
+        let bad = self.color_bad(key);
+        if bad.is_some() && wi.is_some() && saved.is_none() {
+            cap.push(P::Link(" Reset".into(), Ctl::Reset(key)));
+        }
+        let typing = !hc && hex.as_ref().is_some_and(|x| focused && Some(x.digits.as_str()) != shown_digits(self.c.t, self.s, key).as_deref());
+        let note = bad.or_else(|| match &hex {
+            Some(Hex { line: Some(l), .. }) => Some(NoteSpec { tone: Tone::Warn, icon: I_WARN, title: (*l).into(), lines: vec![], buttons: vec![], group: 1 }),
+            _ if typing => Some(NoteSpec { tone: Tone::Info, icon: I_INFO, title: String::new(), lines: vec![t("Enter saves it; Esc puts back the saved color. Leaving the box saves it too.")], buttons: vec![], group: 1 }),
+            _ => None,
+        });
+        let digits = hex.as_ref().map_or_else(|| shown_digits(self.c.t, self.s, key).unwrap_or_default(), |x| x.digits.clone());
+        let swatch = (!hc).then(|| hex_color(&digits).unwrap_or(wi.map_or(b.acc, |i| b.ws[i])));
+        let warn = hex.as_ref().is_some_and(|x| x.line.is_some());
+        let sel = hex.as_ref().map(|x| (x.caret, x.anchor));
+        let spoken = if hc { String::new() } else { format!("#{digits}") };
+        let help: String = cap.iter().map(|p| match p { P::T(s) | P::Why(s) | P::Link(s, _) | P::Mono(s) => s.as_str() }).collect();
+        self.say(Ctl::Hex(key), UIA_EditControlTypeId, &format!("{title} color"), help.trim(), self.ro || hc, (None, Some(spoken)));
+        let draw = |c: &mut Self, y: f32| {
+            c.row(y, &title, &cap, (164.0, 32.0), |c, x, y| {
+                c.swatch(x, y, wi, swatch);
+                c.hex_box(key, x + 56.0, y, if hc { "" } else { &digits }, sel, warn, hc);
+            }, note.as_ref())
+        };
+        if typing && !hc {
+            let rh = self.measured(|c| draw(c, y));
+            let band = op(mix(b.card, b.acc_a, 0.06));
+            // Your accent is its card's last row: the band keeps the card's round bottom corners.
+            self.c.fill_rr((X0 + 1.0, y, self.cw - 2.0, rh - 1.0), 7.0, band);
+            self.c.fill_rr((X0 + 1.0, y, self.cw - 2.0, rh - 9.0), 0.0, band);
+        }
+        draw(self, y)
+    }
+
+    /// A color's swatch: a workspace's is its tile with its number in its ink; None (high
+    /// contrast) draws it greyed and blank.
+    fn swatch(&mut self, x: f32, y: f32, wi: Option<usize>, color: Option<u32>) {
+        let b = self.c.t.b;
+        let bx = (x, y, 48.0, 32.0);
+        match color {
+            None => self.c.boxed(bx, 4.0, b.card, Some(b.tx3)),
+            Some(c) => {
+                self.c.fill_rr(bx, 4.0, op(c));
+                if b.ws_edge > 0.0 {
+                    self.c.stroke_rr((x + 0.5, y + 0.5, 47.0, 31.0), 3.5, 1.0, op(mix(c, 0, b.ws_edge)));
+                }
+            }
+        }
+        if let Some(i) = wi {
+            let ink = color.map_or(b.tx3, ui::ink);
+            self.c.text(x + 6.0, y + 32.0 - 17.0, 16.0, &(i + 1).to_string(), F::SmallBold, ink);
+        }
+    }
+
+    /// The hex box (spec 0020): a fixed grey #, then up to six digits in Cascadia Mono. Focus
+    /// shows a 2 dip accent bottom edge and a caret, as WinUI's text box, no ring; fewer than
+    /// six shows a warn edge. `na`: greyed and blank (high contrast).
+    #[allow(clippy::too_many_arguments)]
+    fn hex_box(&mut self, key: &'static str, x: f32, y: f32, digits: &str, sel: Option<(usize, usize)>, warn: bool, na: bool) {
+        let b = self.c.t.b;
+        let ctl = Ctl::Hex(key);
+        let focused = self.w.focus == Some(ctl) && !na && !self.ro;
+        let bx = (x, y, 108.0, 32.0);
+        if warn {
+            self.c.fill_rr(bx, 6.0, op(b.warn));
+            self.c.fill_rr((x + 1.0, y + 1.0, 106.0, 30.0), 5.0, op(b.card));
+            self.c.fill_rr((x + 1.0, y + 29.0, 106.0, 2.0), 0.0, op(b.warn));
+        } else {
+            self.field(bx, b.card, None);
+            if focused {
+                self.c.fill_rr((x + 1.0, y + 29.0, 106.0, 2.0), 0.0, op(b.acc));
+            }
+        }
+        let cw = self.c.width("0", F::Code);
+        let hx = x + 10.0;
+        self.c.text(hx, y, 32.0, "#", F::Code, b.tx3);
+        let dx = hx + cw;
+        let (lo, hi) = sel.filter(|_| focused).map_or((0, 0), |(c, a)| (c.min(a), c.max(a)));
+        if hi > lo {
+            self.c.fill_rr((dx + lo as f32 * cw, y + 7.0, (hi - lo) as f32 * cw, 18.0), 2.0, op(b.acc));
+        }
+        for (i, ch) in digits.chars().enumerate() {
+            let ink = if na || self.ro { b.tx3 } else if i >= lo && i < hi { b.on_acc } else { b.tx };
+            self.c.text(dx + i as f32 * cw, y, 32.0, &ch.to_string(), F::Code, ink);
+        }
+        if focused && hi == lo && let Some((c, _)) = sel {
+            self.c.fill_rr((dx + c as f32 * cw, y + 7.0, 1.0, 18.0), 0.0, op(b.tx));
+        }
+        if self.focused(ctl) && !focused {
+            self.ring(bx, 6.0, ctl);
+        }
+        self.hit(ctl, bx, 1);
     }
 
     // ---- Overview and Motion ----
@@ -2273,7 +3002,7 @@ impl Ctx<'_, '_> {
         } else {
             self.c.fill_rr((x + 6.0, my, 22.0, 22.0), 4.0, op(b.held));
         }
-        let mark = if t.dark && !t.hc { b.link } else { b.acc };
+        let mark = if t.dark && !t.hc { mix(b.acc_b, 0xFFFFFF, 0.28) } else { b.acc_b };
         let gw = self.c.width(glyph, F::IconTiny);
         self.icon(x + 6.0 + (22.0 - gw) / 2.0, my, 22.0, glyph, F::IconTiny, mark);
         let lx = x + 36.0;
@@ -2531,6 +3260,77 @@ impl Ctx<'_, '_> {
     }
 }
 
+impl Ctx<'_, '_> {
+    /// The open screen menu, placed like the touchpad's: the chosen line over the chooser.
+    fn screens_menu(&mut self) {
+        let Some((at, focus)) = self.w.chooser else { return };
+        let t = self.c.t;
+        let b = t.b;
+        let (choices, cur) = chosen(self.w, self.s);
+        let mw = at.2.max(320.0);
+        let mh = 4.0 + 24.0 + choices.len() as f32 * 28.0 + 4.0;
+        let my = (at.1 - 28.0 - cur as f32 * 28.0).clamp(8.0, (self.w.vh - mh - 8.0).max(8.0));
+        let mx = at.0.min(self.w.vw - mw - 16.0).max(NAV);
+        self.c.fill_rr((mx - 1.0, my - 1.0, mw + 2.0, mh + 2.0), 9.0, op(if t.hc { b.tx } else { mix(b.bg, b.tx, 0.10) }));
+        if !t.hc {
+            self.c.fill_rr((mx, my + 4.0, mw, mh), 8.0, ui::alpha(0, 0.08));
+        }
+        self.c.fill_rr((mx, my, mw, mh), 8.0, op(b.card));
+        self.hit(Ctl::ScreenItem(usize::MAX), (mx, my, mw, mh), 3);
+        self.c.text(mx + 14.0, my + 4.0, 24.0, "Screen", F::SmallBold, b.tx2);
+        for (i, ch) in choices.iter().enumerate() {
+            let (x, y, w) = (mx + 4.0, my + 28.0 + i as f32 * 28.0, mw - 8.0);
+            let ctl = Ctl::ScreenItem(i);
+            let on = i == cur;
+            let hot = self.hovered(ctl) || (self.w.kb && focus == i);
+            let (fill, ink, check) = match () {
+                _ if on && t.hc => (Some(b.hi), b.on_acc, b.on_acc),
+                _ if on => (Some(b.track), b.tx, b.acc),
+                _ if hot => (Some(mix(b.card, b.tx, 0.05)), b.tx, b.acc),
+                _ => (None, b.tx, b.acc),
+            };
+            if let Some(f) = fill {
+                self.c.fill_rr((x, y, w, 28.0), 4.0, op(f));
+            }
+            if on {
+                self.icon(x + 10.0, y, 28.0, I_OK, F::IconSmall, check);
+            }
+            let sw = if ch.side.is_empty() { 0.0 } else { self.c.width(ch.side, F::Small) + 10.0 };
+            let shown = self.c.fit(&ch.name, F::Body, w - 30.0 - 6.0 - sw);
+            self.c.text(x + 30.0, y, 28.0, &shown, F::Body, ink);
+            if !ch.side.is_empty() {
+                self.c.text(x + w - sw, y, 28.0, ch.side, F::Small, if on && t.hc { b.on_acc } else { b.tx2 });
+            }
+            if self.w.kb && focus == i {
+                self.c.stroke_rr((x + 1.0, y + 1.0, w - 2.0, 26.0), 4.0, 2.0, op(b.tx));
+            }
+            self.hit(ctl, (x, y, w, 28.0), 3);
+        }
+    }
+}
+
+/// The screen menu's choices and the chosen one: All screens when the page's screen is gone.
+fn chosen(w: &Win, s: &Settings) -> (Vec<ScreenChoice>, usize) {
+    let list = screen_choices(&w.pics.view, s);
+    let i = w.screen.as_ref().and_then(|id| list.iter().position(|c| c.id.as_ref() == Some(id))).unwrap_or(0);
+    (list, i)
+}
+
+/// The digits a hex box shows when no one is typing: the color in use, None in high contrast.
+fn shown_digits(t: Theme, s: &Settings, key: &str) -> Option<String> {
+    if t.hc {
+        return None;
+    }
+    let c = match ws_index(key) {
+        Some(i) => s.ws_colors[i].unwrap_or(ui::WS[i]),
+        None => match s.accent {
+            settings::Accent::Rgb(c) => c,
+            settings::Accent::Windows => t.b.acc,
+        },
+    };
+    Some(format!("{c:06X}"))
+}
+
 /// A note as it is drawn: its tone and icon, title, caption pieces and buttons.
 struct NoteSpec {
     tone: Tone,
@@ -2691,6 +3491,7 @@ fn compose(c: &mut Canvas, w: &Win) -> Out {
         x.c.fill_rr((w.vw - 6.0, ty, 2.0, th), 1.0, op(if w.drag.is_some() { b.tx2 } else { b.tx3 }));
     }
     x.menu();
+    x.screens_menu();
     // The menu's hits first, then the banners', the side list's, the column's.
     x.out.hits.sort_by_key(|h| std::cmp::Reverse(h.group));
     x.out
@@ -2821,6 +3622,7 @@ fn follow(l: Link) {
         }
         Link::Indicator => jump(Some(Section::Indicator)),
         Link::Overview => jump(Some(Section::Overview)),
+        Link::Workspaces => jump(Some(Section::Workspaces)),
     }
 }
 
@@ -3126,8 +3928,16 @@ fn open_menu(row: usize, times: u8, family: Option<usize>) {
 }
 
 fn close_menu() {
-    let _ = set(|w| w.menu = None);
+    let _ = set(|w| {
+        w.menu = None;
+        w.chooser = None;
+    });
     layout();
+}
+
+/// The gesture menu or the screen menu: while one is open, only its lines take clicks.
+fn menu_open(w: &Win) -> bool {
+    w.menu.is_some() || w.chooser.is_some()
 }
 
 /// A menu line chosen, by click or Enter.
@@ -3156,6 +3966,18 @@ fn act(ctl: Ctl) {
         Ctl::Welcome => crate::welcome::show(),
         Ctl::Open => crate::tray::open(&settings::path()),
         Ctl::Toggle(key) => save(key, 1 - value(s, key)),
+        Ctl::Choice(ACCENT, i) => set_accent(i == 1),
+        Ctl::Choice(MODE, i) => set_mode(i == 1),
+        Ctl::Minus(key) if is_place(key) => step_place(key, false),
+        Ctl::Plus(key) if is_place(key) => step_place(key, true),
+        Ctl::Reset(key) if key == ACCENT || ws_index(key).is_some() => reset_color(key),
+        Ctl::Reset(key) if is_place(key) => reset_place(key),
+        Ctl::Hex(_) | Ctl::Picture | Ctl::ScreenItem(usize::MAX) => {}
+        Ctl::Spot(i) => set_place(SPOT, i as f64),
+        Ctl::Screens => open_chooser(),
+        Ctl::ScreenItem(i) => choose_screen(i),
+        Ctl::SameAll => same_as_all(),
+        Ctl::ShowThere => show_there(),
         Ctl::Minus(key) => step_key(key, false),
         Ctl::Plus(key) => step_key(key, true),
         Ctl::Stepper(_) | Ctl::Pick(_) | Ctl::Tiles => {} // focus only: Left and Right change them
@@ -3231,6 +4053,429 @@ fn step_key(key: &'static str, up: bool) {
     }
 }
 
+// ---- Colors and Where it shows: what the controls do (spec 0020) ----
+
+const INCOMPLETE: &str = "Six digits are needed. Nothing is saved until there are six; Esc puts back the saved color.";
+const REFUSED: &str = "That isn't a color. Paste six digits 0–9 or A–F; nothing changed.";
+const COULDNT: &str = "Couldn't save your color. Enter tries again.";
+
+/// Windows or My own (AC-12). My own writes the accent des-k uses now, so nothing changes
+/// until you type, or the last own color while the page is open. Off in high contrast.
+fn set_accent(own: bool) {
+    let Some((hc, acc, last)) = get(|w| (w.theme.hc, w.theme.b.acc, w.own)) else { return };
+    if hc {
+        return;
+    }
+    match (own, settings::get().accent) {
+        (false, settings::Accent::Rgb(c)) => {
+            let _ = set(|w| w.own = Some(c));
+            commit(Edit::At(path_of(ACCENT), "windows".into()), "Accent color");
+        }
+        (true, settings::Accent::Windows) => commit(Edit::At(path_of(ACCENT), format!("#{:06X}", last.unwrap_or(acc)).into()), "Accent color"),
+        _ => {}
+    }
+}
+
+fn color_title(key: &str) -> String {
+    ws_index(key).map_or("Your accent".into(), |i| format!("Workspace {} color", i + 1))
+}
+
+/// Reset takes a color's key out of the file; the page keeps your last own accent.
+fn reset_color(key: &'static str) {
+    if key == ACCENT
+        && let settings::Accent::Rgb(c) = settings::get().accent
+    {
+        let _ = set(|w| w.own = Some(c));
+    }
+    let _ = set(|w| w.hexes.retain(|x| x.key != key));
+    commit(Edit::Remove(path_of(key)), &color_title(key));
+}
+
+/// Focus came to a hex box: Tab selects its digits, a click puts the caret there. Nothing to
+/// type in high contrast or read only.
+fn enter_hex(key: &'static str, caret: Option<usize>) {
+    let _ = set(|w| {
+        if w.theme.hc || settings::parse_error().is_some() {
+            return;
+        }
+        if !w.hexes.iter().any(|x| x.key == key) {
+            let digits = shown_digits(w.theme, settings::get(), key).unwrap_or_default();
+            w.hexes.push(Hex { key, caret: digits.len(), anchor: 0, digits, line: None });
+        }
+        if let Some(x) = w.hexes.iter_mut().find(|x| x.key == key) {
+            x.caret = caret.unwrap_or(x.digits.len()).min(x.digits.len());
+            x.anchor = if caret.is_some() { x.caret } else { 0 };
+        }
+    });
+}
+
+fn enter_if_new(key: &'static str) {
+    if get(|w| w.hexes.iter().any(|x| x.key == key)) == Some(false) {
+        enter_hex(key, None);
+    }
+}
+
+/// Focus left a hex box: six digits save; fewer keep the digits and the line until you fix
+/// them or press Esc.
+fn leave_hex(key: &'static str) {
+    let Some((x, shown)) = get(|w| Some((w.hexes.iter().find(|x| x.key == key)?.clone(), shown_digits(w.theme, settings::get(), key)))).flatten() else { return };
+    match hex_color(&x.digits) {
+        Some(_) if Some(&x.digits) == shown.as_ref() => {
+            let _ = set(|w| w.hexes.retain(|x| x.key != key));
+        }
+        Some(_) => save_hex(key),
+        None => {
+            let _ = set(|w| w.hexes.iter_mut().filter(|x| x.key == key).for_each(|x| x.line = Some(INCOMPLETE)));
+        }
+    }
+}
+
+/// Enter, or leaving with six digits: saves in upper case. A workspace's own default takes its
+/// key out. A failed save keeps your digits and says Enter tries again.
+fn save_hex(key: &'static str) {
+    let Some(x) = get(|w| w.hexes.iter().find(|x| x.key == key).cloned()).flatten() else { return };
+    let Some(c) = hex_color(&x.digits) else {
+        let _ = set(|w| w.hexes.iter_mut().filter(|x| x.key == key).for_each(|x| x.line = Some(INCOMPLETE)));
+        return layout();
+    };
+    let edit = if key == ACCENT { Edit::At(path_of(ACCENT), format!("#{c:06X}").into()) } else { color_edit(key, c) };
+    match settings::write(edit) {
+        Ok(()) => {
+            let still = set(|w| {
+                w.error = None;
+                w.hexes.retain(|x| x.key != key);
+                w.focus == Some(Ctl::Hex(key))
+            });
+            if still == Some(true) {
+                enter_hex(key, Some(6));
+            }
+            refresh();
+        }
+        Err(why) => {
+            let _ = set(|w| w.hexes.iter_mut().filter(|x| x.key == key).for_each(|x| x.line = Some(COULDNT)));
+            failed(&color_title(key), why);
+        }
+    }
+}
+
+/// Typed or pasted digits go in at the caret, over the selection, never more than six.
+fn hex_insert(key: &'static str, text: &str) {
+    let _ = set(|w| {
+        let Some(x) = w.hexes.iter_mut().find(|x| x.key == key) else { return };
+        let (lo, hi) = (x.caret.min(x.anchor), x.caret.max(x.anchor));
+        let mut d = x.digits.clone();
+        d.replace_range(lo..hi, "");
+        let put: String = text.chars().filter(char::is_ascii_hexdigit).take(6 - d.len()).map(|c| c.to_ascii_uppercase()).collect();
+        d.insert_str(lo, &put);
+        x.digits = d;
+        x.caret = lo + put.len();
+        x.anchor = x.caret;
+        if x.line == Some(REFUSED) || x.digits.len() == 6 {
+            x.line = None;
+        }
+    });
+    layout();
+}
+
+/// A hex box's own keys; false lets the page have the key (Up, Down, Tab move on).
+fn hex_key(key: &'static str, vk: VIRTUAL_KEY) -> bool {
+    let down = |k: VIRTUAL_KEY| unsafe { GetKeyState(k.0 as i32) } < 0;
+    let (ctrl, shift) = (down(VK_CONTROL), down(VK_SHIFT));
+    // Focus can land here without focus_on (a Reset that went): the first key starts it.
+    enter_if_new(key);
+    let has = get(|w| w.hexes.iter().any(|x| x.key == key)) == Some(true);
+    if !has {
+        // Read only or high contrast: Esc never closes the page from inside a box.
+        return vk == VK_ESCAPE;
+    }
+    let edit = |f: &mut dyn FnMut(&mut Hex)| {
+        let _ = set(|w| w.hexes.iter_mut().filter(|x| x.key == key).for_each(&mut *f));
+        layout();
+    };
+    match vk {
+        VK_LEFT | VK_RIGHT | VK_HOME | VK_END => edit(&mut |x| {
+            let (lo, hi) = (x.caret.min(x.anchor), x.caret.max(x.anchor));
+            x.caret = match vk {
+                VK_HOME => 0,
+                VK_END => x.digits.len(),
+                VK_LEFT if !shift && hi > lo => lo,
+                VK_RIGHT if !shift && hi > lo => hi,
+                VK_LEFT => x.caret.saturating_sub(1),
+                _ => (x.caret + 1).min(x.digits.len()),
+            };
+            if !shift {
+                x.anchor = x.caret;
+            }
+        }),
+        VK_BACK | VK_DELETE => edit(&mut |x| {
+            let (mut lo, mut hi) = (x.caret.min(x.anchor), x.caret.max(x.anchor));
+            if lo == hi {
+                if vk == VK_BACK && lo > 0 {
+                    lo -= 1;
+                } else if vk == VK_DELETE && hi < x.digits.len() {
+                    hi += 1;
+                }
+            }
+            x.digits.replace_range(lo..hi, "");
+            (x.caret, x.anchor) = (lo, lo);
+        }),
+        VK_RETURN => save_hex(key),
+        VK_ESCAPE => {
+            let shown = get(|w| shown_digits(w.theme, settings::get(), key)).flatten().unwrap_or_default();
+            edit(&mut |x| {
+                if x.digits != shown || x.line.is_some() {
+                    (x.digits, x.line, x.caret, x.anchor) = (shown.clone(), None, shown.len(), 0);
+                }
+            });
+        }
+        VK_SPACE => {}
+        _ if ctrl && vk.0 == b'A' as u16 => edit(&mut |x| (x.caret, x.anchor) = (x.digits.len(), 0)),
+        _ if ctrl && (vk.0 == b'C' as u16 || vk.0 == b'X' as u16) => {
+            let cut = vk.0 == b'X' as u16;
+            let text = get(|w| w.hexes.iter().find(|x| x.key == key).map(|x| x.digits[x.caret.min(x.anchor)..x.caret.max(x.anchor)].to_string())).flatten().unwrap_or_default();
+            if !text.is_empty() {
+                clip_set(&text);
+                if cut {
+                    hex_insert(key, "");
+                }
+            }
+        }
+        _ if ctrl && vk.0 == b'V' as u16 => match clip_get().as_deref().and_then(pasted) {
+            Some(d) => edit(&mut |x| (x.digits, x.caret, x.anchor, x.line) = (d.clone(), 6, 6, None)),
+            None => edit(&mut |x| x.line = Some(REFUSED)),
+        },
+        _ => return false,
+    }
+    true
+}
+
+/// The clipboard's text, if it has any.
+fn clip_get() -> Option<String> {
+    use windows::Win32::{Foundation::HGLOBAL, System::DataExchange::*, System::Memory::*};
+    const CF_UNICODETEXT: u32 = 13;
+    unsafe {
+        OpenClipboard(hwnd()).ok()?;
+        let text = GetClipboardData(CF_UNICODETEXT).ok().and_then(|h| {
+            let g = HGLOBAL(h.0);
+            let p = GlobalLock(g) as *const u16;
+            if p.is_null() {
+                return None;
+            }
+            let n = (0..GlobalSize(g) / 2).take_while(|&i| *p.add(i) != 0).count();
+            let s = String::from_utf16_lossy(std::slice::from_raw_parts(p, n));
+            let _ = GlobalUnlock(g);
+            Some(s)
+        });
+        let _ = CloseClipboard();
+        text
+    }
+}
+
+fn clip_set(text: &str) {
+    use windows::Win32::{Foundation::{GlobalFree, HANDLE}, System::DataExchange::*, System::Memory::*};
+    const CF_UNICODETEXT: u32 = 13;
+    let wide: Vec<u16> = text.encode_utf16().chain([0]).collect();
+    unsafe {
+        let Ok(g) = GlobalAlloc(GMEM_MOVEABLE, wide.len() * 2) else { return };
+        let p = GlobalLock(g) as *mut u16;
+        if p.is_null() {
+            let _ = GlobalFree(Some(g));
+            return;
+        }
+        std::ptr::copy_nonoverlapping(wide.as_ptr(), p, wide.len());
+        let _ = GlobalUnlock(g);
+        if OpenClipboard(hwnd()).is_err() {
+            let _ = GlobalFree(Some(g));
+            return;
+        }
+        let _ = EmptyClipboard();
+        // The clipboard owns the memory once it takes it.
+        if SetClipboardData(CF_UNICODETEXT, Some(HANDLE(g.0))).is_err() {
+            let _ = GlobalFree(Some(g));
+        }
+        let _ = CloseClipboard();
+    }
+}
+
+/// The screen Where it shows changes; None: All screens.
+fn screen_id() -> Option<String> {
+    get(|w| {
+        let (list, i) = chosen(w, settings::get());
+        list[i].id.clone()
+    })
+    .flatten()
+}
+
+/// A place key changed from the page; nothing while the indicator is off.
+fn set_place(key: &'static str, v: f64) {
+    let s = settings::get();
+    if !s.indicator_enabled {
+        return;
+    }
+    if let Some(e) = place_edit(s, screen_id().as_deref(), key, v) {
+        commit(e, "Where it shows");
+    }
+}
+
+/// − and + on the distance, Across or Down; a decimal in the file lands on a whole number.
+fn step_place(key: &'static str, up: bool) {
+    let s = settings::get();
+    let pos = pos_of(s, screen_id().as_deref());
+    if key == GAP && matches!(pos.spot, settings::Spot::Center | settings::Spot::Custom) {
+        return;
+    }
+    let (hi, by) = if key == GAP { (400, 4) } else { (100, 1) };
+    let v = pos_get(pos, key);
+    let n = if v.fract() != 0.0 { if up { v.ceil() } else { v.floor() } } else { stepped(v as i64, 0, hi, by, up) as f64 };
+    if n != v {
+        set_place(key, n);
+    }
+}
+
+/// The spot nearest a Custom card: the third it is in across and down.
+fn nearest(x: f64, y: f64) -> usize {
+    let third = |v: f64| if v < 100.0 / 3.0 { 0 } else if v < 200.0 / 3.0 { 1 } else { 2 };
+    third(y) * 3 + third(x)
+}
+
+/// Spots or Custom. Spots picks the spot nearest the card and keeps x and y in the file, so
+/// Custom comes back where it was.
+fn set_mode(custom: bool) {
+    let pos = pos_of(settings::get(), screen_id().as_deref());
+    if custom != (pos.spot == settings::Spot::Custom) {
+        set_place(SPOT, if custom { 9.0 } else { nearest(pos.x, pos.y) as f64 });
+    }
+}
+
+/// Left and Right on the picture: the nine spots in reading order, stopping at the ends; with
+/// Custom, the card 1 % across.
+fn walk_picture(right: bool) {
+    let pos = pos_of(settings::get(), screen_id().as_deref());
+    if pos.spot == settings::Spot::Custom {
+        let n = if right { (pos.x.floor() + 1.0).min(100.0) } else { (pos.x.ceil() - 1.0).max(0.0) };
+        set_place(ACROSS, n);
+    } else {
+        let i = spot_index(pos.spot);
+        let n = if right { (i + 1).min(8) } else { i.saturating_sub(1) };
+        if n != i {
+            set_place(SPOT, n as f64);
+        }
+    }
+}
+
+/// Reset: All screens writes the default back, as every [indicator] row does; a screen's
+/// Reset takes its key out (its last key takes the table).
+fn reset_place(key: &'static str) {
+    match screen_id() {
+        None => commit(Edit::At(path_of(key), place_value(key, pos_get(DEFAULTS.indicator_pos, key))), "Where it shows"),
+        Some(id) => {
+            commit(Edit::Remove(vec!["indicator".into(), "screens".into(), id, leaf(key).into()]), "Where it shows");
+            after_table(false);
+        }
+    }
+}
+
+/// Same as all screens: the chosen screen's whole table goes.
+fn same_as_all() {
+    let Some(id) = screen_id() else { return };
+    commit(Edit::Remove(vec!["indicator".into(), "screens".into(), id]), "Where it shows");
+    after_table(true);
+}
+
+/// After a screen's table changed: a screen with no other reason to be listed goes, the
+/// chooser to All screens with the focus on it, or on Place when the chooser itself went.
+fn after_table(keep_focus: bool) {
+    let _ = set(|w| {
+        let list = screen_choices(&w.pics.view, settings::get());
+        let gone = w.screen.as_ref().is_some_and(|id| !list.iter().any(|c| c.id.as_ref() == Some(id)));
+        if gone {
+            w.screen = None;
+        }
+        if gone || keep_focus {
+            w.focus = Some(if list.len() > 2 { Ctl::Screens } else { Ctl::Picture });
+        }
+    });
+    layout();
+}
+
+fn open_chooser() {
+    let Some(at) = get(|w| w.hits.iter().find(|h| h.ctl == Ctl::Screens).map(|h| h.at)).flatten() else { return };
+    let _ = set(|w| {
+        let (_, i) = chosen(w, settings::get());
+        w.chooser = Some((at, i));
+    });
+    layout();
+}
+
+fn choose_screen(i: usize) {
+    let _ = set(|w| {
+        let (list, _) = chosen(w, settings::get());
+        if let Some(c) = list.get(i) {
+            w.screen = c.id.clone();
+        }
+        w.chooser = None;
+        w.focus = Some(Ctl::Screens);
+    });
+    layout();
+}
+
+/// The screen menu's keys: Up and Down move, Enter or Space picks, Esc closes.
+fn chooser_key(vk: VIRTUAL_KEY) {
+    let Some((at, f, n)) = get(|w| w.chooser.map(|(at, f)| (at, f, chosen(w, settings::get()).0.len()))).flatten() else { return };
+    match vk {
+        VK_ESCAPE => close_menu(),
+        VK_UP | VK_DOWN | VK_HOME | VK_END => {
+            let f = match vk {
+                VK_UP => f.saturating_sub(1),
+                VK_DOWN => (f + 1).min(n - 1),
+                VK_HOME => 0,
+                _ => n - 1,
+            };
+            let _ = set(|w| w.chooser = Some((at, f)));
+            layout();
+        }
+        VK_RETURN | VK_SPACE => choose_screen(f),
+        _ => {}
+    }
+}
+
+/// Show it there: the real indicator at its place on the chosen screen; All screens shows it
+/// on the screen this window is on. Off with the indicator off or a screen not plugged in.
+fn show_there() {
+    let s = settings::get();
+    if !s.indicator_enabled {
+        return;
+    }
+    let target = get(|w| {
+        let (list, i) = chosen(w, s);
+        match (&list[i].id, list[i].present) {
+            (None, _) => Some(None),
+            (Some(_), Some(p)) => w.pics.view.present.get(p).map(|p| Some(p.full)),
+            _ => None,
+        }
+    })
+    .flatten();
+    match target {
+        Some(None) => show(),
+        Some(Some(full)) => crate::ws::show_indicator(unsafe { MonitorFromRect(&full, MONITOR_DEFAULTTONEAREST) }),
+        None => {}
+    }
+}
+
+/// Where a click in a hex box puts the caret: the digit edge nearest it.
+fn caret_at(at: Bx, x: f32) -> usize {
+    let cw = get(|w| unsafe {
+        let dc = GetDC(Some(w.hwnd));
+        let c = Canvas::new(dc, false, w.scale, w.theme, &w.fonts);
+        let cw = c.width("0", F::Code);
+        drop(c);
+        ReleaseDC(Some(w.hwnd), dc);
+        cw
+    })
+    .unwrap_or(8.0);
+    ((x - at.0 - 10.0 - cw) / cw).round().clamp(0.0, 6.0) as usize
+}
+
 /// The real indicator on the screen the page is on, with the current hold and fade.
 fn show() {
     let Some(h) = hwnd() else { return };
@@ -3254,7 +4499,15 @@ fn stops(w: &Win, side: bool) -> Vec<(Ctl, f32)> {
 
 /// Focuses `c` and shows it; a side list item also jumps to its section.
 fn focus_on(c: Ctl) {
+    if let Some(Some(Ctl::Hex(k))) = get(|w| w.focus)
+        && Ctl::Hex(k) != c
+    {
+        leave_hex(k);
+    }
     let _ = set(|w| w.focus = Some(c));
+    if let Ctl::Hex(k) = c {
+        enter_hex(k, None);
+    }
     match c {
         Ctl::Side(sec) => {
             jump(sec);
@@ -3303,6 +4556,10 @@ fn change(focus: Ctl, right: bool) {
                 save(k, right as i64);
             }
         }
+        Ctl::Stepper(k) if is_place(k) => step_place(k, right),
+        Ctl::Pick(ACCENT) => set_accent(right),
+        Ctl::Pick(MODE) => set_mode(right),
+        Ctl::Picture => walk_picture(right),
         Ctl::Stepper(k) => step_key(k, right),
         Ctl::Tiles => step_key("workspaces", right),
         Ctl::Pick(k) => match find_row(k).map(|r| r.kind) {
@@ -3346,10 +4603,18 @@ fn menu_key(vk: VIRTUAL_KEY) {
 
 fn on_key(h: HWND, vk: VIRTUAL_KEY) {
     let _ = set(|w| w.kb = true);
+    if get(|w| w.chooser.is_some()) == Some(true) {
+        return chooser_key(vk);
+    }
     if get(|w| w.menu.is_some()) == Some(true) {
         return menu_key(vk);
     }
     let focus = get(|w| w.focus).flatten();
+    if let Some(Ctl::Hex(k)) = focus
+        && hex_key(k, vk)
+    {
+        return;
+    }
     match vk {
         VK_ESCAPE => match get(|w| escape(w.prompt.as_ref(), w.error.is_some(), w.edited.is_some())).flatten() {
             Some(c) => {
@@ -3369,7 +4634,7 @@ fn on_key(h: HWND, vk: VIRTUAL_KEY) {
         }
         VK_SPACE | VK_RETURN => match focus {
             // A number or a choice changes with Left and Right only, so a stray Space never does.
-            Some(Ctl::Stepper(_) | Ctl::Pick(_) | Ctl::Tiles) | None => {}
+            Some(Ctl::Stepper(_) | Ctl::Pick(_) | Ctl::Tiles | Ctl::Picture) | None => {}
             Some(f) => {
                 act(f);
                 reveal();
@@ -3396,6 +4661,12 @@ fn on_key(h: HWND, vk: VIRTUAL_KEY) {
     }
 }
 
+/// A point on the place picture as whole percent of its work area, kept 0 to 100.
+fn percent(at: Bx, (x, y): (f32, f32)) -> (f64, f64) {
+    let p = |v: f32, o: f32, len: f32| (((v - o) / len.max(1.0)) as f64 * 100.0).round().clamp(0.0, 100.0);
+    (p(x, at.0, at.2), p(y, at.1, at.3))
+}
+
 fn point(lp: LPARAM, scale: f32) -> (f32, f32) {
     ((lp.0 & 0xFFFF) as i16 as f32 / scale, ((lp.0 >> 16) & 0xFFFF) as i16 as f32 / scale)
 }
@@ -3404,7 +4675,7 @@ fn point(lp: LPARAM, scale: f32) -> (f32, f32) {
 /// menu is open, only its lines do.
 fn hit_at(w: &Win, (x, y): (f32, f32)) -> Option<Ctl> {
     let inside = |(hx, hy, hw, hh): Bx| x >= hx && x < hx + hw && y >= hy && y < hy + hh;
-    let menu = w.menu.is_some();
+    let menu = menu_open(w);
     let shown = |h: &Hit| if menu { h.group == 3 } else { h.group != 1 || (x > NAV && y > w.fixed) };
     w.hits.iter().find(|h| shown(h) && inside(h.at)).map(|h| h.ctl)
 }
@@ -3474,6 +4745,11 @@ pub fn open(section: Option<Section>) {
             pics: Pics::default(),
             edited: None,
             tree: Arc::new(Mutex::new(Node::default())),
+            hexes: vec![],
+            own: None,
+            screen: None,
+            chooser: None,
+            dragging: None,
         }));
         // Shorter than H when the screen is (1366 × 768 at 125%); WM_SIZE sets vw and vh.
         let (ww, wh) = size(h, W, H);
@@ -3532,8 +4808,21 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                 on_key(h, VIRTUAL_KEY(wp.0 as u16));
                 LRESULT(0)
             }
+            // TranslateMessage in main's loop makes these: a hex box takes its digits.
+            WM_CHAR => {
+                if let Some(Some(Ctl::Hex(k))) = get(|w| w.focus)
+                    && let Some(c) = char::from_u32(wp.0 as u32).filter(char::is_ascii_hexdigit)
+                    && {
+                        enter_if_new(k);
+                        get(|w| w.hexes.iter().any(|x| x.key == k)) == Some(true)
+                    }
+                {
+                    hex_insert(k, &c.to_string());
+                }
+                LRESULT(0)
+            }
             WM_MOUSEWHEEL => {
-                if get(|w| w.menu.is_some()) == Some(true) {
+                if get(menu_open) == Some(true) {
                     return LRESULT(0);
                 }
                 let delta = ((wp.0 >> 16) & 0xFFFF) as i16 as f32;
@@ -3548,11 +4837,12 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                     return LRESULT(0);
                 }
                 // A click outside the open menu closes it, and does nothing else.
-                if get(|w| w.menu.is_some() && hit_at(w, point(lp, w.scale)).is_none()) == Some(true) {
+                if get(|w| menu_open(w) && hit_at(w, point(lp, w.scale)).is_none()) == Some(true) {
                     close_menu();
                     return LRESULT(0);
                 }
                 let _ = SetCapture(h);
+                let was = get(|w| w.focus).flatten();
                 let _ = set(|w| {
                     let (x, y) = point(lp, w.scale);
                     w.kb = false;
@@ -3564,12 +4854,33 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                         }
                         _ => {
                             w.press = hit_at(w, (x, y));
-                            if let Some(p) = w.press.filter(|p| !matches!(p, Ctl::Item(_))) {
+                            if let Some(p) = w.press.filter(|p| !matches!(p, Ctl::Item(_) | Ctl::ScreenItem(_))) {
                                 w.focus = Some(p.stop());
+                            }
+                            // Custom: a press on the picture puts the card's center there.
+                            if w.press == Some(Ctl::Picture)
+                                && settings::get().indicator_enabled
+                                && settings::parse_error().is_none()
+                                && let Some(at) = w.hits.iter().find(|h| h.ctl == Ctl::Picture).map(|h| h.at)
+                            {
+                                w.dragging = Some(percent(at, (x, y)));
                             }
                         }
                     }
                 });
+                // Leaving a hex box saves six digits; a click in one puts the caret there.
+                let now = get(|w| w.focus).flatten();
+                if let Some(Ctl::Hex(k)) = was
+                    && now != was
+                {
+                    leave_hex(k);
+                }
+                if let Some(Ctl::Hex(k)) = now
+                    && let Some(at) = get(|w| w.hits.iter().find(|x| x.ctl == Ctl::Hex(k)).map(|x| x.at)).flatten()
+                {
+                    let x = get(|w| point(lp, w.scale).0).unwrap_or(0.0);
+                    enter_hex(k, Some(caret_at(at, x)));
+                }
                 let _ = PostMessageW(Some(h), WM_MOUSEMOVE, wp, lp);
                 repaint();
                 LRESULT(0)
@@ -3585,6 +4896,18 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                 .flatten();
                 if let Some(to) = drag {
                     scroll_to(to);
+                } else if set(|w| {
+                    let at = w.hits.iter().find(|h| h.ctl == Ctl::Picture).map(|h| h.at);
+                    match (w.dragging, at) {
+                        (Some(_), Some(at)) => {
+                            w.dragging = Some(percent(at, point(lp, w.scale)));
+                            true
+                        }
+                        _ => false,
+                    }
+                }) == Some(true)
+                {
+                    layout();
                 } else if set(|w| {
                     let hover = hit_at(w, point(lp, w.scale));
                     std::mem::replace(&mut w.hover, hover) != hover
@@ -3603,6 +4926,11 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
             }
             WM_LBUTTONUP => {
                 let _ = ReleaseCapture();
+                // A Custom drag ends: Across, then Down, each against the file as it is then.
+                if let Some(Some((x, y))) = set(|w| w.dragging.take()) {
+                    set_place(ACROSS, x);
+                    set_place(DOWN, y);
+                }
                 let click = set(|w| {
                     let was = w.press.take();
                     let dragged = w.drag.take().is_some();
@@ -3617,7 +4945,10 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                 LRESULT(0)
             }
             WM_CAPTURECHANGED => {
-                let _ = set(|w| w.drag = None);
+                let _ = set(|w| {
+                    w.drag = None;
+                    w.dragging = None;
+                });
                 LRESULT(0)
             }
             WM_SIZE => {
@@ -3626,6 +4957,7 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                         w.vw = (lp.0 & 0xFFFF) as f32 / w.scale;
                         w.vh = ((lp.0 >> 16) & 0xFFFF) as f32 / w.scale;
                         w.menu = None;
+                        w.chooser = None;
                     })
                     .is_some()
                 {
@@ -3645,7 +4977,7 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                     if get(|w| w.rec.is_some()) == Some(true) {
                         stop_rec();
                     }
-                    if get(|w| w.menu.is_some()) == Some(true) {
+                    if get(menu_open) == Some(true) {
                         close_menu();
                     }
                 }
@@ -3695,6 +5027,89 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn loaded(text: &str) -> &'static Settings {
+        Box::leak(Box::new(settings::parse_for_test(text).0))
+    }
+
+    /// An edit in words, since toml values don't compare: "at colors.ws2 = \"#DDB43D\"".
+    fn said(e: Option<Edit>) -> String {
+        match e {
+            Some(Edit::At(p, v)) => format!("at {} = {}", p.join("."), v.to_string().trim()),
+            Some(Edit::Remove(p)) => format!("remove {}", p.join(".")),
+            Some(_) => "other".into(),
+            None => "none".into(),
+        }
+    }
+
+    // AC-12: the file only holds colors that differ, so typing des-k's own gold takes ws2 out
+    // and the workspace follows des-k's palette again.
+    #[test]
+    fn a_default_color_takes_its_key_out() {
+        assert_eq!(said(Some(color_edit("colors.ws2", 0xDDB43C))), "remove colors.ws2");
+        assert_eq!(said(Some(color_edit("colors.ws2", 0xDDB43D))), "at colors.ws2 = \"#DDB43D\"");
+        assert_eq!(said(Some(color_edit(ACCENT, 0xE0457B))), "at colors.accent = \"#E0457B\"");
+    }
+
+    // AC-13: a screen key equal to All screens' goes, so the screen follows All screens again,
+    // but never the table's last key: walking the spots must not silently drop a kept place.
+    #[test]
+    fn a_screen_key_equal_to_all_screens_goes_but_never_the_last() {
+        let id = "DEL-A0F5-1234";
+        let two = loaded("[indicator]\ngap = 24\n[indicator.screens.\"DEL-A0F5-1234\"]\nspot = \"top-right\"\ngap = 40\n");
+        assert_eq!(said(place_edit(two, Some(id), GAP, 24.0)), "remove indicator.screens.DEL-A0F5-1234.gap");
+        let one = loaded("[indicator.screens.\"DEL-A0F5-1234\"]\nspot = \"top-right\"\n");
+        let center = spot_index(settings::Spot::Center) as f64;
+        assert_eq!(said(place_edit(one, Some(id), SPOT, center)), "at indicator.screens.DEL-A0F5-1234.spot = \"center\"");
+        assert_eq!(said(place_edit(one, Some(id), GAP, 24.0)), "none", "it follows All screens' gap already");
+        assert_eq!(said(place_edit(one, Some(id), GAP, 40.0)), "at indicator.screens.DEL-A0F5-1234.gap = 40");
+        let none = loaded("");
+        assert_eq!(said(place_edit(none, Some(id), SPOT, center)), "none");
+        assert_eq!(said(place_edit(none, None, SPOT, 2.0)), "at indicator.spot = \"top-right\"");
+        assert_eq!(said(place_edit(none, None, ACROSS, 70.0)), "at indicator.x = 70");
+        // And what the screen then uses: its spot from its table, the rest from All screens.
+        let text = "[indicator.screens.\"DEL-A0F5-1234\"]\nspot = \"top-right\"\n";
+        let after = settings::parse_for_test(&settings::apply_for_test(text, &place_edit(one, Some(id), GAP, 40.0).unwrap())).0;
+        assert_eq!(pos_of(&after, Some(id)).gap, 40);
+        assert_eq!(pos_of(&after, Some(id)).spot, settings::Spot::TopRight);
+    }
+
+    // The hex box's paste takes exactly six hex digits, trimming spaces and a leading #, so a
+    // stray paste never saves half a color.
+    #[test]
+    fn paste_takes_exactly_six_hex_digits() {
+        assert_eq!(pasted(" #2e8b57 "), Some("2E8B57".into()));
+        assert_eq!(pasted("2E8B57"), Some("2E8B57".into()));
+        assert_eq!(pasted("#2E8B5"), None);
+        assert_eq!(pasted("#2E8B577"), None);
+        assert_eq!(pasted("seagreen"), None);
+        assert_eq!(hex_color("2E8B57"), Some(0x2E8B57));
+        assert_eq!(hex_color("2E8B5"), None);
+    }
+
+    // Spots, from Custom, picks the spot nearest the card: the third it sits in.
+    #[test]
+    fn spots_from_custom_is_the_nearest_third() {
+        assert_eq!(SPOT_NAMES[nearest(70.0, 20.0)], "Top right");
+        assert_eq!(SPOT_NAMES[nearest(50.0, 50.0)], "Center");
+        assert_eq!(SPOT_NAMES[nearest(0.0, 100.0)], "Bottom left");
+    }
+
+    // The chooser lists every screen with a reason to be there: plugged in, remembered, or
+    // named by a table des-k never saw; All screens always first.
+    #[test]
+    fn the_chooser_lists_every_known_screen() {
+        let r = RECT { left: 0, top: 0, right: 10, bottom: 10 };
+        let view = crate::ws::View {
+            present: vec![crate::ws::Present { id: "DEL-1".into(), device: "DISPLAY2".into(), name: "DELL U2720Q".into(), full: r, work: r }],
+            waiting: vec![crate::ws::Waiting { id: "LG-2".into(), name: "LG 27UL850".into(), windows: vec![] }],
+            ..Default::default()
+        };
+        let s = loaded("[indicator.screens.\"DEL-1\"]\nspot = \"top\"\n[indicator.screens.\"ACR-9\"]\nspot = \"left\"\n");
+        let list = screen_choices(&view, s);
+        let shown: Vec<(&str, &str)> = list.iter().map(|c| (c.name.as_str(), c.side)).collect();
+        assert_eq!(shown, [("All screens", ""), ("DELL U2720Q", "Own place"), ("LG 27UL850", "Not plugged in"), ("ACR-9", "Unknown screen")]);
+    }
 
     // A hand written value off the grid is kept as is, and the next step lands on the grid,
     // not one step away from the odd value.
@@ -3868,6 +5283,10 @@ mod tests {
                 active: vec![("DISPLAY1".into(), 0), ("DISPLAY2".into(), 1)],
                 windows: [("DISPLAY1", 0), ("DISPLAY1", 0), ("DISPLAY1", 0), ("DISPLAY2", 0), ("DISPLAY2", 1), ("DISPLAY2", 1), ("DISPLAY2", 3)].iter().map(|(d, w)| (d.to_string(), *w, r(0, 0, 10, 10))).collect(),
                 names: vec![("DISPLAY1".into(), "Built-in display".into()), ("DISPLAY2".into(), "DELL U2720Q".into())],
+                present: vec![
+                    crate::ws::Present { id: "internal".into(), device: "DISPLAY1".into(), name: "Built-in display".into(), full: r(0, 600, 1440, 1500), work: r(0, 600, 1440, 1452) },
+                    crate::ws::Present { id: "DEL-A0F5-1234".into(), device: "DISPLAY2".into(), name: "DELL U2720Q".into(), full: r(1440, 0, 4000, 1440), work: r(1440, 0, 4000, 1392) },
+                ],
                 removals: vec![
                     vec![
                         crate::ws::Moved { name: "Built-in display".into(), device: Some("DISPLAY1".into()), unplugged: false, windows: 0, from: vec![] },
@@ -3882,10 +5301,27 @@ mod tests {
             here: Some("DISPLAY2".into()),
         };
         let night_sky = ui::high_contrast([0x000000, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);
-        let runs: Vec<(&str, Theme, f32)> = vec![("light", ui::LIGHT, 1.0), ("dark", ui::DARK, 1.0), ("hc", night_sky, 1.0), ("light-150", ui::LIGHT, 1.5)];
+        let runs: Vec<(&str, Theme, f32)> = vec![("light", ui::LIGHT, 1.0), ("dark", ui::DARK, 1.0), ("hc", night_sky, 1.0), ("light-150", ui::LIGHT, 1.5), ("rose", ui::tests::rose(true), 1.0), ("rose-dark", ui::tests::rose(false), 1.0)];
         // Name, section to scroll to, what to set up.
         type Setup = fn(&mut Win);
-        let states: [(&str, Option<Section>, Setup); 9] = [
+        let states: [(&str, Option<Section>, Setup); 13] = [
+            ("colors", Some(Section::Colors), |_| {}),
+            ("colors-own", Some(Section::Colors), |w| {
+                settings::use_for_test("[colors]\naccent = \"#E0457B\"\nws2 = \"#FFF4B0\"\nws3 = \"blue\"\n");
+                w.focus = Some(Ctl::Hex(ACCENT));
+                w.hexes = vec![Hex { key: ACCENT, digits: "2E8B5".into(), caret: 5, anchor: 5, line: None }];
+                w.own = Some(0x2E8B57);
+            }),
+            ("place", Some(Section::Indicator), |w| {
+                settings::use_for_test("[indicator]\nspot = \"top-right\"\n");
+                w.scroll = 470.0;
+                w.focus = Some(Ctl::Picture);
+            }),
+            ("place-screen", Some(Section::Indicator), |w| {
+                settings::use_for_test("[indicator]\nspot = \"top-right\"\n[indicator.screens.\"DEL-A0F5-1234\"]\nspot = \"custom\"\nx = 70\ny = 120\n");
+                w.screen = Some("DEL-A0F5-1234".into());
+                w.scroll = 470.0;
+            }),
             ("top", None, |_| {}),
             ("removing", None, |w| {
                 w.hover = Some(Ctl::TileRemove);
@@ -3911,7 +5347,9 @@ mod tests {
                     hwnd: HWND::default(), scale: *scale, theme: *theme, fonts: Fonts::new(*scale), scroll: 0.0, height: 0.0, fixed: 0.0, tops: vec![], hits: vec![],
                     focus: None, kb: true, hover: None, press: None, drag: None, vw: W, vh: H, error: None, rec: None, refused: None, prompt: None, menu: None,
                     pics: fake(), edited: None, tree: Arc::new(Mutex::new(Node::default())),
+                    hexes: vec![], own: None, screen: None, chooser: None, dragging: None,
                 };
+                settings::use_for_test("");
                 setup(&mut win);
                 let measure = |win: &Win| unsafe {
                     let dc = GetDC(None);

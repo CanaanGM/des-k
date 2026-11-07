@@ -956,7 +956,8 @@ fn fit_place(c: &Canvas, name: &str, then: &str, w: f32) -> String {
 /// soft (40%) when des-k hid it, a pin when pinned, a grey outline when its screen just left.
 fn chip(c: &Canvas, r: &Row, y: f32, chosen: bool, bg: u32) {
     let (b, hc) = (c.t.b, c.t.hc);
-    let color = b.ws[(r.workspace.max(1) - 1).min(8)];
+    let wi = (r.workspace.max(1) - 1).min(8);
+    let color = b.ws[wi];
     let (label, f) = if r.pinned { ("\u{E718}".to_string(), F::IconSmall) } else { (r.workspace.to_string(), F::SmallBold) };
     let tw = c.width(&label, f);
     let w = (tw + 10.0).max(20.0);
@@ -968,10 +969,10 @@ fn chip(c: &Canvas, r: &Row, y: f32, chosen: bool, bg: u32) {
         // turn to HighlightText, and an unplugged one is filled like a full one.
         (true, true) if soft => (bg, Some(b.on_acc), b.on_acc),
         (true, true) => (b.on_acc, None, b.acc),
-        (true, false) if full => (color, None, b.on_ws),
+        (true, false) if full => (color, None, b.on_ws[wi]),
         (true, false) if soft => (bg, Some(b.tx), b.tx),
         (true, false) => (bg, Some(b.tx3), b.tx2),
-        _ if full => (color, (b.ws_edge > 0.0).then(|| mix(color, 0, b.ws_edge)), b.on_ws),
+        _ if full => (color, (b.ws_edge > 0.0).then(|| mix(color, 0, b.ws_edge)), b.on_ws[wi]),
         _ if soft => (mix(b.card, color, 0.4), Some(mix(b.card, color, 0.7)), b.tx),
         _ => (bg, Some(b.tx3), b.tx2),
     };

@@ -112,6 +112,7 @@ struct Screen {
     id: String,
     name: String,
     area: RECT,
+    full: RECT,
     primary: bool,
 }
 
@@ -249,9 +250,10 @@ fn label(s: &State, id: &str) -> String {
     }
 }
 
-/// The indicator's card for screen `id`: named only when two or more screens are plugged in.
+/// The indicator's card for screen `id`: named only when two or more screens are plugged in,
+/// and carrying the id so the indicator finds that screen's own place (spec 0020 AC-9).
 fn card(s: &State, id: &str, active: usize, count: usize) -> Card {
-    Card::new(active, count, (s.present.len() > 1).then(|| label(s, id)))
+    Card { screen_id: id.to_string(), ..Card::new(active, count, (s.present.len() > 1).then(|| label(s, id))) }
 }
 
 /// The indicator on `mon` as it is now: the settings page's Show (spec 0012 AC-19).
@@ -588,7 +590,7 @@ fn screen_ids() -> Vec<Screen> {
             let id = read.or_else(|| known.1.get(&device).cloned()).unwrap_or_else(|| clean_id(&device));
             known.1.insert(device.clone(), id.clone());
             let name = t.map_or(String::new(), |t| if t.internal { "Built-in display".into() } else { t.friendly.clone() });
-            Screen { device, id, name, area: mi.rcWork, primary: mi.dwFlags & MONITORINFOF_PRIMARY != 0 }
+            Screen { device, id, name, area: mi.rcWork, full: mi.rcMonitor, primary: mi.dwFlags & MONITORINFOF_PRIMARY != 0 }
         })
         .collect();
     out.sort_by_key(|p| (p.area.left, p.area.top));
@@ -1312,6 +1314,17 @@ pub struct View {
     pub names: Vec<(String, String)>,       // device and its name, as `label` gives it (spec 0017)
     pub removals: Vec<Vec<Moved>>,          // what each screen moves, one list per count asked
     pub waiting: Vec<Waiting>,              // screens not plugged in (spec 0016 AC-9)
+    pub present: Vec<Present>,              // screens plugged in, left to right (spec 0020)
+}
+
+/// A screen plugged in, for the settings page's Where it shows: its id keys its own place.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Present {
+    pub id: String,
+    pub device: String,
+    pub name: String, // as `label` gives it, so twins read #1, #2 from the left
+    pub full: RECT,
+    pub work: RECT,
 }
 
 /// A remembered screen not plugged in, with its away windows per workspace (spec 0017 AC-SET-3).
@@ -1334,7 +1347,8 @@ pub fn view(counts: &[usize]) -> Option<View> {
     let active = s.monitors.values().filter_map(|m| Some((m.device.clone()?, m.active))).collect();
     let names = s.present.iter().map(|p| (p.device.clone(), label(&s, &p.id))).collect();
     let removals = counts.iter().map(|&n| moved(&s, n)).collect();
-    Some(View { active, windows, names, removals, waiting: waiting(&s) })
+    let present = s.present.iter().map(|p| Present { id: p.id.clone(), device: p.device.clone(), name: label(&s, &p.id), full: p.full, work: p.area }).collect();
+    Some(View { active, windows, names, removals, waiting: waiting(&s), present })
 }
 
 /// Every remembered screen not plugged in, by name, with how many windows wait for it on each workspace.
@@ -2826,7 +2840,7 @@ mod tests {
     // Two monitors of one model with no serial must stay apart, numbered left to right (AC-1).
     #[test]
     fn twins_are_numbered_left_to_right() {
-        let at = |id: &str, left| Screen { device: String::new(), id: id.into(), name: String::new(), area: rect(left, 0, left + 10, 10), primary: false };
+        let at = |id: &str, left| Screen { device: String::new(), id: id.into(), name: String::new(), area: rect(left, 0, left + 10, 10), full: rect(left, 0, left + 10, 10), primary: false };
         let mut list = vec![at("internal", -100), at("DEL-4123", 0), at("DEL-4123", 100)];
         number_twins(&mut list);
         assert_eq!(list.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["internal", "DEL-4123#1", "DEL-4123#2"]);

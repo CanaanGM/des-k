@@ -383,17 +383,17 @@ fn header(c: &Canvas, (x, y, w): (f32, f32, f32), title: &str, n: Option<u8>, di
     let tint = match () {
         _ if t.hc => b.card,
         _ if dim => b.track,
-        _ => mix(b.card, b.acc, 0.09),
+        _ => mix(b.card, b.acc_a, 0.09),
     };
     c.fill_rr((x + 1.0, y + 1.0, w - 2.0, h - 1.0), 7.0, op(tint));
     c.fill_rr((x + 1.0, y + h / 2.0, w - 2.0, h / 2.0 - 1.0), 0.0, op(tint));
     c.rule(x, y + h - 1.0, w, op(b.line));
     let mut tx = x + 16.0;
     if let Some(n) = n {
-        let fill = if dim { b.tx3 } else { b.acc };
+        let fill = if dim { b.tx3 } else { b.acc_b };
         c.circle(tx + 11.0, y + h / 2.0, 11.0, Some(op(fill)), None);
         let s = n.to_string();
-        c.text(tx + 11.0 - c.width(&s, F::SmallBold) / 2.0, y + (h - 22.0) / 2.0, 22.0, &s, F::SmallBold, b.on_acc);
+        c.text(tx + 11.0 - c.width(&s, F::SmallBold) / 2.0, y + (h - 22.0) / 2.0, 22.0, &s, F::SmallBold, b.on_acc_b);
         tx += 32.0;
     }
     c.text(tx, y, h - 1.0, title, F::Bold, if dim { b.tx3 } else { b.tx });

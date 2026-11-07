@@ -40,6 +40,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 20 | Look B screens | Slice 11 | in-progress |
 | 21 | Install updates from the tray | Slice 12 | in-progress |
 | 22 | Logs you can read and share | Slice 13 | in-progress |
+| 23 | Your colors and indicator position | Slice 14 | in-progress |
 
 ## Already built
 
@@ -314,9 +315,20 @@ spec [0019](../specs/0019-logging-timestamps-levels.md) · code in `src/log.rs`,
   - [x] Every `println!`/`eprintln!` moved over, `ERROR` lines raised, titles swapped for `ws::who`
   - [ ] `clippy.toml` lint on, tests allowed to print; tried on your machine
 
+## Slice 14: Your colors
+
+### 23. Your colors and indicator position · in-progress · from spec 0020
+des-k's accent follows your Windows accent (or a color you type) with two neighbor hues for its tints, each workspace can have your own color everywhere, and the indicator sits at one of 9 spots or a percent position, with an override per screen.
+**Done when:** changing your Windows accent repaints des-k within a second, a custom workspace color shows in every des-k window with readable ink, high contrast still wins, and the indicator lands where you set it on each of your screens.
+spec [0020](../specs/0020-indicator-colors-position/index.md) · code in `src/ui.rs`, `src/indicator.rs`, `src/settings.rs`, `src/settings_page.rs`, `src/ws.rs`
+- [x] Design it (spec): `/architect indicator colors and position`
+- [x] Build it: `/develop your colors and indicator position`
+  - [x] Indicator position: spots, gap, custom percent, per screen overrides, with unit tests (AC-7 to AC-11)
+  - [x] Colors: workspace colors, Windows accent and neighbor hues, ink, high contrast (AC-1 to AC-6, AC-11, AC-14)
+  - [x] Settings page: the Colors section and Where it shows, from the approved design (AC-12, AC-13, AC-15, AC-16)
+
 ## Deferred
 Out of scope for the current build pass, kept so the plan stays honest.
-- **Indicator redesign**: a nicer popup look, asked for later · needs a decision
 - **Dynamic workspaces**: GNOME style, always one empty at the end (you chose a fixed count for now) · needs a decision
 - **Per app follow exclusions**: a `settings.toml` list of apps that never trigger follow activation, only if one keeps stealing focus (from spec 0002) · needs a decision
 - **Dimmed wallpaper behind the overview**: draw your wallpaper instead of solid dark (from spec 0010) · needs a decision

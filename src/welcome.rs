@@ -868,7 +868,7 @@ impl Ctx<'_, '_> {
     fn tint(&self, y: f32, h: f32) {
         let b = self.c.t.b;
         if !self.c.t.hc {
-            self.c.fill_rr((X0 + 1.0, y, self.cw - 2.0, h), 0.0, op(mix(b.card, b.acc, 0.06)));
+            self.c.fill_rr((X0 + 1.0, y, self.cw - 2.0, h), 0.0, op(mix(b.card, b.acc_a, 0.06)));
         }
     }
 
@@ -1067,10 +1067,10 @@ impl Ctx<'_, '_> {
         let bw = self.w.vw - 2.0 * X0;
         if t.hc {
             self.c.boxed((X0, 0.0, bw, 6.0), 3.0, b.bg, Some(b.tx));
-            self.c.fill_rr((X0 + 1.0, 1.0, (bw - 2.0) * frac, 4.0), 2.0, op(b.acc));
+            self.c.fill_rr((X0 + 1.0, 1.0, (bw - 2.0) * frac, 4.0), 2.0, op(b.acc_a));
         } else {
             self.c.fill_rr((X0, 0.0, bw, 3.0), 1.5, op(b.line));
-            self.c.fill_rr((X0, 0.0, bw * frac, 3.0), 1.5, op(b.acc));
+            self.c.fill_rr((X0, 0.0, bw * frac, 3.0), 1.5, op(b.acc_a));
         }
         let eye = format!("Step {} of {n}", j + 1);
         self.text_node(UIA_ProgressBarControlTypeId, &eye, Some(format!("{} of {n}", j + 1)));
@@ -1194,21 +1194,21 @@ impl Ctx<'_, '_> {
             let roomy = lines.len() as f32 * 15.0 + 30.0 <= h && lines.iter().all(|l| self.c.width(l, F::Small) <= w - 16.0);
             if roomy {
                 for (k, l) in lines.iter().enumerate() {
-                    self.c.text(x + 9.0, yy + 7.0 + k as f32 * 15.0, 15.0, l, F::Small, b.on_ws);
+                    self.c.text(x + 9.0, yy + 7.0 + k as f32 * 15.0, 15.0, l, F::Small, b.on_ws[a.min(8)]);
                 }
             }
             let wy = yy + 12.0 + if roomy { lines.len() as f32 * 15.0 } else { 0.0 } + 8.0;
             let wh = h - (wy - yy) - 30.0;
             let busy = self.w.pics.view.windows.iter().any(|(d, ws, _)| *d == s.device && *ws == a);
             if busy && w > 100.0 && wh >= 18.0 {
-                self.c.fill_rr((x + w * 0.42, wy, w * 0.48, wh), 3.0, ui::alpha(0xFFFFFF, 0.85));
+                self.c.fill_rr((x + w * 0.42, wy, w * 0.48, wh), 3.0, ui::alpha(b.mk_ws[a.min(8)], 0.85));
             }
             let num = (a + 1).to_string();
             if roomy {
-                self.c.text(x + 9.0, yy + h - 34.0, 28.0, &num, F::Title, b.on_ws);
+                self.c.text(x + 9.0, yy + h - 34.0, 28.0, &num, F::Title, b.on_ws[a.min(8)]);
             } else {
                 let nw = self.c.width(&num, F::Title);
-                self.c.text(x + (w - nw) / 2.0, yy + (h - 28.0) / 2.0, 28.0, &num, F::Title, b.on_ws);
+                self.c.text(x + (w - nw) / 2.0, yy + (h - 28.0) / 2.0, 28.0, &num, F::Title, b.on_ws[a.min(8)]);
             }
             if s.device == self.w.pics.mouse {
                 let (px, py) = (x + w - 28.0, yy + h - 30.0);
@@ -1577,15 +1577,15 @@ impl Ctx<'_, '_> {
     /// A card's tinted header: the fingers' circle, its title, a caption on the right.
     fn header(&mut self, y: f32, n: u8, cap: &str) -> f32 {
         let b = self.c.t.b;
-        let tint = if self.c.t.hc { b.card } else { mix(b.card, b.acc, 0.09) };
+        let tint = if self.c.t.hc { b.card } else { mix(b.card, b.acc_a, 0.09) };
         self.c.fill_rr((X0 + 1.0, y + 1.0, self.cw - 2.0, 36.0), 7.0, op(tint));
         self.c.fill_rr((X0 + 1.0, y + 20.0, self.cw - 2.0, 17.0), 0.0, op(tint));
         self.c.rule(X0 + 1.0, y + 37.0, self.cw - 2.0, op(b.line));
         let x = X0 + 16.0;
-        self.c.circle(x + 11.0, y + 19.0, 11.0, Some(op(b.acc)), None);
+        self.c.circle(x + 11.0, y + 19.0, 11.0, Some(op(b.acc_b)), None);
         let d = n.to_string();
         let dw = self.c.width(&d, F::SmallBold);
-        self.c.text(x + 11.0 - dw / 2.0, y + 8.0, 22.0, &d, F::SmallBold, b.on_acc);
+        self.c.text(x + 11.0 - dw / 2.0, y + 8.0, 22.0, &d, F::SmallBold, b.on_acc_b);
         let title = format!("{n} fingers");
         self.c.text(x + 32.0, y + 8.0, 22.0, &title, F::Bold, b.tx);
         let cw = self.c.width(cap, F::Small);
@@ -1670,7 +1670,7 @@ impl Ctx<'_, '_> {
         } else {
             self.c.fill_rr((x + 6.0, my, 22.0, 22.0), 4.0, op(b.held));
         }
-        let mark = if t.dark && !t.hc { b.link } else { b.acc };
+        let mark = if t.dark && !t.hc { mix(b.acc_b, 0xFFFFFF, 0.28) } else { b.acc_b };
         if glyph.is_empty() {
             self.c.circle(x + 17.0, my + 11.0, 3.0, Some(op(mark)), None);
         } else {
@@ -2986,11 +2986,12 @@ mod tests {
                 crate::ws::Moved { name: "Built-in display".into(), device: Some("DISPLAY1".into()), unplugged: false, windows: 0, from: vec![] },
             ]],
             waiting: vec![],
+            present: vec![],
         };
         let (n, o) = (PadRow::Nothing, PadRow::StillOn);
         let pad = |rows: [PadRow; 4], saved| Some(PadState { pad: true, enabled: true, rows, off: rows == [n; 4], saved });
         let night_sky = ui::high_contrast([0x000000, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);
-        let runs: Vec<(&str, Theme, f32)> = vec![("light", ui::LIGHT, 1.0), ("dark", ui::DARK, 1.0), ("hc", night_sky, 1.0), ("light-150", ui::LIGHT, 1.5)];
+        let runs: Vec<(&str, Theme, f32)> = vec![("light", ui::LIGHT, 1.0), ("dark", ui::DARK, 1.0), ("hc", night_sky, 1.0), ("light-150", ui::LIGHT, 1.5), ("rose", ui::tests::rose(true), 1.0), ("rose-dark", ui::tests::rose(false), 1.0)];
         type Setup = fn(&mut Win);
         let states: Vec<(&str, Setup)> = vec![
             ("f0-try", |_| {}),

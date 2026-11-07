@@ -562,7 +562,7 @@ fn draw(c: &Canvas, s: &Session) {
         let (fill, edge) = ws_fill(sc.active);
         let n = (sc.active + 1).to_string();
         c.boxed((*x, *y, *w, *h), 4.0, fill, edge);
-        c.text(x + (w - c.width(&n, F::SmallBold)) / 2.0, *y, *h, &n, F::SmallBold, b.on_ws);
+        c.text(x + (w - c.width(&n, F::SmallBold)) / 2.0, *y, *h, &n, F::SmallBold, b.on_ws[sc.active.min(8)]);
         c.text(*name_x, *y, *h, name, F::Small, b.tx2);
     }
     for (i, &(x, y, w, h)) in s.lay.map.iter().enumerate() {
@@ -578,7 +578,7 @@ fn draw(c: &Canvas, s: &Session) {
             let f = if side < 18.0 { F::TinyBold } else { F::SmallBold };
             let n = (sc.active + 1).to_string();
             let ih = if landed { h - BAR } else { h }; // the bar never covers the number
-            c.text(x + (w - c.width(&n, f)) / 2.0, y, ih, &n, f, b.on_ws);
+            c.text(x + (w - c.width(&n, f)) / 2.0, y, ih, &n, f, b.on_ws[sc.active.min(8)]);
         }
     }
     // The hiding warning: the finder's note box.
@@ -870,7 +870,8 @@ mod tests {
         ];
         let aquatic = ui::high_contrast([0x202020, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);
         let desert = ui::high_contrast([0xFFFAEF, 0x3D3D3D, 0x903909, 0xFFF5E3, 0x6D6D6D]);
-        let themes: [(&str, Theme, f32); 5] = [("light", LIGHT, 1.0), ("dark", DARK, 1.0), ("hc", aquatic, 1.0), ("desert", desert, 1.0), ("light-150", LIGHT, 1.5)];
+        let (rose, rose_dark) = (ui::tests::rose(true), ui::tests::rose(false));
+        let themes: [(&str, Theme, f32); 7] = [("light", LIGHT, 1.0), ("dark", DARK, 1.0), ("hc", aquatic, 1.0), ("desert", desert, 1.0), ("light-150", LIGHT, 1.5), ("rose", rose, 1.0), ("rose-dark", rose_dark, 1.0)];
         for (tname, t, scale) in themes {
             let fonts = Fonts::new(scale);
             for (name, screens, landed, setup) in &states {

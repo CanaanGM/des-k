@@ -15,7 +15,7 @@ use windows::Win32::{
 };
 use windows::core::w;
 
-use crate::settings::{self, Style};
+use crate::settings::{self, Pos, Spot, Style};
 use crate::ui::{self, Canvas, F, Theme, mix, op};
 
 /// Also how `--quit` and the single-instance check find the running des-k.
@@ -35,12 +35,14 @@ pub struct Card {
     pub active: usize,
     pub count: usize,
     pub screen: Option<String>,
+    /// The screen's id (spec 0016), for its own place (spec 0020 AC-9); empty uses the default.
+    pub screen_id: String,
     pub lines: Vec<Line>,
 }
 
 impl Card {
     pub fn new(active: usize, count: usize, screen: Option<String>) -> Card {
-        Card { active, count, screen, lines: vec![] }
+        Card { active, count, screen, screen_id: String::new(), lines: vec![] }
     }
 
     pub fn with(mut self, line: Line) -> Card {
@@ -194,7 +196,7 @@ fn lines(c: &Canvas, x: f32, y: f32, icon_w: f32, gap: f32, text_w: f32, all: &[
                 let edge = (t.ws_edge > 0.0).then(|| mix(color, 0, t.ws_edge));
                 c.boxed((cx, top + 1.0, cw, 18.0), 4.0, color, edge);
                 let num = (n + 1).to_string();
-                c.text(cx + (cw - c.width(&num, F::SmallBold)) / 2.0, top + 1.0, 18.0, &num, F::SmallBold, t.on_ws);
+                c.text(cx + (cw - c.width(&num, F::SmallBold)) / 2.0, top + 1.0, 18.0, &num, F::SmallBold, t.on_ws[n % 9]);
                 20.0
             }
             None => c.para(xt, top, text_w, 20.0, &[(&w.title, F::Bold, t.tx)]),
@@ -273,7 +275,7 @@ fn draw(c: &Canvas, x: f32, y: f32, style: Style, card: &Card, edge: bool) -> (f
             let ring = (t.ws_edge > 0.0).then(|| mix(color, 0, t.ws_edge));
             c.boxed((x + P, y + P, BLOCK, BLOCK), 4.0, color, ring);
             let num = (card.active + 1).to_string();
-            c.text(x + P + (BLOCK - c.width(&num, F::Number)) / 2.0, y + P, BLOCK, &num, F::Number, t.on_ws);
+            c.text(x + P + (BLOCK - c.width(&num, F::Number)) / 2.0, y + P, BLOCK, &num, F::Number, t.on_ws[card.active % 9]);
             let side = x + P + BLOCK + COL;
             let side_h = if named { 20.0 + 10.0 + 12.0 } else { 12.0 };
             let mut row = y + P + (BLOCK - side_h) / 2.0;
@@ -427,6 +429,7 @@ pub fn show(mon: HMONITOR, card: Card) {
     STEP.set((full as u32).div_ceil(ticks) as u8);
     ALPHA.set(full);
     let text = spoken(&card, style);
+    let pos = st.indicator_pos_for(&card.screen_id);
     let stored = SHOWN.with(|s| s.try_borrow_mut().map(|mut s| *s = Some(Shown { card, style, scale, theme })).is_ok());
     if !stored {
         return warn!("indicator: skipped, a message came back in while the card was painted");
@@ -435,8 +438,7 @@ pub fn show(mon: HMONITOR, card: Card) {
     unsafe {
         let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
         let _ = GetMonitorInfoW(mon, &mut mi);
-        let r = mi.rcWork;
-        let (x, y) = ((r.left + r.right - w) / 2, (r.top + r.bottom - ht) / 2);
+        let (x, y) = place(mi.rcWork, w, ht, pos, scale);
         ui::border(h, theme.b.edge);
         let _ = SetLayeredWindowAttributes(h, COLORREF(0), full, LWA_ALPHA);
         let _ = SetWindowPos(h, Some(HWND_TOPMOST), x, y, w, ht, SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -446,10 +448,82 @@ pub fn show(mon: HMONITOR, card: Card) {
     crate::uia::notify(h, &text, "des-k indicator", false);
 }
 
+/// The card's top left on `work` for a card `w` by `h` px (spec 0020 AC-7, AC-8). Pure, so the
+/// tests can run it; every `show` runs it again, so a card that grows keeps its anchor (AC-10).
+pub(crate) fn place(work: RECT, w: i32, h: i32, pos: Pos, scale: f32) -> (i32, i32) {
+    let RECT { left: l, top: t, right: r, bottom: b } = work;
+    let gap = (pos.gap as f32 * scale).round() as i32;
+    let (x0, xc, x1) = (l + gap, (l + r - w) / 2, r - gap - w);
+    let (y0, yc, y1) = (t + gap, (t + b - h) / 2, b - gap - h);
+    let (x, y) = match pos.spot {
+        Spot::TopLeft => (x0, y0),
+        Spot::Top => (xc, y0),
+        Spot::TopRight => (x1, y0),
+        Spot::Left => (x0, yc),
+        Spot::Center => (xc, yc),
+        Spot::Right => (x1, yc),
+        Spot::BottomLeft => (x0, y1),
+        Spot::Bottom => (xc, y1),
+        Spot::BottomRight => (x1, y1),
+        Spot::Custom => {
+            let at = |lo: i32, hi: i32, pct: f64, size: i32| (lo as f64 + pct / 100.0 * (hi - lo) as f64 - size as f64 / 2.0).round() as i32;
+            (at(l, r, pos.x, w), at(t, b, pos.y, h))
+        }
+    };
+    // Always inside the work area; a card bigger than it keeps its left or top edge on it.
+    (x.min(r - w).max(l), y.min(b - h).max(t))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ui::{DARK, Fonts, LIGHT, Theme};
+
+    const WORK: RECT = RECT { left: 0, top: 0, right: 1920, bottom: 1040 };
+
+    fn at(spot: Spot, w: i32, h: i32) -> (i32, i32) {
+        place(WORK, w, h, Pos { spot, ..Pos::default() }, 1.5)
+    }
+
+    // AC-7: the gap is 24 px at 100% scale, so 36 at 150%, and the other axis stays centered.
+    // Center keeps today's place, so nobody's indicator moves on upgrade.
+    #[test]
+    fn spots_sit_a_scaled_gap_from_their_edges() {
+        let (w, h) = (300, 120);
+        assert_eq!(at(Spot::TopLeft, w, h), (36, 36));
+        assert_eq!(at(Spot::Top, w, h), (810, 36));
+        assert_eq!(at(Spot::TopRight, w, h), (1920 - 36 - 300, 36));
+        assert_eq!(at(Spot::Left, w, h), (36, 460));
+        assert_eq!(at(Spot::Center, w, h), (810, 460));
+        assert_eq!(at(Spot::Right, w, h), (1584, 460));
+        assert_eq!(at(Spot::BottomLeft, w, h), (36, 1040 - 36 - 120));
+        assert_eq!(at(Spot::Bottom, w, h), (810, 884));
+        assert_eq!(at(Spot::BottomRight, w, h), (1584, 884));
+        // A second screen to the left, above the taskbar: the place follows its work area.
+        let left = RECT { left: -2560, top: 0, right: 0, bottom: 1392 };
+        assert_eq!(place(left, w, h, Pos { spot: Spot::TopRight, gap: 0, ..Pos::default() }, 1.0), (-300, 0));
+    }
+
+    // AC-8, AC-10: a custom place is the card's center in percent, pulled back inside the work
+    // area; a card that grows keeps its center, and one bigger than the screen keeps its top left.
+    #[test]
+    fn custom_is_a_center_kept_inside_the_screen() {
+        let custom = |x, y| Pos { spot: Spot::Custom, x, y, ..Pos::default() };
+        assert_eq!(place(WORK, 300, 120, custom(100.0, 100.0), 1.0), (1620, 920));
+        assert_eq!(place(WORK, 300, 120, custom(0.0, 0.0), 1.0), (0, 0));
+        assert_eq!(place(WORK, 300, 120, custom(25.0, 50.0), 1.0), (330, 460));
+        assert_eq!(place(WORK, 300, 160, custom(25.0, 50.0), 1.0), (330, 440));
+        assert_eq!(place(WORK, 300, 120, custom(33.3, 50.0), 1.0), (489, 460));
+        assert_eq!(place(WORK, 2400, 1200, custom(50.0, 50.0), 1.0), (0, 0));
+        assert_eq!(place(WORK, 2400, 1200, Pos { spot: Spot::BottomRight, ..Pos::default() }, 1.0), (0, 0));
+    }
+
+    // A card that grows stays anchored at its edges: the bottom right corner holds still.
+    #[test]
+    fn a_growing_card_keeps_its_corner() {
+        let (a, b) = (at(Spot::BottomRight, 300, 120), at(Spot::BottomRight, 300, 180));
+        assert_eq!((a.0 + 300, a.1 + 120), (b.0 + 300, b.1 + 180));
+    }
 
     fn card(active: usize, screen: bool) -> Card {
         Card::new(active, 4, screen.then(|| "DELL U2720Q".to_string()))
@@ -527,7 +601,8 @@ mod tests {
         ];
         let aquatic = ui::high_contrast([0x202020, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);
         let desert = ui::high_contrast([0xFFFAEF, 0x3D3D3D, 0x903909, 0xFFF5E3, 0x6D6D6D]);
-        let themes: [(&str, Theme, f32); 5] = [("light", LIGHT, 1.0), ("dark", DARK, 1.0), ("hc", aquatic, 1.0), ("desert", desert, 1.0), ("light-150", LIGHT, 1.5)];
+        let (rose, rose_dark) = (ui::tests::rose(true), ui::tests::rose(false));
+        let themes: [(&str, Theme, f32); 7] = [("light", LIGHT, 1.0), ("dark", DARK, 1.0), ("hc", aquatic, 1.0), ("desert", desert, 1.0), ("light-150", LIGHT, 1.5), ("rose", rose, 1.0), ("rose-dark", rose_dark, 1.0)];
         let backdrop = |t: &Theme| if t.hc { t.b.bg } else if t.dark { 0x171C28 } else { 0xDDE5F3 };
         for (tname, t, s) in themes {
             let fonts = Fonts::new(s);
