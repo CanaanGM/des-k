@@ -8,16 +8,17 @@
 // - The finder shortcut: posted as WM_FINDER, once per press (spec 0007).
 // - The overview shortcut: posted as WM_OVERVIEW, once per press (spec 0010).
 // - The pin shortcut: posted as WM_PIN, once per press (spec 0014).
+// - The hints shortcut: posted as WM_HINTS, once per press (spec 0017).
 // - Copilot key (sends LWin, LShift, F23): turned into Right Ctrl, unless settings turn it off.
 // - The keys and clicks touchpad gestures type (spec 0011).
-// - Recording for the settings page: while on, every key is swallowed and none of the above
-//   fires; each first key down that is not a modifier goes to the main thread as WM_RECORDED
-//   (wparam = vk, lparam = modifier bits) (spec 0012 AC-7).
+// - Recording for the settings page or the hints window: while on, every key is swallowed and
+//   none of the above fires; each first key down that is not a modifier goes to the main thread
+//   as WM_RECORDED (wparam = vk, lparam = modifier bits) (spec 0012 AC-7, spec 0017 AC-HNT-4).
 // - A watch: Windows silently removes a low level hook that answers too slowly, and then
 //   every shortcut goes to Windows. Raw input counts the keys too; keys it saw that the hook
 //   never did mean the hook is gone, and it is installed again.
 use std::cell::{Cell, RefCell};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 use windows::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, WPARAM},
     System::LibraryLoader::GetModuleHandleW,
@@ -46,13 +47,31 @@ pub const WM_OVERVIEW: u32 = WM_APP + 7;
 pub const WM_RECORDED: u32 = WM_APP + 10;
 /// Thread message: pin or unpin the focused window (spec 0014).
 pub const WM_PIN: u32 = WM_APP + 12;
+/// Thread message: open, move or close the Shortcut hints window (spec 0017).
+pub const WM_HINTS: u32 = WM_APP + 14;
 
 static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
 static RECORDING: AtomicBool = AtomicBool::new(false);
+/// The window recording, which main sends WM_RECORDED on to; 0 while none is. Main thread.
+static OWNER: AtomicIsize = AtomicIsize::new(0);
 
-/// The settings page turns recording on and off. Main thread.
-pub fn record(on: bool) {
+/// The settings page or the hints window turns recording on (`owner`, its window) and off.
+/// Only one records at a time: whoever starts cancels the other first, and an `off` from a
+/// window that no longer owns it changes nothing. Main thread.
+pub fn record(owner: HWND, on: bool) {
+    let me = owner.0 as isize;
+    if on {
+        OWNER.store(me, Ordering::Relaxed);
+    } else if OWNER.compare_exchange(me, 0, Ordering::Relaxed, Ordering::Relaxed).is_err() {
+        return;
+    }
     RECORDING.store(on, Ordering::Relaxed);
+}
+
+/// The window recording now, if any: main hands it WM_RECORDED.
+pub fn recording_window() -> Option<HWND> {
+    let h = OWNER.load(Ordering::Relaxed);
+    (h != 0).then_some(HWND(h as *mut _))
 }
 
 #[derive(Default)]
@@ -225,7 +244,7 @@ fn digit(vk: u16) -> Option<usize> {
 /// list holding one of a set's digits keeps it (spec 0012 AC-8). Modifiers must match exactly.
 fn decide(st: &settings::Settings, combo: Combo) -> Option<(u32, isize, isize)> {
     // (list, message, wparam direction, lparam follow)
-    let all: [(&[Combo], u32, isize, isize); 9] = [
+    let all: [(&[Combo], u32, isize, isize); 10] = [
         (&st.previous, WM_APP, -1, 0),
         (&st.next, WM_APP, 1, 0),
         (&st.send_previous, WM_SEND, -1, 1),
@@ -235,6 +254,7 @@ fn decide(st: &settings::Settings, combo: Combo) -> Option<(u32, isize, isize)> 
         (&st.finder, WM_FINDER, 0, 0),
         (&st.overview, WM_OVERVIEW, 0, 0),
         (&st.pin, WM_PIN, 0, 0),
+        (&st.hints, WM_HINTS, 0, 0),
     ];
     let sets = [(st.jump, WM_JUMP, 0), (st.send_to, WM_SEND_TO, 1), (st.send_to_stay, WM_SEND_TO, 0)];
     all.iter().find(|(list, ..)| list.contains(&combo)).map(|&(_, msg, dir, follow)| (msg, dir, follow)).or_else(|| {
@@ -271,8 +291,8 @@ fn shortcut(vk: u16, up: bool) -> bool {
         if combo.mods & (WIN | ALT) != 0 {
             send(&[(VK_MASK, false), (VK_MASK, true)]);
         }
-        // A held finder, overview or pin key would toggle it over and over.
-        if matches!(msg, WM_SEND | WM_SEND_TO | WM_FINDER | WM_OVERVIEW | WM_PIN) {
+        // A held finder, overview, pin or hints key would toggle it over and over.
+        if matches!(msg, WM_SEND | WM_SEND_TO | WM_FINDER | WM_OVERVIEW | WM_PIN | WM_HINTS) {
             SEND_HELD.set(Some(vk));
         }
         unsafe {
@@ -449,7 +469,7 @@ mod tests {
         assert_eq!(decide(&s, c(WIN, b'3' as u16)), Some((WM_JUMP, 2, 0)));
         assert_eq!(decide(&s, c(WIN | SHIFT, VK_NUMPAD9.0)), Some((WM_SEND_TO, 8, 1)));
         assert_eq!(decide(&s, c(WIN | CTRL, b'1' as u16)), Some((WM_SEND_TO, 0, 0)));
-        assert_eq!(decide(&s, c(WIN | CTRL, b'P' as u16)), Some((WM_PIN, 0, 0)));
+        assert_eq!(decide(&s, c(WIN | CTRL, b'U' as u16)), Some((WM_PIN, 0, 0)));
     }
 
     // Everything des-k does not own must reach Windows and the apps: an extra modifier is
@@ -469,6 +489,29 @@ mod tests {
         let s = Settings { finder: vec![c(WIN, b'2' as u16)], ..Settings::default() };
         assert_eq!(decide(&s, c(WIN, b'2' as u16)), Some((WM_FINDER, 0, 0)));
         assert_eq!(decide(&s, c(WIN, b'3' as u16)), Some((WM_JUMP, 2, 0)));
+    }
+
+    // The hints key has none by default, so no press of Win+Ctrl+H is taken from Windows until
+    // you set it; once set, it opens the window (spec 0017 AC-HNT-1).
+    #[test]
+    fn the_hints_key_fires_only_once_set() {
+        assert_eq!(decide(&Settings::default(), c(WIN | CTRL, b'H' as u16)), None);
+        let s = Settings { hints: vec![c(WIN | CTRL, b'H' as u16)], ..Settings::default() };
+        assert_eq!(decide(&s, c(WIN | CTRL, b'H' as u16)), Some((WM_HINTS, 0, 0)));
+    }
+
+    // Two windows record keys: a key pressed for one must never land in the other, and the
+    // window that lost recording to the other must not switch it off by stopping late.
+    #[test]
+    fn only_the_window_recording_can_stop_it() {
+        let (page, hints) = (HWND(3 as *mut _), HWND(4 as *mut _));
+        record(page, true);
+        record(hints, true);
+        assert_eq!(recording_window(), Some(hints));
+        record(page, false);
+        assert_eq!((recording_window(), RECORDING.load(Ordering::Relaxed)), (Some(hints), true));
+        record(hints, false);
+        assert_eq!((recording_window(), RECORDING.load(Ordering::Relaxed)), (None, false));
     }
 
     // Typing with the hook gone sends every shortcut to Windows' own desktops; a quiet keyboard

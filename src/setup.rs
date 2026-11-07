@@ -323,9 +323,9 @@ fn save(f: &File) -> bool {
     }
 }
 
-/// Main thread, before the touchpad thread starts: logs the setup state. Returns whether this
-/// is the first start, when the welcome screen opens.
-pub fn start() -> bool {
+/// Main thread, before the touchpad thread starts: logs the setup state. The first run opens
+/// from `first_run_seen` now, not from a missing touchpad.txt (spec 0017 AC-9).
+pub fn start() {
     let _lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut file = load();
     if let Some(f) = &mut file {
@@ -347,7 +347,6 @@ pub fn start() -> bool {
         Some(_) => "no values saved",
     };
     println!("touchpad setup: {gestures}, {saved}");
-    file.is_none()
 }
 
 /// An exit wrote your values back (the `restored` line). If that was earlier in this sign in,
@@ -418,15 +417,7 @@ pub fn open_settings() {
     crate::tray::open(Path::new(SETTINGS_PAGE));
 }
 
-/// Skip on the first start: an empty touchpad.txt, so the screen never opens on its own again.
-pub fn skip() {
-    let _lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    if load().is_none() {
-        save(&File::default());
-    }
-}
-
-/// "Use these gestures" (and "Choose my own"): saves your values the first time, then opens Settings at Touchpad.
+/// Set up in, or Open, Windows Settings: saves your values the first time, then opens Settings at Touchpad.
 pub fn use_gestures() {
     {
         let _lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());

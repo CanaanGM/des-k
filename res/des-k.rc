@@ -1,0 +1,3 @@
+// The exe's resources: its icon (res/make-icon.py draws it). Explorer, the Start menu entry,
+// Apps and the taskbar button of des-k's own windows all show it.
+1 ICON "des-k.ico"

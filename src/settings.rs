@@ -43,6 +43,15 @@ pub enum Animation {
 
 pub const ANIMATIONS: &[(&str, Animation)] = &[("off", Animation::Off), ("fade", Animation::Fade)];
 
+/// How the indicator looks (spec 0017): the card, or the dots.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Style {
+    Card,
+    Dots,
+}
+
+pub const STYLES: &[(&str, Style)] = &[("card", Style::Card), ("dots", Style::Dots)];
+
 /// What three or four fingers did on the touchpad (spec 0011).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Motion {
@@ -145,6 +154,9 @@ pub struct Settings {
     pub workspaces: usize,
     pub copilot_as_right_ctrl: bool,
     pub follow_activation: bool,
+    pub fastest: bool, // every des-k fade and move instant (spec 0017)
+    // Read at start only (spec 0017 AC-9). None: the file lacks the key, as an upgrader's does.
+    pub first_run_seen: Option<bool>,
     pub previous: Vec<Combo>,
     pub next: Vec<Combo>,
     pub send_previous: Vec<Combo>, // these two switch along with the window
@@ -158,7 +170,9 @@ pub struct Settings {
     pub finder: Vec<Combo>, // opens the window finder (spec 0007)
     pub overview: Vec<Combo>, // opens the workspace overview (spec 0010)
     pub pin: Vec<Combo>,      // keeps the focused window on every workspace (spec 0014)
+    pub hints: Vec<Combo>,    // opens the Shortcut hints window (spec 0017); none by default
     pub indicator_enabled: bool,
+    pub indicator_style: Style,
     pub hold_ms: u32,
     pub fade_ms: u32,
     pub restore_enabled: bool,
@@ -166,6 +180,7 @@ pub struct Settings {
     pub overview_animation: Animation,
     pub overview_labels: Labels,
     pub overview_live: bool, // false: the list is taken once, at open
+    pub overview_fade_ms: u32, // with animation = "fade" (spec 0017 AC-7)
     // Spec 0011. Safe on by default: a gesture acts only while Windows' own gestures read off.
     pub touchpad_enabled: bool,
     pub swipe_mm: u32,
@@ -198,6 +213,8 @@ impl Default for Settings {
             workspaces: 4,
             copilot_as_right_ctrl: true,
             follow_activation: true,
+            fastest: false,
+            first_run_seen: Some(false),
             previous: vec![Combo { mods: WIN | CTRL, vk: VK_LEFT.0 }],
             next: vec![Combo { mods: WIN | CTRL, vk: VK_RIGHT.0 }],
             send_previous: vec![Combo { mods: WIN | CTRL | SHIFT, vk: VK_LEFT.0 }],
@@ -209,8 +226,10 @@ impl Default for Settings {
             send_to_stay: Some(WIN | CTRL),
             finder: vec![Combo { mods: WIN, vk: b'F' as u16 }],
             overview: vec![Combo { mods: WIN, vk: VK_TAB.0 }],
-            pin: vec![Combo { mods: WIN | CTRL, vk: b'P' as u16 }],
+            pin: vec![Combo { mods: WIN | CTRL, vk: b'U' as u16 }],
+            hints: vec![],
             indicator_enabled: true,
+            indicator_style: Style::Card,
             hold_ms: 550,
             fade_ms: 200,
             restore_enabled: true,
@@ -218,6 +237,7 @@ impl Default for Settings {
             overview_animation: Animation::Off,
             overview_labels: Labels::Hover,
             overview_live: true,
+            overview_fade_ms: 250,
             touchpad_enabled: true,
             swipe_mm: 15,
             twice_ms: 300,
@@ -232,6 +252,8 @@ const DEFAULT_FILE: &str = r#"# des-k settings. A saved change applies within tw
 workspaces = 4              # 2 to 9, every screen
 copilot_as_right_ctrl = true
 follow_activation = true    # switch to a hidden window's workspace when it comes to the front
+fastest = false             # true: every des-k fade and move is instant
+first_run_seen = false      # false: the first run opens at the next start
 
 [shortcuts]
 # Keep these two if you switch with the touchpad swipe.
@@ -251,10 +273,13 @@ finder = ["Win+F"]
 # Every workspace of every screen at once, like Task View (which it replaces on Win+Tab).
 overview = ["Win+Tab"]
 # Keep the focused window on every workspace of its screen; press again to undo.
-pin = ["Win+Ctrl+P"]
+pin = ["Win+Ctrl+U"]
+# Opens the Shortcut hints window: every des-k shortcut and gesture, as set now. [] is no key.
+hints = []
 
 [indicator]
 enabled = true
+style = "card"              # "card" or "dots"
 hold_ms = 550               # 0 to 5000
 fade_ms = 200               # 0 to 2000
 
@@ -266,6 +291,7 @@ minutes = 3                 # how long after start to keep matching (1 to 30)
 animation = "off"           # "off" or "fade"
 labels = "hover"            # "hover", "always" or "none"
 live = true                 # false: the list is taken when the overview opens
+fade_ms = 250               # 0 to 1000, with animation = "fade"
 
 [touchpad]
 # des-k reads three and four finger gestures itself, so they work over admin windows too.
@@ -333,11 +359,11 @@ tap = true
 do = "notifications"
 "#;
 
-const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activation", "shortcuts", "indicator", "restore", "overview", "touchpad", "gesture"];
-const SHORTCUT_KEYS: &[&str] = &["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "jump", "send_to", "send_to_stay", "finder", "overview", "pin"];
-const INDICATOR_KEYS: &[&str] = &["enabled", "hold_ms", "fade_ms"];
+const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activation", "fastest", "first_run_seen", "shortcuts", "indicator", "restore", "overview", "touchpad", "gesture"];
+const SHORTCUT_KEYS: &[&str] = &["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "jump", "send_to", "send_to_stay", "finder", "overview", "pin", "hints"];
+const INDICATOR_KEYS: &[&str] = &["enabled", "style", "hold_ms", "fade_ms"];
 const RESTORE_KEYS: &[&str] = &["enabled", "minutes"];
-const OVERVIEW_KEYS: &[&str] = &["animation", "labels", "live"];
+const OVERVIEW_KEYS: &[&str] = &["animation", "labels", "live", "fade_ms"];
 const TOUCHPAD_KEYS: &[&str] = &["enabled", "swipe_mm", "twice_ms"];
 const GESTURE_KEYS: &[&str] = &["fingers", "swipe", "tap", "times", "do"];
 
@@ -543,7 +569,11 @@ fn apply(old: &Settings, changes: &[Change]) -> Vec<String> {
     if has("gestures") || has("touchpad.twice_ms") {
         crate::touchpad::drop_pending();
     }
+    if has("fastest") {
+        crate::ui::transitions_all();
+    }
     crate::welcome::refresh();
+    crate::hints::refresh();
     moves
 }
 
@@ -694,6 +724,8 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
     s.workspaces = int(&top, "workspaces", "workspaces", 2, 9, s.workspaces as i64, &mut warn) as usize;
     s.copilot_as_right_ctrl = boolean(&top, "copilot_as_right_ctrl", "copilot_as_right_ctrl", s.copilot_as_right_ctrl, &mut warn);
     s.follow_activation = boolean(&top, "follow_activation", "follow_activation", s.follow_activation, &mut warn);
+    s.fastest = boolean(&top, "fastest", "fastest", s.fastest, &mut warn);
+    s.first_run_seen = top.contains_key("first_run_seen").then(|| boolean(&top, "first_run_seen", "first_run_seen", false, &mut warn));
 
     if let Some(t) = section(&top, "shortcuts", &mut warn) {
         unknown_keys(t, "shortcuts.", SHORTCUT_KEYS, &mut warn);
@@ -705,9 +737,9 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
         } else {
             (s.previous, s.next) = (previous, next);
         }
-        // Switch keys always win: a send list (or the finder, the overview, pin) sharing a combo with
-        // them, or with an earlier list still on, is turned off (an empty list never matches)
-        // (specs 0004, 0007, 0010, 0014).
+        // Switch keys always win: a send list (or the finder, the overview, pin, hints) sharing a combo
+        // with them, or with an earlier list still on, is turned off (an empty list never matches)
+        // (specs 0004, 0007, 0010, 0014, 0017).
         let mut taken = vec![("previous", s.previous.clone()), ("next", s.next.clone())];
         let sends = [
             ("send_previous", &mut s.send_previous),
@@ -717,6 +749,7 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
             ("finder", &mut s.finder),
             ("overview", &mut s.overview),
             ("pin", &mut s.pin),
+            ("hints", &mut s.hints),
         ];
         for (key, list) in sends {
             let got = combos(t, key, &format!("shortcuts.{key}"), list, &mut warn);
@@ -751,6 +784,7 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
     if let Some(t) = section(&top, "indicator", &mut warn) {
         unknown_keys(t, "indicator.", INDICATOR_KEYS, &mut warn);
         s.indicator_enabled = boolean(t, "enabled", "indicator.enabled", s.indicator_enabled, &mut warn);
+        s.indicator_style = choice(t, "style", "indicator.style", STYLES, s.indicator_style, &mut warn);
         s.hold_ms = int(t, "hold_ms", "indicator.hold_ms", 0, 5000, s.hold_ms as i64, &mut warn) as u32;
         s.fade_ms = int(t, "fade_ms", "indicator.fade_ms", 0, 2000, s.fade_ms as i64, &mut warn) as u32;
     }
@@ -766,6 +800,7 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
         s.overview_animation = choice(t, "animation", "overview.animation", ANIMATIONS, s.overview_animation, &mut warn);
         s.overview_labels = choice(t, "labels", "overview.labels", LABELS, s.overview_labels, &mut warn);
         s.overview_live = boolean(t, "live", "overview.live", s.overview_live, &mut warn);
+        s.overview_fade_ms = int(t, "fade_ms", "overview.fade_ms", 0, 1000, s.overview_fade_ms as i64, &mut warn) as u32;
     }
 
     if let Some(t) = section(&top, "touchpad", &mut warn) {
@@ -828,7 +863,7 @@ pub fn savable(vk: u16) -> bool {
 }
 
 /// The shortcut lists in the order the hook tries them, then the digit sets (keys::shortcut).
-pub const LISTS: [&str; 9] = ["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "finder", "overview", "pin"];
+pub const LISTS: [&str; 10] = ["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "finder", "overview", "pin", "hints"];
 pub const SETS: [&str; 3] = ["jump", "send_to", "send_to_stay"];
 
 /// Who already uses a combo the page is about to save (spec 0012 AC-9).
@@ -857,6 +892,7 @@ impl Settings {
             "finder" => &self.finder,
             "overview" => &self.overview,
             "pin" => &self.pin,
+            "hints" => &self.hints,
             _ => &[],
         }
     }
@@ -1243,6 +1279,8 @@ impl Settings {
             ("workspaces", self.workspaces.to_string()),
             ("copilot_as_right_ctrl", self.copilot_as_right_ctrl.to_string()),
             ("follow_activation", self.follow_activation.to_string()),
+            ("fastest", self.fastest.to_string()),
+            ("first_run_seen", self.first_run_seen.map_or(String::new(), |b| b.to_string())),
             ("shortcuts.previous", list(&self.previous)),
             ("shortcuts.next", list(&self.next)),
             ("shortcuts.send_previous", list(&self.send_previous)),
@@ -1255,7 +1293,9 @@ impl Settings {
             ("shortcuts.finder", list(&self.finder)),
             ("shortcuts.overview", list(&self.overview)),
             ("shortcuts.pin", list(&self.pin)),
+            ("shortcuts.hints", list(&self.hints)),
             ("indicator.enabled", self.indicator_enabled.to_string()),
+            ("indicator.style", word(STYLES.iter().find(|(_, v)| *v == self.indicator_style).map(|(w, _)| *w))),
             ("indicator.hold_ms", self.hold_ms.to_string()),
             ("indicator.fade_ms", self.fade_ms.to_string()),
             ("restore.enabled", self.restore_enabled.to_string()),
@@ -1263,6 +1303,7 @@ impl Settings {
             ("overview.animation", word(ANIMATIONS.iter().find(|(_, v)| *v == self.overview_animation).map(|(w, _)| *w))),
             ("overview.labels", word(LABELS.iter().find(|(_, v)| *v == self.overview_labels).map(|(w, _)| *w))),
             ("overview.live", self.overview_live.to_string()),
+            ("overview.fade_ms", self.overview_fade_ms.to_string()),
             ("touchpad.enabled", self.touchpad_enabled.to_string()),
             ("touchpad.swipe_mm", self.swipe_mm.to_string()),
             ("touchpad.twice_ms", self.twice_ms.to_string()),
@@ -1323,6 +1364,78 @@ mod tests {
         assert_eq!((s.overview_labels, s.overview_live), (Labels::None, true));
         assert_eq!(warn.len(), 1, "{warn:?}");
         assert!(warn[0].starts_with("overview.live:"), "{warn:?}");
+    }
+
+    // The indicator style and `fastest` are read like every key: a bad value resets only itself
+    // (spec 0017), so a typo never turns the card into the dots or the fades off.
+    #[test]
+    fn style_and_fastest_reset_only_themselves() {
+        let (s, warn) = parse("fastest = true\n[indicator]\nstyle = \"Dots\"\n");
+        assert_eq!((s.fastest, s.indicator_style), (true, Style::Dots));
+        assert!(warn.is_empty(), "{warn:?}");
+        let (s, warn) = parse("fastest = \"yes\"\n[indicator]\nstyle = \"pill\"\nhold_ms = 900\n");
+        assert_eq!((s.fastest, s.indicator_style, s.hold_ms), (false, Style::Card, 900));
+        assert_eq!(warn.len(), 2, "{warn:?}");
+        assert!(warn[1].starts_with("indicator.style: \"pill\" is not one of \"card\", \"dots\""), "{warn:?}");
+    }
+
+    // A fresh file says false and an upgrader's lacks the key: both must see the first run once.
+    #[test]
+    fn first_run_seen_tells_fresh_from_upgrade() {
+        assert_eq!(parse(DEFAULT_FILE).0.first_run_seen, Some(false));
+        assert_eq!(parse("workspaces = 3\n").0.first_run_seen, None);
+        assert_eq!(parse("first_run_seen = true\n").0.first_run_seen, Some(true));
+        // A typo shows the first run again rather than never.
+        let (s, warn) = parse("first_run_seen = \"yes\"\n");
+        assert_eq!((s.first_run_seen, warn.len()), (Some(false), 1));
+    }
+
+    // Every upgrade writes first_run_seen into a 0.3.0 file that never had it. The key must
+    // land in the root table (above [shortcuts], or TOML would read it as a shortcut), the
+    // comment over [shortcuts] must stay with its header, and the new key has no comment.
+    #[test]
+    fn first_run_seen_lands_above_the_first_table() {
+        let old = "# des-k settings.\n\nworkspaces = 4\nfastest = false\n\n# Your keys.\n[shortcuts]\nfinder = [\"Win+F\"]\n";
+        let new = edit_text(old, &Edit::Value("first_run_seen", true.into())).unwrap();
+        let (key, header, comment) = (new.find("first_run_seen = true").unwrap(), new.find("[shortcuts]").unwrap(), new.find("# Your keys.").unwrap());
+        assert!(key < comment && comment < header, "{new}");
+        assert_eq!(new.lines().find(|l| l.starts_with("first_run_seen")), Some("first_run_seen = true"));
+        assert_eq!(parse(&new).0.first_run_seen, Some(true));
+        assert_eq!(parse(&new).0.finder, Settings::default().finder);
+    }
+
+    // The overview's fade time is yours to shorten (0 is instant) but never past a second; a
+    // bad value goes back to 250, and only it, so a typo never costs the animation itself
+    // (spec 0017 AC-7).
+    #[test]
+    fn a_bad_overview_fade_time_only_resets_itself() {
+        assert_eq!(parse("").0.overview_fade_ms, 250);
+        let (s, warn) = parse("[overview]\nfade_ms = 0\n");
+        assert_eq!(s.overview_fade_ms, 0);
+        assert!(warn.is_empty(), "{warn:?}");
+        let (s, warn) = parse("[overview]\nanimation = \"fade\"\nfade_ms = 1500\n");
+        assert_eq!((s.overview_animation, s.overview_fade_ms), (Animation::Fade, 250));
+        assert_eq!(warn.len(), 1, "{warn:?}");
+        assert!(warn[0].starts_with("overview.fade_ms:"), "{warn:?}");
+    }
+
+    // The hints window has no key until you set one (your words: "nothing by default"), a key
+    // you set must stick, and one that another shortcut already has must not steal it: the
+    // earlier list keeps it and only hints turns off (spec 0017 AC-HNT-4).
+    #[test]
+    fn the_hints_key_is_off_by_default_and_loses_a_clash() {
+        assert!(parse("").0.hints.is_empty());
+        let (s, warn) = parse("[shortcuts]
+hints = [\"Win+Ctrl+H\"]
+");
+        assert_eq!(s.hints, [Combo { mods: WIN | CTRL, vk: b'H' as u16 }]);
+        assert!(warn.is_empty(), "{warn:?}");
+        let (s, warn) = parse("[shortcuts]
+hints = [\"Win+F\"]
+");
+        assert_eq!((s.hints.is_empty(), s.finder.clone()), (true, Settings::default().finder));
+        assert_eq!(warn, ["shortcuts: Win+F is in both finder and hints, hints turned off"]);
+        assert_eq!(s.combo_owner("hints", Combo { mods: WIN, vk: b'F' as u16 }), Some(Owner::List("finder")));
     }
 
     // Off must stay the default (the overview opens at once unless you ask), a chosen style
@@ -1782,6 +1895,6 @@ do = "previous"
         let mut unique = names.clone();
         unique.sort();
         unique.dedup();
-        assert_eq!((names.len(), unique.len()), (27, 27));
+        assert_eq!((names.len(), unique.len()), (32, 32));
     }
 }

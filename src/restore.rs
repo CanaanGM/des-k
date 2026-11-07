@@ -3,6 +3,7 @@
 // entry a reopened window belongs to. A wrong pick hides a window on the wrong
 // workspace, so every doubt leaves the window visible.
 use windows::Win32::{
+    Devices::{DeviceAndDriverInstallation::*, Display::GUID_DEVINTERFACE_MONITOR},
     Foundation::{CloseHandle, HANDLE, HWND, LUID},
     Security::{
         Authentication::Identity::{LsaFreeReturnBuffer, LsaGetLogonSessionData, SECURITY_LOGON_SESSION_DATA},
@@ -11,11 +12,14 @@ use windows::Win32::{
     Storage::EnhancedStorage::PKEY_AppUserModel_ID,
     System::{
         Com::{CoTaskMemFree, StructuredStorage::{PropVariantClear, PropVariantToStringAlloc}},
+        Registry::{KEY_READ, RegCloseKey, RegQueryValueExW},
         Threading::{GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW},
     },
     UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow},
 };
-use windows::core::PWSTR;
+use windows::core::{HSTRING, PCWSTR, PWSTR, w};
+
+use crate::ws::Spot;
 
 /// What identifies a window across a reboot, where its handle and pid are new.
 #[derive(Clone, PartialEq, Debug, Default)]
@@ -26,12 +30,16 @@ pub struct Fp {
 }
 
 /// A saved window: `ws` is `Some` for a hidden one (`W` line), `None` for a visible one (`V`),
-/// or a pinned one (`P`, `pin` set: in view on every workspace, spec 0014).
+/// or a pinned one (`P`, `pin` set: in view on every workspace, spec 0014). An away one (`A`,
+/// spec 0016) has `away` set, `dev` its home screen and `ws` its home workspace. `dev` is a
+/// screen id; `spot` is where it was, None in a line from an older des-k.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Entry {
     pub dev: String,
     pub ws: Option<usize>,
     pub pin: bool,
+    pub away: bool,
+    pub spot: Option<Spot>,
     pub fp: Fp,
 }
 
@@ -153,6 +161,90 @@ pub fn pick(saved: &[Entry], pending: &[usize], fp: &Fp, pass: u8) -> Pick {
     }
 }
 
+/// A monitor's own id (spec 0016 AC-1), from `path`, a display config target's
+/// `monitorDevicePath`: maker letters, product code and serial from the EDID in the monitor's
+/// registry key, or the monitor's device instance id when there is no readable EDID. None when
+/// the monitor is not present or SetupAPI cannot open it.
+pub fn edid_id(path: &str) -> Option<String> {
+    let dev = MonitorDev::open(path)?;
+    dev.edid().and_then(|e| id_from_edid(&e)).or_else(|| dev.instance())
+}
+
+/// `MMM-PPPP-SERIAL` from EDID bytes, or `MMM-PPPP` when the monitor gives no serial.
+fn id_from_edid(e: &[u8]) -> Option<String> {
+    if e.len() < 128 {
+        return None;
+    }
+    let m = u16::from_be_bytes([e[8], e[9]]);
+    let letter = |v: u16| char::from(b'@' + (v & 0x1F) as u8);
+    let maker: String = [letter(m >> 10), letter(m >> 5), letter(m)].into_iter().collect();
+    let product = u16::from_le_bytes([e[10], e[11]]);
+    // The text serial of a display descriptor (tag 0xFF) is the one printed on the label;
+    // many makers leave the number at 0 or the same on every unit.
+    let text = (0..4)
+        .map(|i| &e[54 + i * 18..72 + i * 18])
+        .find(|d| d[..3] == [0, 0, 0] && d[3] == 0xFF)
+        .map(|d| d[5..].iter().take_while(|&&c| c != 0x0A).map(|&c| c as char).collect::<String>().trim().to_string())
+        .filter(|s| !s.is_empty());
+    let number = u32::from_le_bytes([e[12], e[13], e[14], e[15]]);
+    Some(match text.or((number != 0).then(|| number.to_string())) {
+        Some(serial) => format!("{maker}-{product:04X}-{serial}"),
+        None => format!("{maker}-{product:04X}"),
+    })
+}
+
+/// One present monitor in a SetupAPI device list, freed on drop.
+struct MonitorDev {
+    set: HDEVINFO,
+    data: SP_DEVINFO_DATA,
+}
+
+impl Drop for MonitorDev {
+    fn drop(&mut self) {
+        unsafe { let _ = SetupDiDestroyDeviceInfoList(self.set); }
+    }
+}
+
+impl MonitorDev {
+    fn open(path: &str) -> Option<Self> {
+        unsafe {
+            // DIGCF_PRESENT: a monitor no longer attached keeps its old EDID in the registry.
+            let set = SetupDiGetClassDevsW(Some(&GUID_DEVINTERFACE_MONITOR), PCWSTR::null(), None, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE).ok()?;
+            let mut dev = MonitorDev { set, data: SP_DEVINFO_DATA { cbSize: size_of::<SP_DEVINFO_DATA>() as u32, ..Default::default() } };
+            let mut iface = SP_DEVICE_INTERFACE_DATA { cbSize: size_of::<SP_DEVICE_INTERFACE_DATA>() as u32, ..Default::default() };
+            SetupDiOpenDeviceInterfaceW(set, &HSTRING::from(path), 0, Some(&mut iface)).ok()?;
+            let mut need = 0u32;
+            let _ = SetupDiGetDeviceInterfaceDetailW(set, &iface, None, 0, Some(&mut need), None);
+            // u64s keep the buffer aligned for the detail struct.
+            let mut buf = vec![0u64; (need as usize).div_ceil(8).max(1)];
+            let detail = buf.as_mut_ptr() as *mut SP_DEVICE_INTERFACE_DETAIL_DATA_W;
+            (*detail).cbSize = size_of::<SP_DEVICE_INTERFACE_DETAIL_DATA_W>() as u32;
+            SetupDiGetDeviceInterfaceDetailW(set, &iface, Some(detail), need, None, Some(&mut dev.data)).ok()?;
+            Some(dev)
+        }
+    }
+
+    fn edid(&self) -> Option<Vec<u8>> {
+        unsafe {
+            let key = SetupDiOpenDevRegKey(self.set, &self.data, DICS_FLAG_GLOBAL.0, 0, DIREG_DEV, KEY_READ.0).ok()?;
+            let mut buf = vec![0u8; 512];
+            let mut len = buf.len() as u32;
+            let read = RegQueryValueExW(key, w!("EDID"), None, None, Some(buf.as_mut_ptr()), Some(&mut len));
+            let _ = RegCloseKey(key);
+            read.ok().ok()?;
+            buf.truncate(len as usize);
+            Some(buf)
+        }
+    }
+
+    fn instance(&self) -> Option<String> {
+        let mut buf = [0u16; 512];
+        unsafe { SetupDiGetDeviceInstanceIdW(self.set, &self.data, Some(&mut buf), None).ok()? };
+        let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        Some(String::from_utf16_lossy(&buf[..n]))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,10 +253,10 @@ mod tests {
         Fp { app: app.into(), class: class.into(), title: title.into() }
     }
     fn hidden(dev: &str, ws: usize, f: Fp) -> Entry {
-        Entry { dev: dev.into(), ws: Some(ws), pin: false, fp: f }
+        Entry { dev: dev.into(), ws: Some(ws), pin: false, away: false, spot: None, fp: f }
     }
     fn visible(f: Fp) -> Entry {
-        Entry { dev: "DISPLAY1".into(), ws: None, pin: false, fp: f }
+        Entry { dev: "DISPLAY1".into(), ws: None, pin: false, away: false, spot: None, fp: f }
     }
     const EDGE: &str = r"c:\edge\msedge.exe";
     const WIN: &str = "Chrome_WidgetWin_1";
@@ -247,5 +339,45 @@ mod tests {
     fn an_empty_app_never_matches() {
         let saved = [hidden("DISPLAY1", 2, fp("", WIN, "Inbox"))];
         assert_eq!(pick(&saved, &[0], &fp("", WIN, "Inbox"), 2), Pick::NoMatch);
+    }
+
+    fn edid(maker: [u8; 2], product: [u8; 2], number: u32, text: Option<&str>) -> Vec<u8> {
+        let mut e = vec![0u8; 128];
+        e[8..10].copy_from_slice(&maker);
+        e[10..12].copy_from_slice(&product);
+        e[12..16].copy_from_slice(&number.to_le_bytes());
+        if let Some(t) = text {
+            e[72..77].copy_from_slice(&[0, 0, 0, 0xFF, 0]);
+            let mut d = t.as_bytes().to_vec();
+            d.push(0x0A);
+            d.resize(13, b' ');
+            e[77..90].copy_from_slice(&d);
+        }
+        e
+    }
+    const DEL: [u8; 2] = [0x10, 0xAC]; // "DEL", as Dell writes it
+
+    // The same monitor must get the same id on any port and after a reboot, and the label's
+    // serial is what tells two of one model apart (spec 0016 AC-1).
+    #[test]
+    fn a_text_serial_names_the_monitor() {
+        assert_eq!(id_from_edid(&edid(DEL, [0x23, 0x41], 12345, Some("ABC123"))).as_deref(), Some("DEL-4123-ABC123"));
+    }
+
+    #[test]
+    fn the_number_serves_when_there_is_no_text_serial() {
+        assert_eq!(id_from_edid(&edid(DEL, [0x23, 0x41], 808464432, None)).as_deref(), Some("DEL-4123-808464432"));
+    }
+
+    // Without any serial the id is maker and model only: twins are told apart by ws's #1, #2.
+    #[test]
+    fn no_serial_gives_maker_and_product_only() {
+        assert_eq!(id_from_edid(&edid(DEL, [0x23, 0x41], 0, None)).as_deref(), Some("DEL-4123"));
+    }
+
+    // A short or missing EDID must fall back to the instance id, never an id made of zeros.
+    #[test]
+    fn a_short_edid_gives_no_id() {
+        assert_eq!(id_from_edid(&[0u8; 64]), None);
     }
 }

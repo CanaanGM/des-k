@@ -2,6 +2,7 @@
 
 **Date**: 2026-10-27
 **Status**: Accepted
+**Amended by**: [0017](../0017-look-b-screens/0017-indicator.md): the indicator's look and its lines.
 
 ## Summary
 

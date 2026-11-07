@@ -2,20 +2,21 @@
 
 **Date**: 2026-11-03
 **Status**: Accepted
+**Amended by**: [0017](0017-look-b-screens/0017-indicator.md): the indicator's look for pin and unpin.
 
 ## Summary
 
-A call, a music player or a notes window should stay in view whatever workspace a screen shows. Win+Ctrl+P pins the focused window: switches on its screen leave it where it is. Press it again to unpin; the window then belongs to the workspace on screen. Pins survive a restart (`P` lines in `state.txt`) and a reboot (matched like any saved window, spec 0003). Raised by the five reviewer report of 2026-11-03; the owner chose the shortcut and the per screen rule.
+A call, a music player or a notes window should stay in view whatever workspace a screen shows. Win+Ctrl+U pins the focused window: switches on its screen leave it where it is. Press it again to unpin; the window then belongs to the workspace on screen. Pins survive a restart (`P` lines in `state.txt`) and a reboot (matched like any saved window, spec 0003). Raised by the five reviewer report of 2026-11-03; the owner chose the shortcut and the per screen rule. The shortcut was Win+Ctrl+P until 2026-11-03; Windows opens its Project screen on that combo, so the owner moved it to Win+Ctrl+U.
 
 ## Requirements
 
 **Acceptance criteria**:
-- **AC-1**: Win+Ctrl+P on a focused window pins it: the indicator shows on its screen with every other workspace lit in the accent color. Switching that screen, by any shortcut, gesture, the finder or the overview, leaves the window in view.
-- **AC-2**: Win+Ctrl+P on a pinned window unpins it: the indicator shows plain dots, and the next switch hides it with the workspace on screen.
+- **AC-1**: Win+Ctrl+U on a focused window pins it: the indicator shows on its screen with every other workspace lit in the accent color. Switching that screen, by any shortcut, gesture, the finder or the overview, leaves the window in view.
+- **AC-2**: Win+Ctrl+U on a pinned window unpins it: the indicator shows plain dots, and the next switch hides it with the workspace on screen.
 - **AC-3**: A pinned window dragged (or moved with Win+Shift+Left/Right) to another screen stays pinned there.
 - **AC-4**: Sending a pinned window to a workspace (any send shortcut, a gesture, an overview drop on a hidden workspace) unpins it, and the log says so.
 - **AC-5**: A restart in the same sign in (install, update, hard kill) keeps every pin whose window is still open. A reboot or new sign in pins a reopened window only when restore matches it to a saved pinned entry; a guess between a pinned and a plain window of one app never counts (rule 2 treats pinned as its own place).
-- **AC-6**: The shortcut is `pin` in `[shortcuts]` (default `["Win+Ctrl+P"]`), on the settings page, and `pin` is a gesture action name.
+- **AC-6**: The shortcut is `pin` in `[shortcuts]` (default `["Win+Ctrl+U"]`), on the settings page, and `pin` is a gesture action name.
 - **AC-7**: A focused window des-k would never hide (the desktop, the taskbar, a tool window) is not pinned: the log says nothing to pin.
 
 ## Design

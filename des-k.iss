@@ -28,6 +28,7 @@ CloseApplications=no
 ; refuses to go on unless that is the account that started Setup.
 UsedUserAreasWarning=no
 UninstallDisplayIcon={app}\des-k.exe
+SetupIconFile=res\des-k.ico
 OutputDir=target\setup
 OutputBaseFilename=des-k-v{#AppVersion}-setup
 WizardStyle=modern

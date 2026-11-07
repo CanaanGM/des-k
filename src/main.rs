@@ -5,7 +5,8 @@
 // Win+F opens the window finder: search every window on every screen and workspace.
 // Win+Tab opens the workspace overview on every screen: every workspace and its windows.
 // Three and four finger touchpad gestures run what settings.toml maps them to, read by des-k itself (spec 0011).
-// Win+Ctrl+P pins the focused window to every workspace of its screen (spec 0014).
+// Win+Ctrl+U pins the focused window to every workspace of its screen (spec 0014).
+// The tray icon opens des-k's menu; its Shortcut hints (or a key you set) lists every shortcut (spec 0017).
 // The Copilot key acts as Right Ctrl. `des-k --quit` (or Ctrl+C in a console) shows
 // every hidden window again and exits; `des-k --start` (the Start menu entry) starts the
 // installed des-k through its logon task, so it runs as admin. Release builds have no
@@ -15,6 +16,7 @@
 mod cloak;
 mod finder;
 mod gestures;
+mod hints;
 mod indicator;
 mod keys;
 mod overview;
@@ -24,7 +26,11 @@ mod settings_page;
 mod setup;
 mod touchpad;
 mod tray;
+mod tray_menu;
 mod ui;
+mod uia;
+mod update;
+mod wallpaper;
 mod welcome;
 mod ws;
 
@@ -186,11 +192,16 @@ fn main() -> windows::core::Result<()> {
     unsafe { let _ = SetConsoleCtrlHandler(Some(on_console_close), true); }
 
     keys::spawn(unsafe { GetCurrentThreadId() });
-    let first_start = setup::start(); // before the touchpad thread reads Windows' gestures
+    setup::start(); // before the touchpad thread reads Windows' gestures
     touchpad::spawn(unsafe { GetCurrentThreadId() });
     tray::init();
-    if first_start {
-        welcome::show(true);
+    // Read at start only; written the moment it opens, so a crash can never make it loop
+    // (spec 0017 AC-9).
+    if settings::get().first_run_seen != Some(true) {
+        welcome::show();
+        if let Err(why) = settings::write(settings::Edit::Value("first_run_seen", true.into())) {
+            eprintln!("first run: could not write first_run_seen = true, so it opens again at the next start ({why})");
+        }
     }
     println!("des-k running: the shortcuts switch the monitor under the mouse ({} workspaces each).", settings::get().workspaces);
 
@@ -212,17 +223,25 @@ fn main() -> windows::core::Result<()> {
 
     let mut msg = MSG::default();
     while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
-        // Any switch, jump, send, pin or screen change closes the finder and the overview first,
-        // focus back (specs 0007, 0010).
-        if matches!(msg.message, WM_APP | indicator::WM_DISPLAY_CHANGED | keys::WM_SEND | keys::WM_JUMP | keys::WM_SEND_TO | keys::WM_PIN) {
+        // Any switch, jump, send, pin, hints key or screen change closes the finder, the overview
+        // and the tray menu first, focus back (specs 0007, 0010, 0017).
+        if matches!(msg.message, WM_APP | indicator::WM_DISPLAY_CHANGED | keys::WM_SEND | keys::WM_JUMP | keys::WM_SEND_TO | keys::WM_PIN | keys::WM_HINTS) {
             finder::close(true);
             overview::close(true);
         }
+        // The tray menu also closes for a gesture, a follow, the finder and the overview (AC-TRY-9).
+        if matches!(msg.message, WM_APP | indicator::WM_DISPLAY_CHANGED | keys::WM_SEND | keys::WM_JUMP | keys::WM_SEND_TO | keys::WM_PIN | keys::WM_HINTS | keys::WM_FINDER | keys::WM_OVERVIEW | touchpad::WM_GESTURE | WM_FOLLOW) {
+            tray_menu::close(msg.message != WM_FOLLOW); // a follow already moved focus
+        }
         match msg.message {
-            WM_APP => ws::switch(msg.wParam.0 as isize),
+            WM_APP => {
+                ws::switch(msg.wParam.0 as isize);
+                welcome::tried(welcome::Try::Switch);
+            }
             indicator::WM_DISPLAY_CHANGED => {
                 ws::check_screens(false);
                 settings_page::tick();
+                welcome::tick();
             }
             WM_FOLLOW => {
                 let h = HWND(msg.wParam.0 as *mut _);
@@ -239,13 +258,25 @@ fn main() -> windows::core::Result<()> {
                 overview::close(true);
                 finder::toggle();
             }
-            keys::WM_RECORDED => settings_page::recorded(msg.wParam.0 as u16, msg.lParam.0 as u8),
+            // To the window that is recording: the settings page, the first run or the hints window.
+            keys::WM_RECORDED => match keys::recording_window() {
+                Some(h) if hints::owns(h) => hints::recorded(msg.wParam.0 as u16, msg.lParam.0 as u8),
+                Some(h) if welcome::owns(h) => welcome::recorded(msg.wParam.0 as u16, msg.lParam.0 as u8),
+                _ => settings_page::recorded(msg.wParam.0 as u16, msg.lParam.0 as u8),
+            },
+            keys::WM_HINTS => hints::toggle(),
             keys::WM_OVERVIEW => {
                 finder::close(true);
                 overview::toggle();
+                if overview::is_open() {
+                    welcome::tried(welcome::Try::Overview);
+                }
             }
             touchpad::WM_GESTURE => gestures::run(msg.wParam.0),
-            touchpad::WM_TOUCHPADS_CHANGED => welcome::refresh(),
+            touchpad::WM_TOUCHPADS_CHANGED => {
+                welcome::refresh();
+                hints::refresh();
+            }
             // Indicator timers carry its window and go to DispatchMessageW below.
             WM_TIMER if msg.hwnd.is_invalid() && restore_timer != 0 && msg.wParam.0 == restore_timer => {
                 if !ws::restore_tick() {
@@ -254,21 +285,27 @@ fn main() -> windows::core::Result<()> {
                 }
             }
             WM_TIMER if msg.hwnd.is_invalid() && watch_timer != 0 && msg.wParam.0 == watch_timer => {
+                // The theme broadcast may never reach an admin des-k (spec 0017 AC-2).
+                if ui::refresh() {
+                    ui::repaint_all();
+                }
                 settings::watch();
                 ws::check_screens(true);
                 ws::resync();
                 tray::warn_if_broken();
                 settings_page::tick();
+                welcome::tick();
             }
             // Posted by `des-k --quit` (to the indicator) and the tray's Quit. The finder and
             // the overview post WM_CLOSE to any window they close, des-k's own settings page
             // and welcome screen too: those go to their window, never end des-k.
             WM_CLOSE if matches!(ws::class_name(msg.hwnd).as_str(), "des-k-indicator" | "des-k-tray") => break,
-            // Indicator, tray, finder, overview, welcome screen and settings page messages.
-            // TranslateMessage makes the finder's typed characters and IME input; the finder and the
-            // overview take their own keys before that, and the welcome screen's go through
-            // IsDialogMessageW (Tab, Enter, Esc). The settings page takes its keys in its wndproc.
-            _ if welcome::key(&msg) || finder::key(&msg) || overview::key(&msg) => {}
+            // Indicator, tray, tray menu, finder, overview, welcome screen, hints window and settings
+            // page messages. TranslateMessage makes the finder's typed characters and IME input;
+            // the finder and the overview take their own keys before that, and the hints
+            // window's go through IsDialogMessageW (Tab, Enter, Esc). The settings page, the
+            // first run and the tray menu take their keys in their wndprocs.
+            _ if hints::key(&msg) || finder::key(&msg) || overview::key(&msg) => {}
             _ => unsafe {
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);

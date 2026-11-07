@@ -1,7 +1,9 @@
-// Window finder (spec 0007): a search popup listing every window on every screen and
-// workspace, hidden ones included. Enter goes to the window, Shift+Enter brings it here,
-// Ctrl+W closes it. Lives on the main thread; where a window is only ever changes through
-// `ws`, and the finder never cloaks anything itself.
+// Window finder (spec 0007, look B in spec 0017): a search popup listing every window on every
+// screen and workspace, hidden ones included. Enter goes to the window, Shift+Enter brings it
+// here, Ctrl+W closes it. Lives on the main thread; where a window is only ever changes through
+// `ws`, and the finder never cloaks anything itself. Drawn on the shared Canvas to the approved
+// design (pdesk-design restart/finder-r3.html); the search text is a native EDIT, so the popup
+// is never layered.
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::Path;
@@ -10,55 +12,70 @@ use nucleo_matcher::{
     Config, Matcher, Utf32Str,
     pattern::{AtomKind, CaseMatching, Normalization, Pattern},
 };
+use windows::Management::Deployment::PackageManager;
 use windows::Win32::{
-    Foundation::{COLORREF, ERROR_ACCESS_DENIED, HWND, LPARAM, LRESULT, RECT, WPARAM},
-    Graphics::{
-        Dwm::{DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute},
-        Gdi::*,
+    Foundation::{CloseHandle, ERROR_ACCESS_DENIED, ERROR_SUCCESS, HWND, LPARAM, LRESULT, RECT, WPARAM},
+    Graphics::Gdi::*,
+    Storage::{
+        FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW},
+        Packaging::Appx::GetPackageFullName,
     },
-    System::LibraryLoader::GetModuleHandleW,
+    System::{
+        LibraryLoader::GetModuleHandleW,
+        Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+    },
     UI::{
-        HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
+        Accessibility::{UIA_ListControlTypeId, UIA_ListItemControlTypeId, UIA_PaneControlTypeId, UIA_TextControlTypeId},
+        HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI},
         Input::KeyboardAndMouse::*,
         WindowsAndMessaging::*,
     },
 };
-use windows::core::{PCWSTR, w};
+use windows::core::{HSTRING, PCWSTR, PWSTR, w};
 
-use crate::indicator::ACCENT;
 use crate::restore;
-use crate::ui::{self, text};
+use crate::ui::{self, Canvas, F, alpha, mix, op};
+use crate::uia::{self, Node, Tree};
 use crate::ws::{self, Miss};
 
 const CLASS: PCWSTR = w!("des-k-finder");
 const CLOSING_TIMER: usize = 1;
 const CLOSING_POLL_MS: u32 = 200;
 const ICON_WAIT_MS: u32 = 50; // a frozen app must not stall the finder
+const WHO: &str = "des-k finder";
+const PLACEHOLDER: &str = "Find a window";
 
-pub(crate) const BG: COLORREF = COLORREF(0x0020_2020);
-pub(crate) const TEXT: COLORREF = COLORREF(0x00F0_F0F0);
-pub(crate) const DIM: COLORREF = COLORREF(0x0090_9090);
-const LINE: COLORREF = COLORREF(0x0034_3434);
-const ON_ACCENT: COLORREF = COLORREF(0x0020_2020); // light text is hard to read on the light blue
-
-// Sizes at 96 dpi.
-const WIDTH: f32 = 640.0;
-const BOX: f32 = 44.0;
+// Sizes in dip, from the design.
+const WIDTH: f32 = 720.0;
+const BOX: f32 = 48.0; // the search box, its rule included
+const SIDE: f32 = 16.0; // the search box's and the key line's side padding
+const TEXT_X: f32 = 44.0; // the search text, after its glyph
+const TEXT_H: f32 = 20.0;
+const COUNT_W: f32 = 100.0; // kept free for the count right of the text box
+const LIST_PAD: f32 = 4.0; // above and below the rows
 const ROW: f32 = 36.0;
 const ROWS: usize = 9;
-const NOTE: f32 = 24.0;
-const BOTTOM: f32 = 6.0;
-const FONT_PX: f32 = 15.0;
+const ROW_X: f32 = 4.0;
+const ROW_W: f32 = WIDTH - ROW_X - 10.0; // the scroll thumb sits in the 10 on the right
+const ROW_PAD: f32 = 12.0;
+const GAP: f32 = 12.0;
 const ICON: f32 = 16.0;
-const PAD_X: f32 = 16.0;
-const PROGRAM_X: f32 = 44.0;
-const PROGRAM_W: f32 = 130.0;
-const PLACE_W: f32 = 64.0;
+const PROGRAM_X: f32 = ROW_X + ROW_PAD + ICON + GAP;
+const PROGRAM_W: f32 = 140.0;
+const TITLE_X: f32 = PROGRAM_X + PROGRAM_W + GAP;
+const CHIP_RIGHT: f32 = ROW_X + ROW_W - ROW_PAD;
+const SCREEN_RIGHT: f32 = CHIP_RIGHT - 24.0 - GAP;
+const SCREEN_W: f32 = 140.0;
+const TITLE_W: f32 = SCREEN_RIGHT - SCREEN_W - GAP - TITLE_X;
+const FOOT: f32 = 40.0; // the key line, its rule included
+const WHEEL_ROWS: isize = 3;
 
-// Edit messages, from winuser.h: the `windows` crate keeps them in Win32_UI_Controls, a big feature for three numbers.
+// Edit messages, from winuser.h: the `windows` crate keeps them in Win32_UI_Controls, a big feature for four numbers.
 const EM_GETSEL: u32 = 0x00B0;
 const EM_SETSEL: u32 = 0x00B1;
 const EM_REPLACESEL: u32 = 0x00C2;
+const EM_GETMARGINS: u32 = 0x00D4;
+const WM_MOUSELEAVE: u32 = 0x02A3; // winuser.h, also in Win32_UI_Controls
 
 // Keys without a VK_ name.
 const KEY_N: VIRTUAL_KEY = VIRTUAL_KEY(b'N' as u16);
@@ -69,13 +86,39 @@ struct Row {
     hwnd: HWND,
     title: String,
     program: String,
-    icon: HICON, // the app's or the class's: borrowed, never destroyed
-    screen: usize, // 1 based, left to right
+    icon: HICON,   // the app's or the class's: borrowed, never destroyed
+    screen: usize, // 1 based, left to right: the AC-4 order
+    place: String, // its screen's name
     workspace: usize, // 1 based
     on_screen: bool,
+    pinned: bool,
+    unplugged: bool, // hidden on a screen that just left
     used: Option<Instant>,
     rank: usize, // place in the AC-4 order
     gone: bool,  // closed while the finder is open
+    marks: Vec<u32>, // the query's matched letters, nucleo's indexes into "program title"
+}
+
+/// A note above the key line (AC-FND-7); it clears on the next key or move.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Note {
+    CantMove,
+    CantClose,
+    Gone,
+    Unplugged,
+}
+
+impl Note {
+    /// Its icon, its line, the grey line under it, and whether it warns.
+    fn words(self, main: &str) -> (&'static str, &'static str, Option<String>, bool) {
+        let main = if main.is_empty() { "the main display" } else { main };
+        match self {
+            Note::CantMove => ("\u{E7BA}", "Can't move this window", Some("It stays where it was.".into()), true),
+            Note::CantClose => ("\u{E7BA}", "Can't close an admin window", Some("It stays open.".into()), true),
+            Note::Gone => ("\u{E946}", "That window is gone", None, false),
+            Note::Unplugged => ("\u{E7F4}", "Its screen was just unplugged", Some(format!("In a moment it moves to {main}; try again then.")), false),
+        }
+    }
 }
 
 struct Session {
@@ -83,25 +126,32 @@ struct Session {
     shown: Vec<(usize, u32)>, // row index, score
     selected: usize,          // index into shown
     scroll: usize,
+    hover: Option<usize>, // index into shown, under the mouse
     came_from: HWND,
     screen: String, // the device the finder opened on: where Shift+Enter brings windows
+    screens: usize, // present screens: one hides the screen names
+    main: String,   // the main display's name, for the unplugged note
     query: String,
-    note: Option<&'static str>,
+    note: Option<Note>,
     closing: Vec<HWND>, // sent WM_CLOSE, waiting to go
     matcher: Matcher,
     scale: f32,
+    said: Option<(isize, String, Option<Note>)>, // what Narrator last heard: row, query, note
 }
 
 thread_local! {
     static WND: Cell<Option<HWND>> = const { Cell::new(None) };
     static EDIT: Cell<Option<HWND>> = const { Cell::new(None) };
-    static FONT: Cell<Option<(HFONT, u32)>> = const { Cell::new(None) }; // and its dpi
-    static BRUSH: Cell<Option<HBRUSH>> = const { Cell::new(None) };
+    static EDIT_PROC: Cell<isize> = const { Cell::new(0) }; // the EDIT's own window procedure
+    static BRUSH: Cell<Option<(HBRUSH, u32)>> = const { Cell::new(None) }; // the text box's, and its color
     // Root owner window -> last time it came to the front. Memory only (spec 0007).
     static RECENT: RefCell<HashMap<isize, Instant>> = RefCell::default();
     // Window -> its icon, asked for once (see `icon`). Borrowed handles, never destroyed.
     static ICONS: RefCell<HashMap<isize, HICON>> = RefCell::default();
+    // Exe path -> the app's name, read once while des-k runs (AC-FND-4).
+    static NAMES: RefCell<HashMap<String, Option<String>>> = RefCell::default();
     static SESSION: RefCell<Option<Session>> = const { RefCell::new(None) };
+    static TREE: Tree = Tree::default();
 }
 
 /// Never hold the borrow across a call that can send a message to the finder: its
@@ -111,6 +161,28 @@ fn with<R>(f: impl FnOnce(&mut Session) -> R) -> Option<R> {
 }
 
 impl Session {
+    fn new(rows: Vec<Row>, came_from: HWND, screen: String, screens: usize, main: String, scale: f32) -> Session {
+        let mut s = Session {
+            rows,
+            shown: Vec::new(),
+            selected: 0,
+            scroll: 0,
+            hover: None,
+            came_from,
+            screen,
+            screens,
+            main,
+            query: String::new(),
+            note: None,
+            closing: Vec::new(),
+            matcher: Matcher::new(Config::DEFAULT),
+            scale,
+            said: None,
+        };
+        s.refilter(false);
+        s
+    }
+
     fn px(&self, v: f32) -> i32 {
         (v * self.scale).round() as i32
     }
@@ -120,14 +192,28 @@ impl Session {
     fn refilter(&mut self, keep: bool) {
         let kept = self.shown.get(self.selected).map(|&(i, _)| self.rows[i].hwnd);
         let scores: Vec<Option<u32>> = if self.query.trim().is_empty() {
-            self.rows.iter().map(|r| (!r.gone).then_some(0)).collect()
+            self.rows.iter_mut().map(|r| {
+                r.marks.clear();
+                (!r.gone).then_some(0)
+            }).collect()
         } else {
             let pattern = Pattern::new(&self.query, CaseMatching::Ignore, Normalization::Smart, AtomKind::Fuzzy);
-            let mut buf = Vec::new();
+            let (mut buf, mut marks) = (Vec::new(), Vec::new());
             let matcher = &mut self.matcher;
             self.rows
-                .iter()
-                .map(|r| if r.gone { None } else { pattern.score(Utf32Str::new(&format!("{} {}", r.program, r.title), &mut buf), matcher) })
+                .iter_mut()
+                .map(|r| {
+                    r.marks.clear();
+                    if r.gone {
+                        return None;
+                    }
+                    marks.clear();
+                    let score = pattern.indices(Utf32Str::new(&format!("{} {}", r.program, r.title), &mut buf), matcher, &mut marks)?;
+                    marks.sort_unstable();
+                    marks.dedup();
+                    r.marks.clone_from(&marks);
+                    Some(score)
+                })
                 .collect()
         };
         let old = self.selected;
@@ -139,6 +225,7 @@ impl Session {
             self.scroll = 0;
             first_pick(&self.query, self.shown.len())
         };
+        self.hover = None;
         self.scroll_to_selection();
     }
 
@@ -148,15 +235,31 @@ impl Session {
         } else if self.selected >= self.scroll + ROWS {
             self.scroll = self.selected + 1 - ROWS;
         }
-        self.scroll = self.scroll.min(self.shown.len().saturating_sub(ROWS));
+        self.scroll_by(0);
     }
 
-    fn note_text(&self) -> Option<&'static str> {
-        match self.note {
-            Some(n) => Some(n),
-            None if !self.shown.is_empty() => None,
-            None if self.rows.iter().all(|r| r.gone) => Some("No windows"),
-            None => Some("No match"),
+    fn scroll_by(&mut self, rows: isize) {
+        let most = self.shown.len().saturating_sub(ROWS);
+        self.scroll = (self.scroll as isize + rows).clamp(0, most as isize) as usize;
+    }
+
+    /// What the list says when it lists nothing.
+    fn empty_text(&self) -> Option<&'static str> {
+        match () {
+            _ if !self.shown.is_empty() => None,
+            _ if self.rows.iter().all(|r| r.gone) => Some("No windows"),
+            _ => Some("No match"),
+        }
+    }
+
+    /// "12 windows", or "2 of 12" while filtering; none with no windows at all.
+    fn count(&self) -> Option<String> {
+        let all = self.rows.iter().filter(|r| !r.gone).count();
+        match all {
+            0 => None,
+            _ if !self.query.trim().is_empty() => Some(format!("{} of {all}", self.shown.len())),
+            1 => Some("1 window".into()),
+            _ => Some(format!("{all} windows")),
         }
     }
 
@@ -164,9 +267,101 @@ impl Session {
         self.shown.len().min(ROWS)
     }
 
-    fn height(&self) -> i32 {
-        let note = if self.note_text().is_some() { NOTE } else { 0.0 };
-        self.px(BOX) + self.visible_rows() as i32 * self.px(ROW) + self.px(note + BOTTOM)
+    fn list_h(&self) -> f32 {
+        let inner = match (self.visible_rows(), self.empty_text()) {
+            (0, Some("No match")) => 52.0, // two lines
+            (0, _) => ROW,
+            (n, _) => n as f32 * ROW,
+        };
+        2.0 * LIST_PAD + inner
+    }
+
+    fn note_h(&self) -> f32 {
+        // 8 above and below its words, 8 under the box.
+        self.note.map_or(0.0, |n| 8.0 + 20.0 + if n.words("").2.is_some() { 16.0 } else { 0.0 } + 8.0 + 8.0)
+    }
+
+    fn height(&self) -> f32 {
+        BOX + self.list_h() + self.note_h() + FOOT
+    }
+
+    /// The index into `shown` of the row at a client pixel row.
+    fn row_at(&self, y: i32) -> Option<usize> {
+        let k = (y as f32 / self.scale - BOX - LIST_PAD) / ROW;
+        (k >= 0.0 && (k as usize) < self.visible_rows()).then(|| self.scroll + k as usize)
+    }
+
+    /// A row as Narrator reads it: the painted words, then where it is (AC-FND-9).
+    fn words(&self, i: usize) -> String {
+        let r = &self.rows[i];
+        let mut w = format!("{}, {}", r.title, r.program);
+        if self.screens > 1 || r.unplugged {
+            w += &format!(", {}", r.place);
+        }
+        w += &format!(", workspace {}", r.workspace);
+        w += match () {
+            _ if self.closing.contains(&r.hwnd) => ", closing",
+            _ if r.unplugged => ", its screen was unplugged",
+            _ if r.pinned => ", pinned, on every workspace",
+            _ if r.on_screen => ", shown",
+            _ => ", hidden",
+        };
+        w
+    }
+
+    /// What Narrator should hear after this change, if anything, and whether it waits for what
+    /// Narrator is saying (the first words after the finder opens wait for the text box's).
+    fn speech(&mut self) -> Option<(String, bool)> {
+        let now = (self.shown.get(self.selected).map_or(0, |&(i, _)| self.rows[i].hwnd.0 as isize), self.query.clone(), self.note);
+        if self.said.as_ref() == Some(&now) {
+            return None;
+        }
+        let before = self.said.replace(now);
+        if let Some(n) = self.note
+            && before.as_ref().map(|b| b.2) != Some(Some(n))
+        {
+            let (_, line, under, _) = n.words(&self.main);
+            return Some((under.map_or_else(|| line.to_string(), |u| format!("{line}. {u}")), false));
+        }
+        let what = match self.shown.get(self.selected) {
+            Some(&(i, _)) => self.words(i),
+            None => self.empty_text().unwrap_or_default().to_string(),
+        };
+        let filtered = before.as_ref().is_none_or(|b| b.1 != self.query);
+        let say = match self.count() {
+            Some(c) if filtered && !self.shown.is_empty() => format!("{c}, {what}"),
+            _ => what,
+        };
+        Some((say, before.is_none()))
+    }
+
+    /// The finder as Narrator sees it, in client pixels: the count, the list of shown rows
+    /// with the chosen one selected, and the note or the empty list's words.
+    fn tree(&self) -> Node {
+        let rect = |x: f32, y: f32, w: f32, h: f32| RECT { left: self.px(x), top: self.px(y), right: self.px(x + w), bottom: self.px(y + h) };
+        let text = |name: String, r: RECT| Node { role: UIA_TextControlTypeId, name, rect: r, ..Node::default() };
+        let mut kids = vec![];
+        if let Some(c) = self.count() {
+            kids.push(text(c, rect(WIDTH - SIDE - COUNT_W, 0.0, COUNT_W, BOX)));
+        }
+        let rows = (self.shown.iter().enumerate().skip(self.scroll).take(ROWS))
+            .map(|(k, &(i, _))| Node {
+                role: UIA_ListItemControlTypeId,
+                name: self.words(i),
+                rect: rect(ROW_X, BOX + LIST_PAD + (k - self.scroll) as f32 * ROW, ROW_W, ROW),
+                selected: Some(k == self.selected),
+                ..Node::default()
+            })
+            .collect();
+        kids.push(Node { role: UIA_ListControlTypeId, name: "Windows".into(), rect: rect(0.0, BOX, WIDTH, self.list_h()), selected: None, kids: rows, ..Node::default() });
+        if let Some(e) = self.empty_text() {
+            kids.push(text(e.into(), rect(ROW_X, BOX + LIST_PAD, ROW_W, self.list_h() - 2.0 * LIST_PAD)));
+        }
+        if let Some(n) = self.note {
+            let (_, line, under, _) = n.words(&self.main);
+            kids.push(text(under.map_or_else(|| line.to_string(), |u| format!("{line}. {u}")), rect(8.0, BOX + self.list_h(), WIDTH - 16.0, self.note_h() - 8.0)));
+        }
+        Node { role: UIA_PaneControlTypeId, name: PLACEHOLDER.into(), rect: rect(0.0, 0.0, WIDTH, self.height()), selected: None, kids, ..Node::default() }
     }
 }
 
@@ -200,6 +395,27 @@ fn first_pick(query: &str, shown: usize) -> usize {
     if query.trim().is_empty() && shown >= 2 { 1 } else { 0 }
 }
 
+/// A row's matched letters split back into its two columns, as char indexes (AC-FND-6). nucleo
+/// counts a letter with combining marks as one; a column where that happened gets none.
+fn split_marks(r: &Row) -> (Vec<usize>, Vec<usize>) {
+    let mut buf = Vec::new();
+    let plen = Utf32Str::new(&r.program, &mut buf).len();
+    let tlen = Utf32Str::new(&r.title, &mut buf).len();
+    let (pok, tok) = (plen == r.program.chars().count(), tlen == r.title.chars().count());
+    let (mut p, mut t) = (vec![], vec![]);
+    for &i in &r.marks {
+        let i = i as usize;
+        if i < plen {
+            if pok {
+                p.push(i);
+            }
+        } else if i > plen && i - plen - 1 < tlen && tok {
+            t.push(i - plen - 1);
+        }
+    }
+    (p, t)
+}
+
 /// Ctrl+Backspace: where the word before the caret starts. Spaces before the caret go
 /// with it; a word is a run of letters and digits, or a run of other symbols.
 fn delete_word(before: &[u16]) -> usize {
@@ -219,21 +435,88 @@ fn delete_word(before: &[u16]) -> usize {
     i
 }
 
-/// The program name: the exe without `.exe`; for a Store app, the hosted app's exe.
-fn program(hwnd: HWND) -> String {
-    let stem = |h: HWND| {
+fn stem(exe: &str) -> String {
+    Path::new(exe).file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned())
+}
+
+/// The app's name (AC-FND-4): its exe's file description, else the exe name without .exe. A
+/// Store app's frame names the hosted app's package, else shows the window title. Read once per
+/// exe while des-k runs.
+pub(crate) fn program(hwnd: HWND) -> String {
+    let exe = |h: HWND| {
         let mut pid = 0;
         unsafe { GetWindowThreadProcessId(h, Some(&mut pid)) };
-        restore::exe_path(pid).and_then(|p| Some(Path::new(&p).file_stem()?.to_string_lossy().into_owned()))
+        restore::exe_path(pid).map(|p| (p, pid))
     };
-    let name = stem(hwnd).unwrap_or_default();
-    if name.eq_ignore_ascii_case("ApplicationFrameHost") {
+    let Some((path, _)) = exe(hwnd) else { return String::new() };
+    if stem(&path).eq_ignore_ascii_case("ApplicationFrameHost") {
         // The hosted app lives in a CoreWindow child while it runs (not while suspended).
-        if let Some(app) = unsafe { FindWindowExW(Some(hwnd), None, w!("Windows.UI.Core.CoreWindow"), None) }.ok().and_then(stem) {
-            return app;
+        let core = unsafe { FindWindowExW(Some(hwnd), None, w!("Windows.UI.Core.CoreWindow"), None) }.ok().and_then(exe);
+        return core.and_then(|(path, pid)| named(&path, || package_name(pid))).unwrap_or_else(|| ws::title(hwnd));
+    }
+    named(&path, || Some(describe(&path).unwrap_or_else(|| stem(&path)))).unwrap_or_default()
+}
+
+fn named(exe: &str, find: impl FnOnce() -> Option<String>) -> Option<String> {
+    if let Some(n) = NAMES.with_borrow(|m| m.get(exe).cloned()) {
+        return n;
+    }
+    let n = find();
+    NAMES.with_borrow_mut(|m| m.insert(exe.to_string(), n.clone()));
+    n
+}
+
+/// The FileDescription in an exe's version info: in its own language first, then US English.
+fn describe(exe: &str) -> Option<String> {
+    let path = HSTRING::from(exe);
+    unsafe {
+        let size = GetFileVersionInfoSizeW(&path, None);
+        if size == 0 {
+            return None;
+        }
+        let mut data = vec![0u8; size as usize];
+        GetFileVersionInfoW(&path, None, size, data.as_mut_ptr().cast()).ok()?;
+        let query = |sub: &str| {
+            let (mut p, mut len) = (std::ptr::null_mut(), 0u32);
+            VerQueryValueW(data.as_ptr().cast(), &HSTRING::from(sub), &mut p, &mut len).as_bool().then_some((p as *const u16, len as usize))
+        };
+        let mut langs: Vec<(u16, u16)> = match query(r"\VarFileInfo\Translation") {
+            Some((p, bytes)) => std::slice::from_raw_parts(p, bytes / 2).as_chunks::<2>().0.iter().map(|c| (c[0], c[1])).collect(),
+            None => vec![],
+        };
+        langs.push((0x0409, 0x04B0));
+        langs.into_iter().find_map(|(lang, cp)| {
+            let (p, chars) = query(&format!(r"\StringFileInfo\{lang:04x}{cp:04x}\FileDescription"))?;
+            let s = String::from_utf16_lossy(std::slice::from_raw_parts(p, chars));
+            let s = s.trim_end_matches('\0').trim();
+            (!s.is_empty()).then(|| s.to_string())
+        })
+    }
+}
+
+/// A Store app's name, as its package gives it.
+fn package_name(pid: u32) -> Option<String> {
+    let full = unsafe {
+        let proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buf = [0u16; 256];
+        let mut len = buf.len() as u32;
+        let e = GetPackageFullName(proc, &mut len, Some(PWSTR(buf.as_mut_ptr())));
+        let _ = CloseHandle(proc);
+        if e != ERROR_SUCCESS {
+            return None;
+        }
+        String::from_utf16_lossy(&buf[..(len as usize).saturating_sub(1)])
+    };
+    // An empty user means the user des-k runs as.
+    let name = PackageManager::new().and_then(|m| m.FindPackageByUserSecurityIdPackageFullName(&HSTRING::new(), &HSTRING::from(&full))).and_then(|p| p.DisplayName());
+    match name {
+        Ok(n) if !n.is_empty() => Some(n.to_string()),
+        Ok(_) => None,
+        Err(e) => {
+            eprintln!("finder: no name for the package {full}: {e}");
+            None
         }
     }
-    name
 }
 
 /// A window's icon, asked for once while des-k runs: WM_GETICON waits on the app (a busy one
@@ -282,11 +565,15 @@ fn snapshot() -> Vec<Row> {
                 program: program(p.hwnd),
                 icon: icon(p.hwnd),
                 screen: order.iter().position(|d| *d == p.device).map_or(0, |i| i + 1),
+                place: p.screen,
                 workspace: p.workspace + 1,
                 on_screen: p.on_screen,
+                pinned: p.pinned,
+                unplugged: p.unplugged,
                 used: recent.get(&(p.hwnd.0 as isize)).copied(),
                 rank: 0,
                 gone: false,
+                marks: vec![],
                 hwnd: p.hwnd,
             })
             .collect()
@@ -319,27 +606,16 @@ pub fn toggle() {
 
 fn open() {
     let Some((popup, edit)) = window() else { return eprintln!("finder: window not created") };
+    ui::gdiplus();
     let (mon, device) = ws::under_mouse();
     let came_from = unsafe { GetForegroundWindow() };
     used(came_from);
     RECENT.with_borrow_mut(|r| r.retain(|&h, _| unsafe { IsWindow(Some(HWND(h as *mut _))) }.as_bool()));
     let (mut dpi, mut dy) = (96u32, 96u32);
     unsafe { let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dpi, &mut dy); }
-    let mut s = Session {
-        rows: snapshot(),
-        shown: Vec::new(),
-        selected: 0,
-        scroll: 0,
-        came_from,
-        screen: device.clone(),
-        query: String::new(),
-        note: None,
-        closing: Vec::new(),
-        matcher: Matcher::new(Config::DEFAULT),
-        scale: dpi as f32 / 96.0,
-    };
-    s.refilter(false);
-    let (n, w, h, pad, box_h, edit_h) = (s.rows.len(), s.px(WIDTH), s.height(), s.px(PAD_X), s.px(BOX), s.px(FONT_PX + 8.0));
+    let (screens, main) = ws::present();
+    let s = Session::new(snapshot(), came_from, device.clone(), screens, main, dpi as f32 / 96.0);
+    let (n, w, h, scale) = (s.rows.len(), s.px(WIDTH), s.px(s.height()), s.scale);
     unsafe {
         let _ = SetWindowTextW(edit, w!("")); // before the session exists, so its EN_CHANGE does nothing
         SESSION.set(Some(s));
@@ -347,10 +623,11 @@ fn open() {
         let _ = GetMonitorInfoW(mon, &mut mi);
         let r = mi.rcWork;
         let (x, y) = ((r.left + r.right - w) / 2, r.top + (r.bottom - r.top) / 5);
+        ui::border(popup, ui::theme().b.edge);
         // Placed first: moving to another screen can change the popup's dpi, then the font matches it.
         let _ = SetWindowPos(popup, Some(HWND_TOPMOST), x, y, w, h, SWP_NOACTIVATE);
-        SendMessageW(edit, WM_SETFONT, Some(WPARAM(font(dpi).0 as usize)), Some(LPARAM(0)));
-        let _ = MoveWindow(edit, pad, (box_h - edit_h) / 2, w - 2 * pad, edit_h, false);
+        SendMessageW(edit, WM_SETFONT, Some(WPARAM(ui::fonts(scale).get(F::Body).0 as usize)), Some(LPARAM(0)));
+        refresh();
         let _ = ShowWindow(popup, SW_SHOW);
         let _ = SetForegroundWindow(popup);
         let _ = SetFocus(Some(edit));
@@ -378,12 +655,27 @@ pub fn close(give_back: bool) {
     }
 }
 
-/// Resize to what is shown now and repaint.
+/// Resize to what is shown now, repaint, and tell Narrator what changed.
 fn refresh() {
-    let (Some(popup), Some((w, h))) = (WND.get(), with(|s| (s.px(WIDTH), s.height()))) else { return };
+    let (Some(popup), Some(edit)) = (WND.get(), EDIT.get()) else { return };
+    let Some((w, h, edit_at, tree, say)) = with(|s| {
+        let e = RECT { left: s.px(TEXT_X), top: s.px((BOX - 1.0 - TEXT_H) / 2.0), right: s.px(WIDTH - SIDE - COUNT_W), bottom: 0 };
+        (s.px(WIDTH), s.px(s.height()), RECT { bottom: e.top + s.px(TEXT_H), ..e }, s.tree(), s.speech())
+    }) else {
+        return;
+    };
     unsafe {
         let _ = SetWindowPos(popup, None, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        let _ = MoveWindow(edit, edit_at.left, edit_at.top, edit_at.right - edit_at.left, edit_at.bottom - edit_at.top, true);
         let _ = InvalidateRect(Some(popup), None, false);
+    }
+    TREE.with(|t| {
+        if let Ok(mut n) = t.try_lock() {
+            *n = tree;
+        }
+    });
+    if let Some((words, queue)) = say {
+        uia::notify(popup, &words, WHO, queue);
     }
 }
 
@@ -398,13 +690,13 @@ fn step(by: isize) {
     refresh();
 }
 
-fn set_note(note: &'static str) {
+fn set_note(note: Note) {
     with(|s| s.note = Some(note));
     refresh();
 }
 
 /// The row of a window that went away disappears; the finder stays open.
-fn drop_row(hwnd: HWND, note: Option<&'static str>) {
+fn drop_row(hwnd: HWND, note: Option<Note>) {
     with(|s| {
         if let Some(r) = s.rows.iter_mut().find(|r| r.hwnd == hwnd) {
             r.gone = true;
@@ -441,12 +733,19 @@ fn act(how: Act) {
         Ok(()) => {
             used(h);
             close(false);
+            if matches!(how, Act::Go) {
+                crate::welcome::tried(crate::welcome::Try::Find);
+            }
         }
         Err(Miss::Gone) => {
             println!("finder: \"{title}\" is gone");
-            drop_row(h, Some("That window is gone"));
+            drop_row(h, Some(Note::Gone));
         }
-        Err(Miss::CantMove) => set_note("Can't move this window"),
+        Err(Miss::CantMove) => set_note(Note::CantMove),
+        Err(Miss::Unplugged) => {
+            println!("finder: \"{title}\" waits for its unplugged screen to fold");
+            set_note(Note::Unplugged);
+        }
     }
 }
 
@@ -454,18 +753,23 @@ fn act(how: Act) {
 fn close_window(h: HWND, title: &str) {
     if !unsafe { IsWindow(Some(h)) }.as_bool() {
         println!("finder: \"{title}\" is gone");
-        return drop_row(h, Some("That window is gone"));
+        return drop_row(h, Some(Note::Gone));
     }
     match unsafe { PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0)) } {
         Ok(()) => {
-            with(|s| s.closing.push(h));
+            with(|s| {
+                if !s.closing.contains(&h) {
+                    s.closing.push(h);
+                }
+            });
             if let Some(popup) = WND.get() {
                 unsafe { SetTimer(Some(popup), CLOSING_TIMER, CLOSING_POLL_MS, None) };
             }
+            refresh();
         }
         Err(e) if e.code() == ERROR_ACCESS_DENIED.to_hresult() => {
             eprintln!("finder: can't close \"{title}\", it runs as admin");
-            set_note("Can't close an admin window");
+            set_note(Note::CantClose);
         }
         Err(e) => eprintln!("finder: can't close \"{title}\": {e}"),
     }
@@ -536,6 +840,8 @@ fn on_text_change() {
     let mut buf = vec![0u16; unsafe { GetWindowTextLengthW(edit) } as usize + 1];
     let n = unsafe { GetWindowTextW(edit, &mut buf) }.max(0) as usize;
     let text = String::from_utf16_lossy(&buf[..n]);
+    // The placeholder comes and goes with the text: the edit repaints only what it typed.
+    unsafe { let _ = InvalidateRect(Some(edit), None, true); }
     if with(|s| {
         s.query = text;
         s.note = None;
@@ -549,11 +855,10 @@ fn on_text_change() {
 
 fn on_click(y: i32) {
     let hit = with(|s| {
-        let row = (y - s.px(BOX)).checked_div(s.px(ROW)).filter(|_| y >= s.px(BOX))? as usize;
-        (row < s.visible_rows()).then(|| {
-            s.selected = s.scroll + row;
-            s.note = None;
-        })
+        let k = s.row_at(y)?;
+        s.selected = k;
+        s.note = None;
+        Some(())
     });
     if hit.flatten().is_some() {
         refresh();
@@ -561,70 +866,248 @@ fn on_click(y: i32) {
     }
 }
 
-/// The edit font at a dpi, made once per dpi.
-fn font(dpi: u32) -> HFONT {
-    if let Some((f, d)) = FONT.get()
-        && d == dpi
-    {
-        return f;
+fn on_hover(hwnd: HWND, y: Option<i32>) {
+    let changed = with(|s| {
+        let k = y.and_then(|y| s.row_at(y));
+        std::mem::replace(&mut s.hover, k) != k
+    });
+    if changed == Some(true) {
+        unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
     }
-    let face = if ui::variable() { w!("Segoe UI Variable Text") } else { w!("Segoe UI") };
-    let f = ui::font(face, FONT_PX * dpi as f32 / 96.0, FW_NORMAL.0 as i32);
-    // The edit gets the new font before the old one goes.
-    if let Some((old, _)) = FONT.replace(Some((f, dpi))) {
-        if let Some(edit) = EDIT.get() {
-            unsafe { SendMessageW(edit, WM_SETFONT, Some(WPARAM(f.0 as usize)), Some(LPARAM(0))) };
-        }
+    if y.is_some() {
+        let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: hwnd, dwHoverTime: 0 };
+        unsafe { let _ = TrackMouseEvent(&mut t); }
+    }
+}
+
+fn on_wheel(delta: i16) {
+    with(|s| s.scroll_by(-(delta as isize) * WHEEL_ROWS / WHEEL_DELTA as isize));
+    refresh();
+}
+
+/// The text box's background brush, made again when the theme changes its color.
+fn edit_brush(color: u32) -> HBRUSH {
+    if let Some((b, c)) = BRUSH.get()
+        && c == color
+    {
+        return b;
+    }
+    let b = unsafe { CreateSolidBrush(ui::cref(color)) };
+    if let Some((old, _)) = BRUSH.replace(Some((b, color))) {
         unsafe { let _ = DeleteObject(old.into()); }
     }
-    f
+    b
 }
 
-fn bg_brush() -> HBRUSH {
-    BRUSH.get().unwrap_or_else(|| {
-        let b = unsafe { CreateSolidBrush(BG) };
-        BRUSH.set(Some(b));
-        b
-    })
-}
-
-fn draw(dc: HDC, s: &Session, width: i32) {
-    let px = |v: f32| s.px(v);
-    let top = px(BOX);
-    unsafe {
-        SetBkMode(dc, TRANSPARENT);
-        if let Some((f, _)) = FONT.get() {
-            SelectObject(dc, f.into());
-        }
-        if s.visible_rows() > 0 {
-            let line = CreateSolidBrush(LINE);
-            FillRect(dc, &RECT { left: 0, top: top - px(1.0), right: width, bottom: top }, line);
-            let _ = DeleteObject(line.into());
-        }
-        let accent = CreateSolidBrush(ACCENT);
-        SelectObject(dc, GetStockObject(NULL_PEN));
-        SelectObject(dc, accent.into());
-        for (k, &(i, _)) in s.shown.iter().enumerate().skip(s.scroll).take(ROWS) {
-            let r = &s.rows[i];
-            let y = top + (k - s.scroll) as i32 * px(ROW);
-            let selected = k == s.selected;
-            if selected {
-                let _ = RoundRect(dc, px(6.0), y + px(2.0), width - px(6.0), y + px(ROW - 2.0), px(8.0), px(8.0));
-            }
-            let (main, dim) = if selected { (ON_ACCENT, ON_ACCENT) } else { (TEXT, DIM) };
-            let _ = DrawIconEx(dc, px(PAD_X), y + (px(ROW) - px(ICON)) / 2, r.icon, px(ICON), px(ICON), 0, None, DI_NORMAL);
-            let cell = |left: i32, right: i32| RECT { left, top: y, right, bottom: y + px(ROW) };
-            let place = format!("{}{} · {}", if r.on_screen { "● " } else { "" }, r.screen, r.workspace);
-            text(dc, &r.program, cell(px(PROGRAM_X), px(PROGRAM_X + PROGRAM_W)), dim, DT_LEFT);
-            text(dc, &r.title, cell(px(PROGRAM_X + PROGRAM_W + 12.0), width - px(PAD_X + PLACE_W + 8.0)), main, DT_LEFT);
-            text(dc, &place, cell(width - px(PAD_X + PLACE_W), width - px(PAD_X)), dim, DT_RIGHT);
-        }
-        let _ = DeleteObject(accent.into());
-        if let Some(note) = s.note_text() {
-            let y = top + s.visible_rows() as i32 * px(ROW);
-            text(dc, note, RECT { left: px(PAD_X), top: y, right: width - px(PAD_X), bottom: y + px(NOTE) }, DIM, DT_LEFT);
+/// One column of a row: `text` with the letters at `marks` in 600 and `mark` color, cut with …
+/// to `w` (DT_END_ELLIPSIS works on one font only).
+#[allow(clippy::too_many_arguments)]
+fn column(c: &Canvas, x: f32, y: f32, w: f32, text: &str, marks: &[usize], color: u32, mark: u32) {
+    let mut runs: Vec<(String, bool)> = vec![];
+    for (i, ch) in text.chars().enumerate() {
+        let on = marks.binary_search(&i).is_ok();
+        match runs.last_mut() {
+            Some((t, b)) if *b == on => t.push(ch),
+            _ => runs.push((ch.to_string(), on)),
         }
     }
+    let font = |on: bool| if on { F::Bold } else { F::Body };
+    let total: f32 = runs.iter().map(|(t, on)| c.width(t, font(*on))).sum();
+    let room = if total <= w { w } else { w - c.width("…", F::Body) };
+    let mut cx = x;
+    for (t, on) in &runs {
+        let (f, ink) = (font(*on), if *on { mark } else { color });
+        let tw = c.width(t, f);
+        if cx + tw <= x + room {
+            c.text(cx, y, ROW, t, f, ink);
+            cx += tw;
+            continue;
+        }
+        // The cut falls in this run: as many letters as fit, then the ….
+        let chars: Vec<char> = t.chars().collect();
+        let part = |n: usize| chars[..n].iter().collect::<String>();
+        let (mut lo, mut hi) = (0, chars.len());
+        while lo < hi {
+            let mid = (lo + hi).div_ceil(2);
+            if cx + c.width(&part(mid), f) <= x + room { lo = mid } else { hi = mid - 1 }
+        }
+        let kept = part(lo);
+        let kept = kept.trim_end();
+        c.text(cx, y, ROW, kept, f, ink);
+        c.text(cx + c.width(kept, f), y, ROW, "…", F::Body, color);
+        return;
+    }
+}
+
+/// A screen's name and `then` cut to `w`: a twin's " #n" stays (AC-FND-3).
+fn fit_place(c: &Canvas, name: &str, then: &str, w: f32) -> String {
+    let whole = format!("{name}{then}");
+    if c.width(&whole, F::Small) <= w {
+        return whole;
+    }
+    let (base, end) = match name.rsplit_once(" #") {
+        Some((base, n)) if !n.is_empty() && n.chars().all(|d| d.is_ascii_digit()) => (base, format!(" #{n}{then}")),
+        _ => (name, then.to_string()),
+    };
+    c.fit(base, F::Small, w - c.width(&end, F::Small)) + &end
+}
+
+/// A row's workspace chip, its right edge at CHIP_RIGHT: full when the window is not hidden,
+/// soft (40%) when des-k hid it, a pin when pinned, a grey outline when its screen just left.
+fn chip(c: &Canvas, r: &Row, y: f32, chosen: bool, bg: u32) {
+    let (b, hc) = (c.t.b, c.t.hc);
+    let color = b.ws[(r.workspace.max(1) - 1).min(8)];
+    let (label, f) = if r.pinned { ("\u{E718}".to_string(), F::IconSmall) } else { (r.workspace.to_string(), F::SmallBold) };
+    let tw = c.width(&label, f);
+    let w = (tw + 10.0).max(20.0);
+    let at = (CHIP_RIGHT - w, y + (ROW - 18.0) / 2.0, w, 18.0);
+    let full = r.on_screen && !r.unplugged;
+    let soft = !r.on_screen && !r.unplugged;
+    let (fill, edge, ink) = match (hc, chosen) {
+        // High contrast: a full chip in Highlight, a soft one outlined; on the chosen row both
+        // turn to HighlightText, and an unplugged one is filled like a full one.
+        (true, true) if soft => (bg, Some(b.on_acc), b.on_acc),
+        (true, true) => (b.on_acc, None, b.acc),
+        (true, false) if full => (color, None, b.on_ws),
+        (true, false) if soft => (bg, Some(b.tx), b.tx),
+        (true, false) => (bg, Some(b.tx3), b.tx2),
+        _ if full => (color, (b.ws_edge > 0.0).then(|| mix(color, 0, b.ws_edge)), b.on_ws),
+        _ if soft => (mix(b.card, color, 0.4), Some(mix(b.card, color, 0.7)), b.tx),
+        _ => (bg, Some(b.tx3), b.tx2),
+    };
+    c.boxed(at, 4.0, fill, edge);
+    c.text(at.0 + (w - tw) / 2.0, at.1, 18.0, &label, f, ink);
+}
+
+fn row(c: &Canvas, s: &Session, r: &Row, y: f32, chosen: bool, hover: bool) {
+    let (b, hc) = (c.t.b, c.t.hc);
+    let closing = s.closing.contains(&r.hwnd);
+    let at = (ROW_X, y, ROW_W, ROW);
+    let bg = match () {
+        _ if chosen && hc => b.acc,
+        _ if chosen => mix(b.card, b.acc, 0.10),
+        _ if hover && !hc => b.track,
+        _ => b.card,
+    };
+    if hover && hc && !chosen {
+        c.boxed(at, 6.0, bg, Some(b.acc));
+    } else if bg != b.card {
+        c.fill_rr(at, 6.0, op(bg));
+    }
+    if chosen {
+        // The settings side list's bar.
+        c.fill_rr((ROW_X, y + 10.0, 3.0, 16.0), 1.5, op(if hc { b.on_acc } else { b.acc }));
+    }
+    let ink = |color: u32| if hc && chosen { b.on_acc } else { color };
+    // A window Ctrl+W was sent to fades until it goes.
+    let fade = |color: u32| if closing { mix(bg, color, 0.45) } else { color };
+    let icon_y = y + (ROW - ICON) / 2.0;
+    c.icon(ROW_X + ROW_PAD, icon_y, ICON, r.icon);
+    if closing {
+        c.fill_rr((ROW_X + ROW_PAD, icon_y, ICON, ICON), 0.0, alpha(bg, 0.55));
+    }
+    let (pm, tm) = split_marks(r);
+    column(c, PROGRAM_X, y, PROGRAM_W, &r.program, &pm, fade(ink(b.tx2)), fade(ink(b.tx)));
+    column(c, TITLE_X, y, TITLE_W, &r.title, &tm, fade(ink(b.tx)), fade(ink(b.tx)));
+    let place = match () {
+        _ if closing => "Closing…".to_string(),
+        _ if r.unplugged => fit_place(c, &r.place, " · unplugged", SCREEN_W),
+        _ if s.screens > 1 => fit_place(c, &r.place, "", SCREEN_W),
+        _ => String::new(),
+    };
+    c.text(SCREEN_RIGHT - c.width(&place, F::Small), y, ROW, &place, F::Small, ink(b.tx2));
+    if !closing {
+        chip(c, r, y, chosen, bg);
+    }
+}
+
+/// A key line item: its key caps, then what it does. Returns where it ends.
+fn key_item(c: &Canvas, x: f32, y: f32, keys: &[&str], label: &str, grey: bool) -> f32 {
+    let b = c.t.b;
+    let fade = |color: u32| if grey { mix(b.band, color, 0.45) } else { color };
+    let ky = y + (FOOT - 20.0) / 2.0;
+    let mut x = x;
+    for (i, k) in keys.iter().enumerate() {
+        if i > 0 {
+            x += 4.0;
+        }
+        let tw = c.width(k, F::Small);
+        let w = (tw + 12.0).max(20.0);
+        c.fill_rr((x, ky + 1.0, w, 20.0), 4.0, op(fade(b.key_edge))); // its 1 px shadow below
+        c.boxed((x, ky, w, 20.0), 4.0, fade(b.key), Some(fade(b.key_edge)));
+        c.text(x + (w - tw) / 2.0, ky, 20.0, k, F::Small, fade(b.tx));
+        x += w;
+    }
+    x += 8.0;
+    c.text(x, y, FOOT, label, F::Small, fade(b.tx2));
+    x + c.width(label, F::Small)
+}
+
+/// The whole finder at 0, 0. `typed` paints the search text and caret as the EDIT would, for
+/// the render tests; on screen the EDIT draws them itself.
+fn draw(c: &Canvas, s: &Session, typed: Option<&str>) {
+    let (b, hc) = (c.t.b, c.t.hc);
+    let height = s.height();
+    c.fill_rr((0.0, 0.0, WIDTH, height), 0.0, op(b.card));
+    // The search box.
+    c.text(SIDE, 0.0, BOX - 1.0, "\u{E721}", F::Icon, b.tx2);
+    if let Some(n) = s.count() {
+        c.text(WIDTH - SIDE - c.width(&n, F::Small), 0.0, BOX - 1.0, &n, F::Small, b.tx2);
+    }
+    if let Some(q) = typed {
+        let y = (BOX - 1.0 - TEXT_H) / 2.0;
+        let caret = if q.is_empty() {
+            c.text(TEXT_X + 1.0, y, TEXT_H, PLACEHOLDER, F::Body, b.tx2);
+            TEXT_X
+        } else {
+            c.text(TEXT_X, y, TEXT_H, q, F::Body, b.tx);
+            TEXT_X + c.width(q, F::Body) + 1.0
+        };
+        c.fill_rr((caret, y, 1.0, TEXT_H), 0.0, op(b.tx));
+    }
+    c.rule(0.0, BOX - 1.0, WIDTH, op(b.line));
+    // The list.
+    let top = BOX + LIST_PAD;
+    match s.empty_text() {
+        Some("No match") => {
+            c.text(ROW_X + 40.0, top + 8.0, 20.0, "No match", F::Body, b.tx2);
+            c.text(ROW_X + 40.0, top + 28.0, 16.0, "Windows on Windows' own desktops and paused Store apps aren't listed.", F::Small, b.tx2);
+        }
+        Some(e) => c.text(ROW_X + 40.0, top, ROW, e, F::Body, b.tx2),
+        None => {}
+    }
+    for (k, &(i, _)) in s.shown.iter().enumerate().skip(s.scroll).take(ROWS) {
+        row(c, s, &s.rows[i], top + (k - s.scroll) as f32 * ROW, k == s.selected, s.hover == Some(k));
+    }
+    let n = s.shown.len();
+    if n > ROWS {
+        let track = ROWS as f32 * ROW - 12.0;
+        let h = track * ROWS as f32 / n as f32;
+        let y = top + (track - h) * s.scroll as f32 / (n - ROWS) as f32;
+        c.fill_rr((WIDTH - 6.0, y, 3.0, h), 1.5, op(b.tx3));
+    }
+    // The note.
+    if let Some(note) = s.note {
+        let (icon, line, under, warn) = note.words(&s.main);
+        let y = BOX + s.list_h();
+        c.boxed((8.0, y, WIDTH - 16.0, s.note_h() - 8.0), 6.0, b.bg, Some(b.line));
+        c.text(20.0, y + 8.0, 20.0, icon, F::Icon, if warn { b.warn } else { b.tx2 });
+        c.text(48.0, y + 8.0, 20.0, line, F::Bold, b.tx);
+        if let Some(u) = under {
+            c.text(48.0, y + 28.0, 16.0, &c.fit(&u, F::Small, WIDTH - 16.0 - 52.0), F::Small, b.tx2);
+        }
+    }
+    // The key line; with no rows only Esc does anything.
+    let y = height - FOOT;
+    c.fill_rr((0.0, y, WIDTH, FOOT), 0.0, op(if hc { b.card } else { b.band }));
+    c.rule(0.0, y, WIDTH, op(b.line));
+    let none = s.shown.is_empty();
+    let mut x = SIDE;
+    for (keys, label) in [(&["Enter"][..], "Go to"), (&["Shift", "Enter"][..], "Bring here"), (&["Ctrl", "W"][..], "Close window")] {
+        x = key_item(c, x, y, keys, label, none) + 20.0;
+    }
+    let esc = key_item(&c.measuring(), 0.0, y, &["Esc"], "Cancel", false);
+    key_item(c, WIDTH - SIDE - esc, y, &["Esc"], "Cancel", false);
 }
 
 fn paint(hwnd: HWND) {
@@ -635,14 +1118,51 @@ fn paint(hwnd: HWND) {
         let _ = GetClientRect(hwnd, &mut rc);
         // Drawn off screen first: the list repaints on every key, and would flicker otherwise.
         ui::buffered(hdc, 0, 0, rc.right, rc.bottom, |mem| {
-            FillRect(mem, &rc, bg_brush());
             SESSION.with_borrow(|s| {
                 if let Some(s) = s {
-                    draw(mem, s, rc.right);
+                    let fonts = ui::fonts(s.scale);
+                    draw(&Canvas::new(mem, true, s.scale, ui::theme(), &fonts), s, None);
                 }
             });
         });
         let _ = EndPaint(hwnd, &ps);
+    }
+}
+
+/// "Find a window" in grey while the text box is empty: an EDIT without common controls 6 has
+/// no placeholder of its own.
+unsafe fn placeholder(edit: HWND) {
+    unsafe {
+        let dc = GetDC(Some(edit));
+        let font = HFONT(SendMessageW(edit, WM_GETFONT, None, None).0 as *mut _);
+        let old = SelectObject(dc, font.into());
+        SetTextColor(dc, ui::cref(ui::theme().b.tx2));
+        SetBkMode(dc, TRANSPARENT);
+        let left = (SendMessageW(edit, EM_GETMARGINS, None, None).0 & 0xFFFF) as i32;
+        let one = (GetDpiForWindow(edit) as i32 + 95) / 96; // after the caret
+        let wide: Vec<u16> = PLACEHOLDER.encode_utf16().collect();
+        let _ = HideCaret(Some(edit));
+        let _ = TextOutW(dc, left + one, 0, &wide);
+        let _ = ShowCaret(Some(edit));
+        SelectObject(dc, old);
+        ReleaseDC(Some(edit), dc);
+    }
+}
+
+unsafe extern "system" fn edit_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    unsafe {
+        let own: WNDPROC = std::mem::transmute(EDIT_PROC.get());
+        // The wheel scrolls the list, whichever of the two the mouse is over.
+        if msg == WM_MOUSEWHEEL
+            && let Some(popup) = WND.get()
+        {
+            return SendMessageW(popup, msg, Some(wp), Some(lp));
+        }
+        let r = CallWindowProcW(own, hwnd, msg, wp, lp);
+        if msg == WM_PAINT && GetWindowTextLengthW(hwnd) == 0 {
+            placeholder(hwnd);
+        }
+        r
     }
 }
 
@@ -655,10 +1175,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             WM_ERASEBKGND => LRESULT(1),
             WM_CTLCOLOREDIT => {
-                let dc = HDC(wp.0 as *mut _);
-                SetTextColor(dc, TEXT);
-                SetBkColor(dc, BG);
-                LRESULT(bg_brush().0 as isize)
+                let (dc, b) = (HDC(wp.0 as *mut _), ui::theme().b);
+                SetTextColor(dc, ui::cref(b.tx));
+                SetBkColor(dc, ui::cref(b.card));
+                LRESULT(edit_brush(b.card).0 as isize)
             }
             WM_COMMAND if (wp.0 >> 16) as u32 == EN_CHANGE => {
                 on_text_change();
@@ -673,10 +1193,33 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 on_click((lp.0 >> 16) as i16 as i32);
                 LRESULT(0)
             }
+            WM_MOUSEMOVE => {
+                on_hover(hwnd, Some((lp.0 >> 16) as i16 as i32));
+                LRESULT(0)
+            }
+            WM_MOUSELEAVE => {
+                on_hover(hwnd, None);
+                LRESULT(0)
+            }
+            WM_MOUSEWHEEL => {
+                on_wheel((wp.0 >> 16) as i16);
+                LRESULT(0)
+            }
             WM_TIMER if wp.0 == CLOSING_TIMER => {
                 closing_tick();
                 LRESULT(0)
             }
+            // Windows' mode or contrast changed (or main's 1 s check saw it): repaint in it.
+            WM_SETTINGCHANGE | WM_SYSCOLORCHANGE => {
+                ui::refresh();
+                ui::border(hwnd, ui::theme().b.edge);
+                let _ = InvalidateRect(Some(hwnd), None, false);
+                if let Some(edit) = EDIT.get() {
+                    let _ = InvalidateRect(Some(edit), None, true);
+                }
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
+            WM_GETOBJECT => TREE.with(|t| uia::answer_tree(hwnd, wp, lp, t)),
             WM_DPICHANGED => LRESULT(0), // open sizes the popup for each screen itself
             _ => DefWindowProcW(hwnd, msg, wp, lp),
         }
@@ -690,13 +1233,12 @@ fn window() -> Option<(HWND, HWND)> {
     }
     unsafe {
         let inst = GetModuleHandleW(None).ok()?;
-        let wc = WNDCLASSW { lpfnWndProc: Some(wndproc), hInstance: inst.into(), lpszClassName: CLASS, hCursor: LoadCursorW(None, IDC_ARROW).ok()?, ..Default::default() };
-        RegisterClassW(&wc);
-        // Tool window: never in Alt+Tab or the taskbar, and never in ws lists. It must take focus, so no WS_EX_NOACTIVATE.
-        let popup = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, CLASS, w!("des-k finder"), WS_POPUP | WS_CLIPCHILDREN, 0, 0, 0, 0, None, None, Some(inst.into()), None).ok()?;
-        let round = DWMWCP_ROUND;
-        let _ = DwmSetWindowAttribute(popup, DWMWA_WINDOW_CORNER_PREFERENCE, &round as *const _ as _, size_of_val(&round) as u32);
+        // It must take focus, so no WS_EX_NOACTIVATE; and it holds an EDIT, so never layered.
+        let popup = ui::popup(CLASS, Some(wndproc), WS_EX_TOPMOST, false)?;
+        let _ = SetWindowTextW(popup, &HSTRING::from(PLACEHOLDER)); // what Narrator calls the window
         let edit = CreateWindowExW(WINDOW_EX_STYLE(0), w!("EDIT"), w!(""), WS_CHILD | WS_VISIBLE | WINDOW_STYLE(ES_AUTOHSCROLL as u32), 0, 0, 0, 0, Some(popup), None, Some(inst.into()), None).ok()?;
+        EDIT_PROC.set(SetWindowLongPtrW(edit, GWLP_WNDPROC, edit_proc as *const () as isize));
+        uia::name_control(edit, PLACEHOLDER);
         WND.set(Some(popup));
         EDIT.set(Some(edit));
         Some((popup, edit))
@@ -706,10 +1248,26 @@ fn window() -> Option<(HWND, HWND)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::{DARK, Fonts, LIGHT, Theme};
     use std::time::Duration;
 
     fn row(on_screen: bool, screen: usize, workspace: usize, used: Option<Instant>) -> Row {
-        Row { hwnd: HWND::default(), title: String::new(), program: String::new(), icon: HICON::default(), screen, workspace, on_screen, used, rank: 0, gone: false }
+        Row {
+            hwnd: HWND::default(),
+            title: String::new(),
+            program: String::new(),
+            icon: HICON::default(),
+            screen,
+            place: String::new(),
+            workspace,
+            on_screen,
+            pinned: false,
+            unplugged: false,
+            used,
+            rank: 0,
+            gone: false,
+            marks: vec![],
+        }
     }
 
     fn ranks(rows: &[Row]) -> Vec<usize> {
@@ -754,35 +1312,54 @@ mod tests {
         assert_eq!(first_pick("code", 5), 0);
     }
 
+    fn named(program: &str, title: &str, rank: usize) -> Row {
+        Row { program: program.into(), title: title.into(), rank, ..row(true, 1, 1, None) }
+    }
+
+    fn session(rows: Vec<Row>) -> Session {
+        Session::new(rows, HWND::default(), String::new(), 2, "Built-in display".into(), 1.0)
+    }
+
+    fn filter(s: &mut Session, q: &str) {
+        s.query = q.into();
+        s.refilter(false);
+    }
+
     // AC-5: each typed word must appear, letters in order, any case, in "program title"; the
     // best match is selected, and an empty result says why.
     #[test]
     fn refilter_matches_every_word_fuzzily_and_selects_the_best() {
-        let named = |program: &str, title: &str, rank| Row { program: program.into(), title: title.into(), rank, ..row(true, 1, 1, None) };
-        let mut s = Session {
-            rows: vec![named("explorer", "Downloads", 0), named("Code", "finder.rs - pdesk - Visual Studio Code", 1), named("chrome", "pdesk issues", 2)],
-            shown: Vec::new(),
-            selected: 0,
-            scroll: 0,
-            came_from: HWND::default(),
-            screen: String::new(),
-            query: "vsc".into(),
-            note: None,
-            closing: Vec::new(),
-            matcher: Matcher::new(Config::DEFAULT),
-            scale: 1.0,
-        };
+        let mut s = session(vec![named("explorer", "Downloads", 0), named("Code", "finder.rs - pdesk - Visual Studio Code", 1), named("chrome", "pdesk issues", 2)]);
         let firsts = |s: &mut Session, q: &str| {
-            s.query = q.into();
-            s.refilter(false);
-            (s.shown.iter().map(|&(i, _)| i).collect::<Vec<_>>(), s.selected, s.note_text())
+            filter(s, q);
+            (s.shown.iter().map(|&(i, _)| i).collect::<Vec<_>>(), s.selected, s.empty_text())
         };
         assert_eq!(firsts(&mut s, "vsc"), (vec![1], 0, None));
         assert_eq!(firsts(&mut s, "PDESK visual").0, [1]);
         assert_eq!(firsts(&mut s, "pdesk").0.len(), 2);
         assert_eq!(firsts(&mut s, "zzzq"), (vec![], 0, Some("No match")));
+        assert_eq!(s.count().as_deref(), Some("0 of 3"));
         s.rows.iter_mut().for_each(|r| r.gone = true);
         assert_eq!(firsts(&mut s, "").2, Some("No windows"));
+        assert_eq!(s.count(), None);
+    }
+
+    // AC-FND-6: the bold letters must be the ones that matched, each in the column it sits in;
+    // an index off by one would bold the letter next to it, or one in the other column.
+    #[test]
+    fn matched_letters_split_into_the_program_and_title_columns() {
+        let mut s = session(vec![named("Google Chrome", "des-k issues", 0), named("Code", "notes", 1)]);
+        filter(&mut s, "chrome");
+        let (p, t) = split_marks(&s.rows[0]);
+        assert_eq!((p, t), (vec![7, 8, 9, 10, 11, 12], vec![]));
+        filter(&mut s, "code des");
+        let (p, t) = split_marks(&s.rows[0]);
+        let pick = |text: &str, at: &[usize]| at.iter().map(|&i| text.chars().nth(i).unwrap()).collect::<String>();
+        assert_eq!(pick("Google Chrome", &p).to_lowercase().chars().filter(|c| "code".contains(*c)).count(), p.len());
+        assert_eq!(pick("des-k issues", &t), "des");
+        // A row the query no longer matches keeps no bold letters.
+        filter(&mut s, "");
+        assert!(s.rows.iter().all(|r| r.marks.is_empty()));
     }
 
     // Ctrl+Backspace removes one word, like everywhere else in Windows, not the whole query or one letter.
@@ -798,5 +1375,134 @@ mod tests {
         assert_eq!(cut("main."), "main");
         assert_eq!(cut("word"), "");
         assert_eq!(cut(""), "");
+    }
+
+    // AC-FND-9: Narrator hears the same words the row paints, plus where the window is; and it
+    // hears each change once, not again on every repaint.
+    #[test]
+    fn narrator_reads_the_chosen_row_once_per_change() {
+        let mut rows = vec![named("Google Chrome", "des-k issues", 0), named("Notepad", "notes.txt", 1)];
+        rows[0].place = "DELL U2720Q".into();
+        rows[0].hwnd = HWND(10 as *mut _);
+        rows[1].hwnd = HWND(11 as *mut _);
+        rows[1].on_screen = false;
+        rows[1].workspace = 3;
+        rows[1].place = "Built-in display".into();
+        let mut s = session(rows);
+        assert_eq!(s.speech(), Some(("2 windows, notes.txt, Notepad, Built-in display, workspace 3, hidden".into(), true)));
+        assert_eq!(s.speech(), None);
+        s.selected = 0;
+        assert_eq!(s.speech(), Some(("des-k issues, Google Chrome, DELL U2720Q, workspace 1, shown".into(), false)));
+        s.note = Some(Note::Unplugged);
+        assert_eq!(s.speech().unwrap().0, "Its screen was just unplugged. In a moment it moves to Built-in display; try again then.");
+        let tree = s.tree();
+        let list = tree.kids.iter().find(|n| n.role == UIA_ListControlTypeId).unwrap();
+        assert_eq!(list.kids.iter().map(|k| k.selected).collect::<Vec<_>>(), [Some(true), Some(false)]);
+    }
+
+    /// A window list like the design's: [icon, program, title, screen, workspace, flag].
+    fn design_rows(set: &str) -> Vec<Row> {
+        const DELL: &str = "DELL U2720Q";
+        const BUILT: &str = "Built-in display";
+        let all: Vec<(&str, &str, &str, usize, &str)> = match set {
+            "long" => vec![
+                ("Visual Studio Code", "settings_page.rs - des-k - a very long workspace folder name that goes on - Visual Studio Code", "LG ULTRAGEAR 27GR95QE OLED Gaming Monitor #1", 9, ""),
+                ("Microsoft Edge WebView2", "A web page title that is far too long to fit in the row at all", "LG ULTRAGEAR 27GR95QE OLED Gaming Monitor #2", 7, "shown"),
+                ("Windows Terminal", "Administrator: PowerShell", BUILT, 6, ""),
+            ],
+            _ => vec![
+                ("Visual Studio Code", "finder.rs - des-k - Visual Studio Code", DELL, 2, "shown"),
+                ("Google Chrome", "des-k issues · GitHub - Google Chrome", DELL, 3, if set == "closing" { "closing" } else if set == "away" { "away" } else { "" }),
+                ("File Explorer", "Downloads", BUILT, 1, "shown"),
+                ("Windows Terminal", "PowerShell", DELL, 1, ""),
+                ("Notepad", "notes.txt - Notepad", BUILT, 3, if set == "away" { "away" } else { "" }),
+                ("Microsoft Teams", "Chat | Microsoft Teams", BUILT, 1, "pin"),
+                ("Outlook", "Inbox - Outlook", DELL, 4, ""),
+                ("Settings", "Display", BUILT, 2, ""),
+                ("Paint", "Untitled - Paint", DELL, 2, "shown"),
+                ("Google Chrome", "Pull requests · des-k - Google Chrome", BUILT, 4, ""),
+                ("Spotify", "Spotify Premium", BUILT, 2, ""),
+                ("File Explorer", "des-k", DELL, 4, ""),
+            ],
+        };
+        let app = unsafe { LoadIconW(None, IDI_APPLICATION) }.unwrap_or_default();
+        all.into_iter()
+            .enumerate()
+            .map(|(i, (program, title, place, ws, flag))| Row {
+                hwnd: HWND((i + 1) as *mut _),
+                place: if flag == "away" { "LG HDR 4K".into() } else { place.into() },
+                on_screen: matches!(flag, "shown" | "pin"),
+                pinned: flag == "pin",
+                unplugged: flag == "away",
+                icon: app,
+                workspace: ws,
+                ..named(program, title, i)
+            })
+            .collect()
+    }
+
+    /// Draws every state the design shows to target/finder/ PNGs, to compare by eye with
+    /// pdesk-design/restart/captures/fdr3-* (spec 0017 AC-1, AC-FND-1 to AC-FND-7).
+    #[test]
+    #[ignore]
+    fn render() {
+        ui::gdiplus();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("finder");
+        std::fs::create_dir_all(&dir).unwrap();
+        type Setup = fn(&mut Session);
+        let states: Vec<(&str, &str, &str, Setup)> = vec![
+            ("opened", "all", "", |_| {}),
+            ("chrome", "all", "chrome", |_| {}),
+            ("two-words", "all", "code des", |_| {}),
+            ("no-match", "all", "zzzq", |_| {}),
+            ("no-windows", "none", "", |_| {}),
+            ("scrolled", "all", "", |s| {
+                s.selected = 11;
+                s.scroll_to_selection();
+            }),
+            ("one-screen", "all", "", |s| s.screens = 1),
+            ("hover", "all", "", |s| s.hover = Some(4)),
+            ("long", "long", "", |s| s.selected = 0),
+            ("closing", "closing", "", |s| s.closing.push(HWND(2 as *mut _))),
+            ("closed", "all", "", |s| {
+                s.rows[1].gone = true;
+                s.refilter(true);
+            }),
+            ("cant-move", "long", "", |s| {
+                s.selected = 2;
+                s.note = Some(Note::CantMove);
+            }),
+            ("cant-close", "long", "", |s| {
+                s.selected = 2;
+                s.note = Some(Note::CantClose);
+            }),
+            ("gone", "all", "", |s| {
+                s.rows[1].gone = true;
+                s.refilter(true);
+                s.note = Some(Note::Gone);
+            }),
+            ("unplugged", "away", "", |_| {}),
+            ("unplugged-note", "away", "", |s| s.note = Some(Note::Unplugged)),
+        ];
+        let aquatic = ui::high_contrast([0x202020, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);
+        let desert = ui::high_contrast([0xFFFAEF, 0x3D3D3D, 0x903909, 0xFFF5E3, 0x6D6D6D]);
+        let themes: [(&str, Theme, f32); 5] = [("light", LIGHT, 1.0), ("dark", DARK, 1.0), ("hc", aquatic, 1.0), ("desert", desert, 1.0), ("light-150", LIGHT, 1.5)];
+        for (tname, t, scale) in themes {
+            let fonts = Fonts::new(scale);
+            for (name, set, query, setup) in &states {
+                let rows = if *set == "none" { vec![] } else { design_rows(set) };
+                let mut s = Session::new(rows, HWND::default(), String::new(), 2, "Built-in display".into(), scale);
+                filter(&mut s, query);
+                setup(&mut s);
+                let (w, h) = (s.px(WIDTH), s.px(s.height()));
+                let path = dir.join(format!("{name}-{tname}.png"));
+                ui::tests::save_png(w, h, &path, |dc| {
+                    let c = Canvas::new(dc, true, scale, t, &fonts);
+                    draw(&c, &s, Some(query));
+                    // Windows' 1 px edge, as ui::border asks for it.
+                    c.stroke_rr((0.5 / scale, 0.5 / scale, WIDTH - 1.0 / scale, s.height() - 1.0 / scale), 8.0, 1.0 / scale, op(t.b.edge));
+                });
+            }
+        }
     }
 }

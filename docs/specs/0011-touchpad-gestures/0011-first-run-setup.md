@@ -1,5 +1,7 @@
 # 0011 child: first run setup and Windows' gestures
 
+**Amended by**: [0017](../0017-look-b-screens/0017-first-run.md): the welcome screen, when it opens (`first_run_seen`), and when a failed give back clears (AC-FR-5).
+
 ## Summary
 
 des-k cannot turn Windows' gestures off live: a registry write does nothing until you sign in again (check step, index.md Build plan step 1). So you set them to Nothing in Settings yourself, and des-k acts only while it reads them all off in the registry. On the first start, a welcome screen says plainly what des-k is, shows what each three and four finger gesture will do, and lets you go with that ("Set up in Windows Settings") or "Choose my own" (the same setup, plus des-k's settings page opens at Touchpad, spec 0012). Either one saves your current Windows gesture values and opens Settings at Touchpad. Quit writes your saved values back, and Windows uses them from your next sign in. The settings page can open the screen any time (Touchpad, Touchpad setup).

@@ -515,7 +515,7 @@ footer .footnote:empty { display: none; }
     <h1>Every screen gets its <em>own</em> desktops</h1>
     <p>des-k lets each monitor switch its own workspaces. The other screens stay where they are. This page shows how to install it, use it and remove it.</p>
     <div class="pills"><span class="pill">Runs on <b>Windows 11</b></span><span class="pill">Built with <b>Rust</b></span><span class="pill">Windows stay <b>floating</b></span></div>
-    <p class="meta"><span class="chip sage">Reviewed</span><span>Updated <time datetime="2026-11-03">3 Nov 2026</time></span><span>9 min read</span></p>
+    <p class="meta"><span class="chip sage">Reviewed</span><span>Updated <time datetime="2026-11-04">4 Nov 2026</time></span><span>10 min read</span></p>
   </header>
   <aside class="related" aria-label="Related"><p class="toc-title">Related</p><ul><li><a href="https://github.com/CanaanGM/des-k">The code on GitHub</a></li><li><a href="https://github.com/CanaanGM/des-k#readme">The README</a></li></ul></aside>
   <main class="sections">
@@ -627,7 +627,7 @@ cd des-k</code></pre></li>
       <tr><td><code>Win+Shift+Left</code> / <code>Right</code></td><td>Move a window to another screen (this one comes from Windows)</td></tr>
       <tr><td><code>Win+F</code></td><td>Open the <a href="#find-any-window">finder</a></td></tr>
       <tr><td><code>Win+Tab</code></td><td>Open the <a href="#see-everything-at-once">overview</a></td></tr>
-      <tr><td><code>Win+Ctrl+P</code></td><td>Pin the window in front: it stays on every workspace of its screen. Press again to unpin.</td></tr>
+      <tr><td><code>Win+Ctrl+U</code></td><td>Pin the window in front: it stays on every workspace of its screen. Press again to unpin.</td></tr>
     </tbody>
   </table></div>
   <p>After each switch, a small row of dots shows for a moment. It tells you which workspace you are on. After a pin, every dot lights up, because the window is on all of them. Sending a pinned window to a workspace unpins it.</p>
@@ -738,8 +738,12 @@ cd des-k</code></pre></li>
     <li>A hidden window leaves the taskbar and Alt+Tab, so each screen shows only what is on it. Admin windows, like Task Manager, still show in Alt+Tab.</li>
     <li>When a hidden window comes to the front by itself, des-k switches its screen to that workspace.</li>
     <li>After a restart of the PC, des-k puts reopened windows back where they were, for the first 3 minutes after sign in.</li>
-    <li>The tray icon menu has <strong>Settings</strong>, <strong>Open log</strong> and <strong>Quit</strong>.</li>
-    <li>des-k keeps the title, app and class of each window it tracks in <code>state.txt</code>, and its log names the windows it moves. Both stay in <code>%LOCALAPPDATA%\des-k</code> on this PC. Nothing leaves it.</li>
+    <li>When you unplug a screen or close the laptop lid, its windows move to the main display after 10 seconds (30 seconds just after a wake from sleep). Hidden windows keep their workspace number there. The windows you were looking at stay in view.</li>
+    <li>When you plug that screen in again, its windows go back after 2 seconds: same workspace, same place, same size. This also works after a sleep, a reboot or a power cut. A window you moved to another screen yourself stays where you put it. A note on the screen and a tray balloon say what moved.</li>
+    <li>des-k knows a screen by the monitor's own model and serial number, so another port or another dock is still the same screen. <strong>Settings</strong> lists the screens des-k waits for. <strong>Forget</strong> stops the wait for a screen you will not plug in again.</li>
+    <li>The tray icon menu has <strong>Settings</strong>, <strong>Open log</strong>, <strong>Check for updates</strong> and <strong>Quit</strong>.</li>
+    <li><strong>Check for updates</strong> asks GitHub which des-k release is newest and answers in a balloon. If a newer one is out, click the balloon to open its page, then download and install it yourself. des-k checks only when you click. It downloads and runs nothing.</li>
+    <li>des-k keeps the title, app, class, place and size of each window it tracks, and the model and serial number of each screen, in <code>state.txt</code>, and its log names the windows it moves. Both stay in <code>%LOCALAPPDATA%\des-k</code> on this PC. None of it leaves your PC. The only thing des-k sends out is the update check you click: a request to github.com with your address and des-k's version.</li>
   </ul>
 </section>
 
@@ -780,6 +784,7 @@ Remove-Item -Recurse "$env:ProgramFiles\des-k"</code></pre></li>
   <div class="table-wrap"><table>
     <thead><tr><th>When</th><th>Do this</th></tr></thead>
     <tbody>
+      <tr><td>A screen's windows did not come back</td><td>Tray → <strong>Open log</strong>. It says which windows went back, which you moved yourself, and which did not move. A frozen app is tried for 10 seconds, then left where it is.</td></tr>
       <tr><td>A window seems lost</td><td>Press <code>Win+F</code> and search for it, or open the overview with <code>Win+Tab</code>.</td></tr>
       <tr><td>The shortcuts do nothing</td><td>Check the des-k icon is in the tray. If it is not, open <strong>des-k</strong> from the Start menu.</td></tr>
       <tr><td><code>install.ps1</code> says scripts are blocked</td><td>Use the full command with <code>-ExecutionPolicy Bypass</code>, as in the install steps.</td></tr>
@@ -787,7 +792,7 @@ Remove-Item -Recurse "$env:ProgramFiles\des-k"</code></pre></li>
       <tr><td>You want to know why something happened</td><td>Tray → <strong>Open log</strong>. The log says what des-k did and why.</td></tr>
     </tbody>
   </table></div>
-  <div class="callout watch"><strong>des-k uses a hidden part of Windows</strong> to hide windows. It works on Windows 11 25H2, but a big Windows update could change that. If it does, the tray shows a warning.</div>
+  <div class="callout watch"><strong>des-k uses a hidden part of Windows</strong> to hide windows. It works on Windows 11 25H2, but a big Windows update could change that. If it does, the tray shows a warning. Tray → <strong>Check for updates</strong> tells you when a fix is out.</div>
 </section>
   </main>
 
