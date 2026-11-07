@@ -18,6 +18,7 @@ mod finder;
 mod gestures;
 mod hints;
 mod indicator;
+mod install;
 mod keys;
 mod overview;
 mod restore;
@@ -195,6 +196,9 @@ fn main() -> windows::core::Result<()> {
     setup::start(); // before the touchpad thread reads Windows' gestures
     touchpad::spawn(unsafe { GetCurrentThreadId() });
     tray::init();
+    // What the last update from the tray did, and its files and task cleared (spec 0018).
+    tray::installed(install::outcome());
+    install::cleanup();
     // Read at start only; written the moment it opens, so a crash can never make it loop
     // (spec 0017 AC-9).
     if settings::get().first_run_seen != Some(true) {

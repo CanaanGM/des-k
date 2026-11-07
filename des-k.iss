@@ -48,12 +48,17 @@ Type: filesandordirs; Name: "{autopf}\pdesk"
 [Icons]
 Name: "{userprograms}\des-k"; Filename: "{app}\des-k.exe"; Parameters: "--start"; Comment: "Start des-k as admin, through its logon task"
 
+; The update folder des-k fills when it installs from the tray (spec 0018); Setup never made it.
+[UninstallDelete]
+Type: filesandordirs; Name: "{app}\update"
+
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "pdesk"; Flags: deletevalue
 
 [Code]
 var
   User: String; // the account the task runs as, as whoami prints it (DOMAIN\name)
+  Stopped: Boolean; // PrepareToInstall stopped a running des-k
 
 function Run(const Exe, Params: String): Integer;
 begin
@@ -110,6 +115,7 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   // Hard kill ON PURPOSE: Quit would show every hidden window, while a kill leaves state.txt
   // behind so the new copy adopts the layout. Kill before ending the task, which might close it gently.
+  Stopped := Running;
   Run('taskkill.exe', '/f /im des-k.exe');
   Run('schtasks.exe', '/end /tn des-k');
   // pdesk is des-k's old name: same hard stop, and its task goes, so only des-k starts at login.
@@ -157,6 +163,14 @@ begin
       + 'Run this setup again.', mbError, MB_OK, IDOK);
 end;
 
+// Every way out of Setup, a failed install too: a des-k it stopped runs again, since an update
+// from the tray runs silently with nobody watching (spec 0018 AC-8). On success it already runs.
+procedure DeinitializeSetup;
+begin
+  if Stopped and not Running then
+    Run('schtasks.exe', '/run /tn des-k');
+end;
+
 function InitializeUninstall: Boolean;
 begin
   Result := True;
@@ -177,6 +191,8 @@ end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
-  if CurUninstallStep = usUninstall then
+  if CurUninstallStep = usUninstall then begin
     Run('schtasks.exe', '/delete /tn des-k /f');
+    Run('schtasks.exe', '/delete /tn "des-k update" /f');
+  end;
 end;

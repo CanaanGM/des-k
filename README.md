@@ -172,8 +172,11 @@ des-k keeps the settings it had and the page turns read only until you fix it.
   monitor's own model and serial, so another port or dock is still the same screen.
 - The tray icon menu has **Settings**, **Open log**, **Check for updates** and **Quit**.
 - **Check for updates** asks GitHub which des-k release is newest and answers in a balloon. If a
-  newer one is out, click the balloon to open its page, then download and install it yourself.
-  des-k checks only when you click, and downloads and runs nothing.
+  newer one is out, click the balloon (or **Install X.Y.Z** in the menu): des-k downloads that
+  release's setup, checks it against the release's `SHA256SUMS.txt`, and runs it silently. des-k
+  stops, updates and comes back with your layout, then says "des-k updated". If anything fails,
+  a balloon says why and des-k carries on. Only the installed des-k does this; a copy you run
+  yourself opens the release page instead. des-k checks and installs only when you click.
 - des-k keeps the title, app, class, place and size of each window it tracks, and the model and
   serial of each screen, in `state.txt`, and its log names the windows it moves, all in `%LOCALAPPDATA%\des-k` on this PC only. None of it leaves your PC.
   The only thing des-k sends out is the update check you click: a request to github.com that

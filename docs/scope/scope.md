@@ -38,6 +38,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 18 | Check for updates from the tray | Slice 9 | in-progress |
 | 19 | Return windows to their screens | Slice 10 | in-progress |
 | 20 | Look B screens | Slice 11 | in-progress |
+| 21 | Install updates from the tray | Slice 12 | in-progress |
 
 ## Already built
 
@@ -285,6 +286,20 @@ spec [0017](../specs/0017-look-b-screens/index.md) · code in `src/ui.rs`, `src/
   - [x] Finder and overview, with `[overview] fade_ms`, the repaint rules and the timing log line (AC-1, AC-4 to AC-8, AC-10)
   - [x] Tray menu popup and Shortcut hints, with `[shortcuts] hints`, `WM_APP + 14` and version 4 tray messages (AC-1, AC-4, AC-5, AC-10)
   - [ ] Settings page and first run, with `first_run_seen`; then 0.4.0 (AC-1, AC-2, AC-5, AC-9 to AC-12)
+
+## Slice 12: Updates
+
+### 21. Install updates from the tray · in-progress · from spec 0018
+When a check finds a newer des-k, one click on the balloon or the menu downloads its setup, checks it against the release's checksum, and runs it silently through a one shot task; des-k comes back as the new version and says so. Only the installed admin copy installs; any other copy opens the page.
+**Done when:** on your machine a 0.0.1 test install updates itself to the newest release with one click and keeps the layout, a copy that is not installed opens the page, Wi-Fi off gives the "Could not install" warning, and a failed or killed setup brings the old des-k back with "des-k was not updated".
+spec [0018](../specs/0018-install-updates-from-tray/index.md) · code in `src/install.rs`, `src/update.rs`, `src/tray.rs`, `src/tray_menu.rs`, `src/main.rs`, `des-k.iss`, `Cargo.toml`
+- [x] Design it (spec): `/architect install updates from the tray`
+- [ ] Build it: `/develop install updates from the tray`
+  - [x] Pure rules with unit tests: paths, checksum line, task XML, outcome, message packing (AC-3 to AC-8)
+  - [x] Click to restarted des-k: download, verify, the task, the probe, the tray's balloon and menu states (AC-1 to AC-4, AC-6)
+  - [x] Start up outcome, cleanup, and every failure path with its balloon (AC-5, AC-7 to AC-11)
+  - [x] `des-k.iss` restart after a failed install and uninstall cleanup; Cargo features and docs (AC-8, AC-10)
+  - [ ] Tried on your machine: 0.0.1 to the newest release, not installed copy, offline, failed and killed setup (all ACs)
 
 ## Deferred
 Out of scope for the current build pass, kept so the plan stays honest.
