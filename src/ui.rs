@@ -19,7 +19,7 @@ use windows::Win32::{
     },
     System::{
         LibraryLoader::GetModuleHandleW,
-        Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW},
+        Registry::{HKEY_CURRENT_USER, RRF_RT_REG_BINARY, RRF_RT_REG_DWORD, RegGetValueW},
         Threading::GetCurrentThreadId,
     },
     UI::{
@@ -28,6 +28,8 @@ use windows::Win32::{
     },
 };
 use windows::core::{BOOL, HSTRING, PCWSTR, w};
+
+use crate::settings::Accent;
 
 /// The look des-k's windows draw in: light or dark, high contrast, and look B's tokens.
 #[derive(Clone, Copy, PartialEq)]
@@ -48,8 +50,14 @@ pub(crate) struct B {
     pub(crate) tx: u32,
     pub(crate) tx2: u32,
     pub(crate) tx3: u32, // greyed
+    /// The accent: Windows' own or yours (spec 0020), des-k purple when neither can be read.
     pub(crate) acc: u32,
     pub(crate) on_acc: u32,
+    /// The accent's neighbors, 30 degrees either side: `acc_a` tints headers and bands,
+    /// `acc_b` fills count badges, chips and picker marks (spec 0020 AC-3).
+    pub(crate) acc_a: u32,
+    pub(crate) acc_b: u32,
+    pub(crate) on_acc_b: u32,
     pub(crate) track: u32,
     pub(crate) hi: u32,
     pub(crate) warn: u32,
@@ -62,22 +70,24 @@ pub(crate) struct B {
     pub(crate) edge: u32,
     /// The indicator's bars and dots that are not lit.
     pub(crate) bar_off: u32,
-    /// The nine workspace colors, and the text on them.
+    /// The nine workspace colors, and the ink on each (spec 0020 AC-4, AC-5).
     pub(crate) ws: [u32; 9],
-    pub(crate) on_ws: u32,
+    pub(crate) on_ws: [u32; 9],
+    /// The window marks on each workspace tile: white unless white is too faint on it (AC-16).
+    pub(crate) mk_ws: [u32; 9],
     /// In light, a workspace colored block and bar get an edge this much darker (0: none).
     pub(crate) ws_edge: f32,
     pub(crate) bar_edge: f32,
     /// A see through popup's opacity (the indicator's card).
     pub(crate) alpha: f32,
-    /// A key cap held while recording.
+    /// A key cap held while recording, and a picker's mark box: a light tint of the accent.
     pub(crate) held: u32,
     /// des-k's mark, four squares: top left, top right, bottom left, bottom right.
     pub(crate) mark: [u32; 4],
     /// A drawn screen's bezel and its stand (the settings page's and first run's pictures).
     pub(crate) bez: u32,
     pub(crate) stand: u32,
-    /// A link in a caption, like Reset: the purple, lighter on dark.
+    /// A link in a caption, like Reset: the accent, lighter on dark.
     pub(crate) link: u32,
     /// A chart's grid lines (the settings page's Motion).
     pub(crate) grid: u32,
@@ -87,7 +97,14 @@ pub(crate) struct B {
 const MARK: [u32; 4] = [0xB93C87, 0xE53935, 0x8E3FD9, 0xB93C87];
 
 /// The nine workspace colors: one lightness, the same hex in light and dark (approved 2026-11-04).
-const WS: [u32; 9] = [0x79A4F3, 0xDDB43C, 0x36BE9C, 0xBB8DE3, 0xE68A4E, 0x27B5DC, 0xDF80B8, 0xB99F88, 0xF97676];
+pub(crate) const WS: [u32; 9] = [0x79A4F3, 0xDDB43C, 0x36BE9C, 0xBB8DE3, 0xE68A4E, 0x27B5DC, 0xDF80B8, 0xB99F88, 0xF97676];
+
+// What `resolve` makes of des-k purple and look B's workspace colors, so the constants below
+// are the theme with no Windows accent and no [colors] (tested).
+const ACC_A: u32 = 0x413FD9;
+const ACC_B: u32 = 0xD93FD7;
+const ON_ACC_B: u32 = 0x14141A;
+const ON_WS: [u32; 9] = [0x14141A; 9];
 
 const B_LIGHT: B = B {
     bg: 0xF3F3F3,
@@ -98,6 +115,9 @@ const B_LIGHT: B = B {
     tx3: 0x7A7A7A,
     acc: 0x8E3FD9,
     on_acc: 0xFFFFFF,
+    acc_a: ACC_A,
+    acc_b: ACC_B,
+    on_acc_b: ON_ACC_B,
     track: 0xF0F0F0,
     hi: 0xFFFFFF,
     warn: 0x9D5D00,
@@ -108,11 +128,12 @@ const B_LIGHT: B = B {
     edge: 0xE6E6E6,
     bar_off: 0x949494,
     ws: WS,
-    on_ws: 0x14141A,
+    on_ws: ON_WS,
+    mk_ws: [0xFFFFFF; 9],
     ws_edge: 0.10,
     bar_edge: 0.30,
     alpha: 0.92,
-    held: 0xF1E8FB,
+    held: 0xF1E8FA,
     mark: MARK,
     bez: 0x3A3A3A,
     stand: 0xC8C8C8,
@@ -129,6 +150,9 @@ const B_DARK: B = B {
     tx3: 0x9A9A9A,
     acc: 0x8E3FD9,
     on_acc: 0xFFFFFF,
+    acc_a: ACC_A,
+    acc_b: ACC_B,
+    on_acc_b: ON_ACC_B,
     track: 0x232323,
     hi: 0x3F3F3F,
     warn: 0xFCE100,
@@ -139,15 +163,16 @@ const B_DARK: B = B {
     edge: 0x404040,
     bar_off: 0x9A9A9A,
     ws: WS,
-    on_ws: 0x14141A,
+    on_ws: ON_WS,
+    mk_ws: [0xFFFFFF; 9],
     ws_edge: 0.0,
     bar_edge: 0.0,
     alpha: 0.92,
-    held: 0x3B2A55,
+    held: 0x3F2F4E,
     mark: MARK,
     bez: 0x0A0A0A,
     stand: 0x454545,
-    link: 0xC9A5F0,
+    link: 0xB27CE5,
     grid: 0x4A4A4A,
 };
 
@@ -181,6 +206,9 @@ pub(crate) fn high_contrast(sys: [u32; 5]) -> Theme {
             tx3: gray,
             acc: hl,
             on_acc: hl_fg,
+            acc_a: hl,
+            acc_b: hl,
+            on_acc_b: hl_fg,
             track: bg,
             hi: hl,
             warn: fg,
@@ -191,7 +219,8 @@ pub(crate) fn high_contrast(sys: [u32; 5]) -> Theme {
             edge: fg,
             bar_off: fg,
             ws: [hl; 9],
-            on_ws: hl_fg,
+            on_ws: [hl_fg; 9],
+            mk_ws: [hl_fg; 9],
             ws_edge: 0.0,
             bar_edge: 0.0,
             alpha: 1.0,
@@ -213,10 +242,37 @@ pub(crate) struct Look {
     pub(crate) transparency: bool,
     /// High contrast's Window, WindowText, Highlight, HighlightText and GrayText; None when off.
     pub(crate) hc: Option<[u32; 5]>,
+    /// Windows' accent shades, Light3 to Dark3 (spec 0020); None until one is read.
+    pub(crate) accent: Option<[u32; 8]>,
 }
 
 thread_local! {
     static LOOK: Cell<Option<Look>> = const { Cell::new(None) };
+    // The accent palette could not be read last time, so the log says so once, not each second.
+    static PALETTE_MISSING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// `AccentPalette`: 8 shades of 4 bytes, R, G, B and an unused A, Light3 first. Anything but
+/// exactly 32 bytes is not a palette.
+fn palette_of(bytes: &[u8]) -> Option<[u32; 8]> {
+    (bytes.len() == 32).then(|| std::array::from_fn(|i| u32::from(bytes[4 * i]) << 16 | u32::from(bytes[4 * i + 1]) << 8 | u32::from(bytes[4 * i + 2])))
+}
+
+/// Windows' accent palette, or `last` when it can't be read, so a half written value never
+/// flashes purple.
+fn read_palette(last: Option<[u32; 8]>) -> Option<[u32; 8]> {
+    let (mut buf, mut size) = ([0u8; 32], 32u32);
+    let key = w!(r"Software\Microsoft\Windows\CurrentVersion\Explorer\Accent");
+    let e = unsafe { RegGetValueW(HKEY_CURRENT_USER, key, w!("AccentPalette"), RRF_RT_REG_BINARY, None, Some(buf.as_mut_ptr().cast()), Some(&mut size)) };
+    let got = if e == ERROR_SUCCESS { palette_of(&buf[..(size as usize).min(32)]) } else { None };
+    if got.is_none() != PALETTE_MISSING.get() {
+        PALETTE_MISSING.set(got.is_none());
+        match got {
+            None => warn!("ui: can't read Windows' accent color ({e:?}), keeping the last one"),
+            Some(_) => info!("ui: Windows' accent color can be read again"),
+        }
+    }
+    got.or(last)
 }
 
 fn read_look() -> Look {
@@ -238,6 +294,7 @@ fn read_look() -> Look {
         system_light: dword(w!("SystemUsesLightTheme"), 0) != 0,
         transparency: dword(w!("EnableTransparency"), 1) != 0,
         hc: on.then(|| [sys(COLOR_WINDOW), sys(COLOR_WINDOWTEXT), sys(COLOR_HIGHLIGHT), sys(COLOR_HIGHLIGHTTEXT), sys(COLOR_GRAYTEXT)]),
+        accent: read_palette(LOOK.get().and_then(|l| l.accent)),
     }
 }
 
@@ -269,6 +326,13 @@ pub(crate) fn repaint_all() {
 }
 
 fn theme_of(light: bool, l: Look) -> Theme {
+    let s = crate::settings::get();
+    resolve(light, l, s.accent, s.ws_colors)
+}
+
+/// Every color des-k paints with is decided here and nowhere else (spec 0020): high contrast
+/// first, then your accent or Windows', its neighbors, your workspace colors, and their inks.
+fn resolve(light: bool, l: Look, accent: Accent, ws: [Option<u32>; 9]) -> Theme {
     let mut t = match l.hc {
         Some(sys) => return high_contrast(sys),
         None if light => LIGHT,
@@ -277,7 +341,77 @@ fn theme_of(light: bool, l: Look) -> Theme {
     if !l.transparency {
         t.b.alpha = 1.0;
     }
+    let b = &mut t.b;
+    // Dark1 in light and Light2 in dark: the shades Windows' own apps fill accent buttons with.
+    b.acc = match accent {
+        Accent::Rgb(c) => c,
+        Accent::Windows => l.accent.map_or(b.acc, |p| p[if light { 4 } else { 1 }]),
+    };
+    (b.acc_a, b.acc_b) = (hue(b.acc, -30.0), hue(b.acc, 30.0));
+    (b.on_acc, b.on_acc_b) = (ink(b.acc), ink(b.acc_b));
+    // Moved toward black (light) or white (dark) 5% at a time until it reads on the card (AC-15).
+    let base = if light { b.acc } else { mix(b.acc, 0xFFFFFF, 0.28) };
+    let to = if light { 0x000000 } else { 0xFFFFFF };
+    b.link = (0..=20).map(|k| mix(base, to, k as f32 * 0.05)).find(|&c| contrast(c, b.card) >= 4.5).unwrap_or(to);
+    b.held = mix(b.card, b.acc, if light { 0.12 } else { 0.20 });
+    for i in 0..9 {
+        b.ws[i] = ws[i].unwrap_or(WS[i]);
+        b.on_ws[i] = ink(b.ws[i]);
+        b.mk_ws[i] = if contrast(0xFFFFFF, b.ws[i]) >= 1.6 { 0xFFFFFF } else { mix(b.ws[i], 0x14141A, 0.55) };
+    }
     t
+}
+
+/// `c` turned `deg` degrees round the color wheel, its HSL saturation and lightness kept; a
+/// grey stays the same grey.
+fn hue(c: u32, deg: f32) -> u32 {
+    let [r, g, b] = [c >> 16 & 0xFF, c >> 8 & 0xFF, c & 0xFF].map(|v| v as f32 / 255.0);
+    let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+    let d = max - min;
+    if d == 0.0 {
+        return c;
+    }
+    let h = 60.0
+        * if max == r {
+            ((g - b) / d).rem_euclid(6.0)
+        } else if max == g {
+            (b - r) / d + 2.0
+        } else {
+            (r - g) / d + 4.0
+        };
+    let h = (h + deg).rem_euclid(360.0) / 60.0;
+    // Same lightness and saturation means the same chroma (d) and the same min.
+    let x = d * (1.0 - (h.rem_euclid(2.0) - 1.0).abs());
+    let (r, g, b) = match h as u32 {
+        0 => (d, x, 0.0),
+        1 => (x, d, 0.0),
+        2 => (0.0, d, x),
+        3 => (0.0, x, d),
+        4 => (x, 0.0, d),
+        _ => (d, 0.0, x),
+    };
+    let ch = |v: f32| ((v + min) * 255.0).round().clamp(0.0, 255.0) as u32;
+    ch(r) << 16 | ch(g) << 8 | ch(b)
+}
+
+/// The ink for text on `bg`: des-k's near black or white, whichever has the higher WCAG
+/// contrast ratio with it (spec 0020 AC-5).
+pub(crate) fn ink(bg: u32) -> u32 {
+    const DARK_INK: u32 = 0x14141A;
+    if contrast(DARK_INK, bg) >= contrast(0xFFFFFF, bg) { DARK_INK } else { 0xFFFFFF }
+}
+
+/// The WCAG contrast ratio of two colors, 1 to 21.
+pub(crate) fn contrast(a: u32, b: u32) -> f32 {
+    let lum = |c: u32| {
+        let ch = |s: u32| {
+            let v = (c >> s & 0xFF) as f32 / 255.0;
+            if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * ch(16) + 0.7152 * ch(8) + 0.0722 * ch(0)
+    };
+    let (x, y) = (lum(a), lum(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
 }
 
 /// Windows' app mode, light or dark, unless high contrast is on: des-k's windows.
@@ -384,11 +518,12 @@ pub(crate) enum F {
     Heading,   // a window's 24 px title, like Shortcut hints'
     IconTiny,  // a 10 px icon: an arrow on a key cap
     TinyBold,  // a small screen's number in the tray menu's map
+    Code,      // the settings page's hex boxes: Cascadia Mono 14 (spec 0020)
 }
 
 /// Per F: face (0 text, 1 display, 2 mono, 3 icons), size in dip, weight: 400 or 600 only
 /// (spec 0017 AC-3).
-const FACES: [(u8, f32, i32); 12] = [
+const FACES: [(u8, f32, i32); 13] = [
     (0, 14.0, 400),
     (0, 14.0, 600),
     (0, 12.0, 400),
@@ -401,6 +536,7 @@ const FACES: [(u8, f32, i32); 12] = [
     (1, 24.0, 600),
     (3, 10.0, 400),
     (0, 10.0, 600),
+    (4, 14.0, 400),
 ];
 
 /// Every F at one scale; deleted when dropped.
@@ -426,6 +562,7 @@ impl Fonts {
         Fonts(FACES.map(|(kind, size, weight)| {
             let face = match (variable, kind) {
                 (_, 2) => "Consolas",
+                (_, 4) => "Cascadia Mono",
                 (_, 3) if fluent() => "Segoe Fluent Icons",
                 (_, 3) => "Segoe MDL2 Assets", // the same codes
 
@@ -461,7 +598,7 @@ pub(crate) fn variable() -> bool {
     VARIABLE.get().unwrap_or_else(|| {
         let has = has_face(w!("Segoe UI Variable Text"));
         if !has {
-            eprintln!("fonts: Segoe UI Variable is not installed, des-k uses Segoe UI");
+            warn!("fonts: Segoe UI Variable is not installed, des-k uses Segoe UI");
         }
         VARIABLE.set(Some(has));
         has
@@ -473,7 +610,7 @@ fn fluent() -> bool {
     FLUENT.get().unwrap_or_else(|| {
         let has = has_face(w!("Segoe Fluent Icons"));
         if !has {
-            eprintln!("fonts: Segoe Fluent Icons is not installed, des-k uses Segoe MDL2 Assets");
+            warn!("fonts: Segoe Fluent Icons is not installed, des-k uses Segoe MDL2 Assets");
         }
         FLUENT.set(Some(has));
         has
@@ -530,7 +667,7 @@ pub(crate) fn gdiplus() -> bool {
     let status = unsafe { gp::GdiplusStartup(&mut token, &input, std::ptr::null_mut()) };
     let ok = status.0 == 0;
     if !ok {
-        eprintln!("welcome: GDI+ did not start (status {}), so the screen draws its text only", status.0);
+        warn!("welcome: GDI+ did not start (status {}), so the screen draws its text only", status.0);
     }
     GDIPLUS.set(Some(ok));
     ok
@@ -791,6 +928,19 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// A dashed straight line; a path of a zero width rectangle draws nothing in GDI+.
+    pub(crate) fn dash_line(&self, (x0, y0): (f32, f32), (x1, y1): (f32, f32), width: f32, argb: u32) {
+        if !self.shapes() {
+            return;
+        }
+        let (s, pen) = (self.s, self.pen(argb, width));
+        unsafe {
+            gp::GdipSetPenDashStyle(pen, gp::DashStyleDot);
+            gp::GdipDrawLine(self.g, pen, x0 * s, y0 * s, x1 * s, y1 * s);
+            gp::GdipDeletePen(pen);
+        }
+    }
+
     pub(crate) fn circle(&self, cx: f32, cy: f32, r: f32, fill: Option<u32>, edge: Option<(u32, f32)>) {
         if !self.shapes() {
             return;
@@ -999,7 +1149,7 @@ pub(crate) fn get<T: 'static, R>(key: &'static LocalKey<RefCell<Option<T>>>, who
     key.with(|cell| match cell.try_borrow() {
         Ok(w) => w.as_ref().map(f),
         Err(_) => {
-            eprintln!("{who}: skipped, the window's state is already borrowed (a message came back in)");
+            warn!("{who}: skipped, the window's state is already borrowed (a message came back in)");
             None
         }
     })
@@ -1010,7 +1160,7 @@ pub(crate) fn set<T: 'static, R>(key: &'static LocalKey<RefCell<Option<T>>>, who
     key.with(|cell| match cell.try_borrow_mut() {
         Ok(mut w) => w.as_mut().map(f),
         Err(_) => {
-            eprintln!("{who}: skipped, the window's state is already borrowed (a message came back in)");
+            warn!("{who}: skipped, the window's state is already borrowed (a message came back in)");
             None
         }
     })
@@ -1020,6 +1170,109 @@ pub(crate) fn set<T: 'static, R>(key: &'static LocalKey<RefCell<Option<T>>>, who
 pub(crate) mod tests {
     use super::*;
     use windows::core::GUID;
+
+    const PLAIN: Look = Look { apps_light: true, system_light: true, transparency: true, hc: None, accent: None };
+
+    /// For the render tests (spec 0020): a rose accent, and your own colors for workspaces 1
+    /// and 2, a deep blue that takes white ink and a pale yellow that takes black.
+    pub(crate) fn rose(light: bool) -> Theme {
+        let mut ws = [None; 9];
+        (ws[0], ws[1]) = (Some(0x1E2A78), Some(0xFFE066));
+        resolve(light, PLAIN, Accent::Rgb(0xE0457B), ws)
+    }
+
+    // With no Windows accent and no [colors], des-k looks exactly as look B was approved, so
+    // the LIGHT and DARK constants the render tests draw with are what users see.
+    #[test]
+    fn the_constants_are_look_b_unchanged() {
+        let t = resolve(true, PLAIN, Accent::Windows, [None; 9]).b;
+        let hexes = |v: &[u32]| v.iter().map(|c| format!("{c:06X}")).collect::<Vec<_>>();
+        assert_eq!(hexes(&[t.acc_a, t.acc_b, t.on_acc_b, t.link, t.held]), hexes(&[ACC_A, ACC_B, ON_ACC_B, 0x8E3FD9, 0xF1E8FA]));
+        let d = resolve(false, PLAIN, Accent::Windows, [None; 9]).b;
+        assert_eq!(hexes(&[d.link, d.held]), hexes(&[0xB27CE5, 0x3F2F4E]));
+        assert!(resolve(true, PLAIN, Accent::Windows, [None; 9]) == LIGHT);
+        assert!(resolve(false, PLAIN, Accent::Windows, [None; 9]) == DARK);
+    }
+
+    // AC-3: the neighbors keep the accent's saturation and lightness, so a rose brings a red
+    // (hue plus 30) and a purple (hue minus 30); a grey has no hue to turn.
+    #[test]
+    fn neighbors_are_thirty_degrees_either_side() {
+        let rose = 0xE0457B;
+        let (purple, red) = (hue(rose, -30.0), hue(rose, 30.0));
+        let rgb = |c: u32| (c >> 16 & 0xFF, c >> 8 & 0xFF, c & 0xFF);
+        let (r, g, b) = rgb(purple);
+        assert!(b > g && r > g && b >= 0x99, "{purple:06X}");
+        let (r, g, b) = rgb(red);
+        assert!(r == 0xE0 && g > b && g < 0x80, "{red:06X}");
+        assert_eq!(hue(0x808080, 30.0), 0x808080);
+        assert_eq!(hue(hue(rose, 30.0), -30.0), rose);
+        assert_eq!(hue(0xFF0000, 120.0), 0x00FF00);
+    }
+
+    // AC-5: a pale yellow takes the near black ink, a deep blue takes white.
+    #[test]
+    fn ink_is_the_higher_contrast_of_black_or_white() {
+        assert_eq!(ink(0xFFE066), 0x14141A);
+        assert_eq!(ink(0x1E2A78), 0xFFFFFF);
+        assert_eq!(ink(0x8E3FD9), 0xFFFFFF);
+        assert!(WS.iter().all(|c| ink(*c) == 0x14141A));
+    }
+
+    // AC-15: a small link must read on its card for any accent: des-k purple's dark link moves
+    // to #B27CE5, and rose in light (3.96:1 as the plain accent) is darkened past 4.5:1.
+    #[test]
+    fn links_reach_4_5_to_1_on_the_card() {
+        assert_eq!(resolve(false, PLAIN, Accent::Windows, [None; 9]).b.link, 0xB27CE5);
+        for (light, acc) in [(true, 0xE0457B), (false, 0xE0457B), (true, 0xFFE066), (false, 0x1E2A78), (true, 0x8E3FD9)] {
+            let b = resolve(light, PLAIN, Accent::Rgb(acc), [None; 9]).b;
+            assert!(contrast(b.link, b.card) >= 4.5, "{acc:06X} light {light}: {:06X}", b.link);
+        }
+    }
+
+    // AC-16: white marks vanish on a pale tile you chose, so they take its ink mix; des-k's nine
+    // were approved with white marks and keep them.
+    #[test]
+    fn tile_marks_stay_readable() {
+        let mut ws = [None; 9];
+        ws[4] = Some(0xFFF4B0);
+        let b = resolve(true, PLAIN, Accent::Windows, ws).b;
+        assert_eq!(b.mk_ws[4], mix(0xFFF4B0, 0x14141A, 0.55));
+        assert!((0..9).filter(|&i| i != 4).all(|i| b.mk_ws[i] == 0xFFFFFF));
+        assert!(WS.iter().all(|c| contrast(0xFFFFFF, *c) >= 1.6));
+    }
+
+    // AC-1: light windows fill with Dark1, dark ones with Light2; anything but 32 bytes is no
+    // palette, and the last good one stays (purple when there never was one).
+    #[test]
+    fn the_windows_accent_is_its_shade_for_each_mode() {
+        let mut bytes = [0u8; 32];
+        bytes[16..19].copy_from_slice(&[0xC4, 0x2B, 0x1C]);
+        bytes[4..7].copy_from_slice(&[0xF0, 0x9A, 0x8C]);
+        let p = palette_of(&bytes).unwrap();
+        let with = Look { accent: Some(p), ..PLAIN };
+        assert_eq!(resolve(true, with, Accent::Windows, [None; 9]).b.acc, 0xC42B1C);
+        assert_eq!(resolve(false, with, Accent::Windows, [None; 9]).b.acc, 0xF09A8C);
+        assert_eq!(palette_of(&bytes[..31]), None);
+        // AC-2: your color wins in both modes, exactly as typed.
+        assert_eq!(resolve(false, with, Accent::Rgb(0xE0457B), [None; 9]).b.acc, 0xE0457B);
+    }
+
+    // AC-4, AC-5, AC-6: your workspace 3 changes only workspace 3, with its own ink; high
+    // contrast ignores your colors and Windows' accent alike.
+    #[test]
+    fn your_workspace_colors_and_high_contrast() {
+        let mut ws = [None; 9];
+        ws[2] = Some(0x1E2A78);
+        let b = resolve(true, PLAIN, Accent::Rgb(0xFFE066), ws).b;
+        assert_eq!((b.ws[2], b.on_ws[2], b.ws[0], b.on_ws[0]), (0x1E2A78, 0xFFFFFF, WS[0], 0x14141A));
+        assert_eq!(b.on_acc, 0x14141A);
+        let hc = Look { hc: Some([0x000000, 0xFFFFFF, 0x1AEBFF, 0x000001, 0x3FF23F]), accent: Some([0xC42B1C; 8]), ..PLAIN };
+        let b = resolve(true, hc, Accent::Rgb(0xE0457B), ws).b;
+        assert_eq!((b.acc, b.acc_a, b.acc_b, b.ws[2], b.on_ws), (0x1AEBFF, 0x1AEBFF, 0x1AEBFF, 0x1AEBFF, [0x000001; 9]));
+        // The mark is des-k's logo, never an accent (AC-14).
+        assert_eq!(resolve(true, PLAIN, Accent::Rgb(0xE0457B), ws).b.mark, MARK);
+    }
 
     /// Draws `f` into a `w` by `h` bitmap and saves it as a PNG: the render tests' output.
     pub(crate) fn save_png(w: i32, h: i32, path: &std::path::Path, f: impl FnOnce(HDC)) {

@@ -1,0 +1,7 @@
+# Spec 0019: des-k logs only through info!/warn!/error! from src/log.rs.
+disallowed-macros = [
+  { path = "std::println", reason = "log with info!/warn!/error! from src/log.rs (spec 0019)" },
+  { path = "std::eprintln", reason = "log with info!/warn!/error! from src/log.rs (spec 0019)" },
+  { path = "std::print", reason = "spec 0019" },
+  { path = "std::eprint", reason = "spec 0019" },
+]

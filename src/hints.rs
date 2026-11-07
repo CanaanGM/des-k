@@ -383,17 +383,17 @@ fn header(c: &Canvas, (x, y, w): (f32, f32, f32), title: &str, n: Option<u8>, di
     let tint = match () {
         _ if t.hc => b.card,
         _ if dim => b.track,
-        _ => mix(b.card, b.acc, 0.09),
+        _ => mix(b.card, b.acc_a, 0.09),
     };
     c.fill_rr((x + 1.0, y + 1.0, w - 2.0, h - 1.0), 7.0, op(tint));
     c.fill_rr((x + 1.0, y + h / 2.0, w - 2.0, h / 2.0 - 1.0), 0.0, op(tint));
     c.rule(x, y + h - 1.0, w, op(b.line));
     let mut tx = x + 16.0;
     if let Some(n) = n {
-        let fill = if dim { b.tx3 } else { b.acc };
+        let fill = if dim { b.tx3 } else { b.acc_b };
         c.circle(tx + 11.0, y + h / 2.0, 11.0, Some(op(fill)), None);
         let s = n.to_string();
-        c.text(tx + 11.0 - c.width(&s, F::SmallBold) / 2.0, y + (h - 22.0) / 2.0, 22.0, &s, F::SmallBold, b.on_acc);
+        c.text(tx + 11.0 - c.width(&s, F::SmallBold) / 2.0, y + (h - 22.0) / 2.0, 22.0, &s, F::SmallBold, b.on_acc_b);
         tx += 32.0;
     }
     c.text(tx, y, h - 1.0, title, F::Bold, if dim { b.tx3 } else { b.tx });
@@ -941,7 +941,7 @@ fn open() {
         // Made on the screen it opens on, so it starts at that screen's dpi.
         let h = match CreateWindowExW(WINDOW_EX_STYLE(0), CLASS, &HSTRING::from(TITLE), STYLE, work.left, work.top, 100, 100, owner, None, Some(inst.into()), None) {
             Ok(h) => h,
-            Err(e) => return eprintln!("hints: no window: {e}"),
+            Err(e) => return warn!("hints: no window: {e}"),
         };
         if let Some(icon) = crate::tray::draw_icon() {
             SendMessageW(h, WM_SETICON, Some(WPARAM(ICON_SMALL as usize)), Some(LPARAM(icon.0 as isize)));
@@ -963,7 +963,7 @@ fn open() {
         let _ = ShowWindow(h, SW_SHOW);
         let _ = SetForegroundWindow(h);
     }
-    println!("hints: opened");
+    info!("hints: opened");
 }
 
 /// Esc (with nothing to cancel), the title bar's X, or its key.

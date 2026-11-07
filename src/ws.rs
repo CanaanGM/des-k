@@ -112,6 +112,7 @@ struct Screen {
     id: String,
     name: String,
     area: RECT,
+    full: RECT,
     primary: bool,
 }
 
@@ -249,9 +250,10 @@ fn label(s: &State, id: &str) -> String {
     }
 }
 
-/// The indicator's card for screen `id`: named only when two or more screens are plugged in.
+/// The indicator's card for screen `id`: named only when two or more screens are plugged in,
+/// and carrying the id so the indicator finds that screen's own place (spec 0020 AC-9).
 fn card(s: &State, id: &str, active: usize, count: usize) -> Card {
-    Card::new(active, count, (s.present.len() > 1).then(|| label(s, id)))
+    Card { screen_id: id.to_string(), ..Card::new(active, count, (s.present.len() > 1).then(|| label(s, id))) }
 }
 
 /// The indicator on `mon` as it is now: the settings page's Show (spec 0012 AC-19).
@@ -270,7 +272,7 @@ pub fn show_indicator(mon: HMONITOR) {
 fn claim(s: &mut State, raw: isize, why: &str) {
     if let Some(a) = s.away.remove(&raw) {
         let name = s.monitors.get(&a.home).map_or(a.home.clone(), |m| m.name.clone());
-        println!("\"{}\" stays where it is when {name} returns: {why}", title(HWND(raw as *mut _)));
+        info!("{} stays where it is when {name} returns: {why}", who(HWND(raw as *mut _)));
     }
 }
 
@@ -292,13 +294,13 @@ pub fn data_dir() -> PathBuf {
         // The admin des-k writes here, and anything running as you could make this folder a
         // junction to one only an admin may write: drop the link, never follow it.
         if is_link(&dir) {
-            eprintln!("{} is a link, not a folder: removed, a real folder takes its place", dir.display());
+            warn!("the des-k data folder is a link, not a folder: removed, a real folder takes its place");
             let _ = std::fs::remove_dir(&dir);
         }
         // Before the rename it was pdesk: carry its settings, layout and saved gestures over once.
         let old = base.join("pdesk");
         if !dir.exists() && old.is_dir() && !is_link(&old) && let Err(e) = std::fs::rename(&old, &dir) {
-            eprintln!("could not move {} to {}: {e}", old.display(), dir.display());
+            warn!("could not move the old pdesk data folder to des-k: {e}");
         }
         let _ = std::fs::create_dir_all(&dir);
         dir
@@ -480,7 +482,7 @@ fn write_state(text: String) {
     // A crash or power loss mid write must never leave half a file.
     let tmp = data_dir().join("state.tmp");
     if let Err(e) = write_new(&tmp, &text).and_then(|()| std::fs::rename(&tmp, state_file())) {
-        eprintln!("state.txt not saved: {e}");
+        error!("state.txt not saved: {e}");
     }
 }
 
@@ -489,7 +491,7 @@ fn write_state(text: String) {
 /// cloaked on this Windows desktop (the same check as `load`). Then the file is left as a
 /// quit leaves it, plus the W lines of any window it could not show.
 pub fn rescue() {
-    let Ok(text) = std::fs::read_to_string(state_file()) else { return println!("no saved layout, nothing to show") };
+    let Ok(text) = std::fs::read_to_string(state_file()) else { return info!("no saved layout, nothing to show") };
     let vdm = unsafe { CoCreateInstance::<_, IVirtualDesktopManager>(&VirtualDesktopManager, None, CLSCTX_ALL) }.ok();
     let Some(shell) = shell_for_exit() else { return };
     let (out, shown, left) = rescued(&text, |raw, pid| {
@@ -498,9 +500,9 @@ pub fn rescue() {
         if !(unsafe { IsWindow(Some(h)) }.as_bool() && pid_of(h) == pid && cloaked(h) == 2 && on_current) {
             return None; // closed, reused handle, or not hidden by des-k
         }
-        Some(shell.hide(h, false).inspect_err(|e| eprintln!("could not show saved window {raw:#x}: {e}")).is_ok())
+        Some(shell.hide(h, false).inspect_err(|e| error!("could not show saved window {raw:#x}: {e}")).is_ok())
     });
-    println!("des-k was not running: {shown} hidden window(s) shown, {left} could not be");
+    info!("des-k was not running: {shown} hidden window(s) shown, {left} could not be");
     write_state(out);
 }
 
@@ -588,7 +590,7 @@ fn screen_ids() -> Vec<Screen> {
             let id = read.or_else(|| known.1.get(&device).cloned()).unwrap_or_else(|| clean_id(&device));
             known.1.insert(device.clone(), id.clone());
             let name = t.map_or(String::new(), |t| if t.internal { "Built-in display".into() } else { t.friendly.clone() });
-            Screen { device, id, name, area: mi.rcWork, primary: mi.dwFlags & MONITORINFOF_PRIMARY != 0 }
+            Screen { device, id, name, area: mi.rcWork, full: mi.rcMonitor, primary: mi.dwFlags & MONITORINFOF_PRIMARY != 0 }
         })
         .collect();
     out.sort_by_key(|p| (p.area.left, p.area.top));
@@ -622,7 +624,7 @@ fn number_twins(list: &mut [Screen]) {
 
 fn log_screens(list: &[Screen]) {
     for p in list {
-        println!("screen {}: {} \"{}\"{}", p.id, p.device, p.name, if p.primary { ", main display" } else { "" });
+        info!("screen {}: {} \"{}\"{}", p.id, p.device, p.name, if p.primary { ", main display" } else { "" });
     }
 }
 
@@ -655,6 +657,16 @@ pub(crate) fn class_name(hwnd: HWND) -> String {
     let mut buf = [0u16; 64];
     let n = unsafe { GetClassNameW(hwnd, &mut buf) };
     String::from_utf16_lossy(&buf[..n.max(0) as usize])
+}
+
+/// A window as a log line names it: its exe file name, never its title, which can be an email
+/// subject or a document name (spec 0019). `window 0x…` when its process can't be read.
+pub(crate) fn who(hwnd: HWND) -> String {
+    let mut pid = 0;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    crate::restore::exe_path(pid)
+        .and_then(|p| Path::new(&p).file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| format!("window {:#X}", hwnd.0 as usize))
 }
 
 fn app_windows_on(mon: HMONITOR) -> Vec<HWND> {
@@ -720,7 +732,7 @@ pub fn jump(index: usize) {
     let name = id_of(&mut s, &dev);
     let active = mon_mut(&mut s, &name).active;
     if index >= count {
-        println!("jump: no workspace {} ({count} workspaces)", index + 1);
+        info!("jump: no workspace {} ({count} workspaces)", index + 1);
     }
     if index >= count {
         return indicator::show(mon, card(&s, &name, active, count).with(Says::NoWorkspace { n: index + 1 }));
@@ -748,30 +760,30 @@ pub fn follow(hwnd: HWND) {
     if cloaked(h) != 2 {
         return;
     }
-    let title = title(hwnd);
+    let app = who(hwnd);
     if [hwnd, owner].iter().any(|w| s.restored.get(&(w.0 as isize)).is_some_and(|t| t.elapsed() < RESTORED_IGNORE)) {
-        return println!("follow: restore just hid \"{title}\", ignored");
+        return info!("follow: restore just hid {app}, ignored");
     }
     // Windows can hand focus back to a window a stay send just hid.
     let just_sent = |&(sent, t): &(isize, Instant)| t.elapsed() < Duration::from_millis(FOLLOW_COOLDOWN_MS) && [hwnd, owner].iter().any(|w| w.0 as isize == sent);
     if s.sent.as_ref().is_some_and(just_sent) {
-        return println!("follow: just sent \"{title}\", ignored");
+        return info!("follow: just sent {app}, ignored");
     }
     let Some(mon) = mon_of(&s, &name) else {
-        return eprintln!("follow: {name} not found, ignored \"{title}\"");
+        return warn!("follow: {name} not found, ignored {app}");
     };
     let m = &s.monitors[&name];
     let recent = |t: Instant| t.elapsed() < Duration::from_millis(FOLLOW_COOLDOWN_MS);
     // Windows can hand focus to a window mid cloak; going straight back would undo your switch.
     if m.last_switch.is_some_and(|(t, left)| recent(t) && left == ws) {
-        return println!("follow: {name} just left workspace {}, ignored \"{title}\"", ws + 1);
+        return info!("follow: {name} just left workspace {}, ignored {app}", ws + 1);
     }
     if m.last_follow.is_some_and(recent) {
-        return println!("follow: {name} cooling down, ignored \"{title}\"");
+        return info!("follow: {name} cooling down, ignored {app}");
     }
     if switch_to(&mut s, mon, &name, ws, Some(hwnd), None) {
         s.monitors.get_mut(&name).expect("switch_to keeps the monitor").last_follow = Some(Instant::now());
-        println!("follow: {name} -> workspace {}/{} for \"{title}\"", ws + 1, settings::get().workspaces);
+        info!("follow: {name} -> workspace {}/{} for {app}", ws + 1, settings::get().workspaces);
     }
 }
 
@@ -790,7 +802,7 @@ fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize, focus: Opt
     let shell = match Shell::new() {
         Ok(sh) => sh,
         Err(e) => {
-            eprintln!("shell unavailable: {e}");
+            warn!("shell unavailable: {e}");
             return false;
         }
     };
@@ -813,7 +825,7 @@ fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize, focus: Opt
                 if cloaked(h) != 0 {
                     let _ = shell.hide(h, false);
                 }
-                eprintln!("cloak {:?} failed: {e}", h.0);
+                warn!("cloak {:?} failed: {e}", h.0);
             }
         }
     }
@@ -833,7 +845,7 @@ fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize, focus: Opt
         Some(h) if unsafe { GetForegroundWindow() } != h => unsafe {
             let _ = SetForegroundWindow(h);
             if GetForegroundWindow() != h {
-                eprintln!("follow: could not focus \"{}\"", title(h));
+                warn!("follow: could not focus {}", who(h));
             }
         },
         Some(_) => {}
@@ -844,7 +856,7 @@ fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize, focus: Opt
         }
         None => {}
     }
-    println!("{name}: workspace {}/{count} ({} shown)", target + 1, shown.len());
+    info!("{name}: workspace {}/{count} ({} shown)", target + 1, shown.len());
     indicator::show(mon, card(s, name, target, count));
     s.sent = None;
     save(s);
@@ -872,7 +884,7 @@ fn uncloak(shell: &Shell, raw: isize) -> Option<bool> {
     if !unsafe { IsWindow(Some(h)) }.as_bool() {
         return None;
     }
-    Some(shell.hide(h, false).inspect_err(|e| eprintln!("uncloak {raw:#x} failed: {e}, kept to try again")).is_ok())
+    Some(shell.hide(h, false).inspect_err(|e| error!("uncloak {raw:#x} failed: {e}, kept to try again")).is_ok())
 }
 
 /// Pin or unpin the focused window (spec 0014). A pinned window stays in view on every
@@ -882,7 +894,7 @@ pub fn pin() {
     // A dialog is never hidden itself, so its owner is what a switch would hide.
     let h = unsafe { GetAncestor(GetForegroundWindow(), GA_ROOTOWNER) };
     if !app_windows().contains(&h) {
-        return println!("pin: nothing to pin (\"{}\", {})", title(h), class_name(h));
+        return info!("pin: nothing to pin ({}, {})", who(h), class_name(h));
     }
     let mon = unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) };
     let count = settings::get().workspaces;
@@ -896,7 +908,7 @@ pub fn pin() {
     claim(&mut s, raw, if pinned { "you pinned it" } else { "you unpinned it" });
     let active = mon_mut(&mut s, &name).active;
     let how = if pinned { "pinned to every workspace".to_string() } else { format!("unpinned, stays on workspace {}", active + 1) };
-    println!("pin: \"{}\" on {name} {how}", title(h));
+    info!("pin: {} on {name} {how}", who(h));
     indicator::show(mon, card(&s, &name, active, count).with(if pinned { Says::Pinned } else { Says::Unpinned }));
     save(&mut s);
 }
@@ -923,7 +935,7 @@ pub fn send(to: To, follow: bool) {
     let (h, mon, name, from) = match repeat {
         Some((raw, name, from)) => {
             let Some(mon) = mon_of(&s, &name) else {
-                return eprintln!("send: {name} not found");
+                return warn!("send: {name} not found");
             };
             (HWND(raw as *mut _), mon, name, from)
         }
@@ -932,7 +944,7 @@ pub fn send(to: To, follow: bool) {
             let h = unsafe { GetAncestor(GetForegroundWindow(), GA_ROOTOWNER) };
             // Only what a switch would hide: never the desktop, the taskbar, or a tool window.
             if !app_windows().contains(&h) {
-                return println!("send: nothing to send (\"{}\", {})", title(h), class_name(h));
+                return info!("send: nothing to send ({}, {})", who(h), class_name(h));
             }
             let mon = unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) };
             let name = id_of(&mut s, &device_name(mon));
@@ -944,32 +956,32 @@ pub fn send(to: To, follow: bool) {
         To::Step(dir) => (from as isize + dir).rem_euclid(count as isize) as usize,
         To::Index(i) if i < count => i,
         To::Index(i) => {
-            println!("send: no workspace {} ({count} workspaces)", i + 1);
+            info!("send: no workspace {} ({count} workspaces)", i + 1);
             return indicator::show(mon, card(&s, &name, s.monitors[&name].active, count).with(Says::NoWorkspace { n: i + 1 }));
         }
     };
-    let t = title(h);
+    let t = who(h);
     let unpinned = s.pinned.remove(&(h.0 as isize));
     if unpinned {
-        println!("send: \"{t}\" unpinned, it goes to one workspace");
+        info!("send: {t} unpinned, it goes to one workspace");
     }
     // Without this, a stay press would hide the window into the shown workspace's own list.
     if !is_repeat && target == from {
-        println!("send: \"{t}\" already on {name} workspace {}/{count}", from + 1);
+        info!("send: {t} already on {name} workspace {}/{count}", from + 1);
         return indicator::show(mon, card(&s, &name, from, count).with(Says::Already));
     }
-    let line = |how: &str| format!("send: \"{t}\" {name} workspace {}/{count} -> {}/{count}, {how}", from + 1, target + 1);
+    let line = |how: &str| format!("send: {t} {name} workspace {}/{count} -> {}/{count}, {how}", from + 1, target + 1);
     claim(&mut s, h.0 as isize, "you sent it");
 
     if follow {
         // Already in front, so it stays on top of the workspace it lands on.
         if switch_to(&mut s, mon, &name, target, Some(h), Some(h)) {
-            println!("{}", line("follow"));
+            info!("{}", line("follow"));
         }
         return;
     }
 
-    let shell = || Shell::new().inspect_err(|e| eprintln!("shell unavailable: {e}")).ok();
+    let shell = || Shell::new().inspect_err(|e| warn!("shell unavailable: {e}")).ok();
     let raw = h.0 as isize;
     let m = s.monitors.get_mut(&name).expect("found or created above");
     let active = m.active;
@@ -980,7 +992,7 @@ pub fn send(to: To, follow: bool) {
             if cloaked(h) != 0 {
                 let _ = shell.hide(h, false);
             }
-            return eprintln!("send: could not hide \"{t}\": {e}");
+            return warn!("send: could not hide {t}: {e}");
         }
         // In a list straight away, so the panic hook can always show it again. Front = top.
         m.hidden[target].insert(0, raw);
@@ -990,7 +1002,7 @@ pub fn send(to: To, follow: bool) {
     } else if target == active {
         let Some(shell) = shell() else { return };
         if let Err(e) = shell.hide(h, false) {
-            return eprintln!("send: could not show \"{t}\": {e}");
+            return error!("send: could not show {t}: {e}");
         }
         m.hidden[from].retain(|&w| w != raw);
         unsafe { let _ = SetForegroundWindow(h); }
@@ -1002,7 +1014,7 @@ pub fn send(to: To, follow: bool) {
     s.sent = Some((raw, Instant::now()));
     let said = if target == active { Says::SentBack } else { Says::Sent { to: target, unpinned } };
     indicator::show(mon, card(&s, &name, active, count).with(said));
-    println!("{}", line("stay"));
+    info!("{}", line("stay"));
     save(&mut s);
 }
 
@@ -1191,7 +1203,7 @@ pub fn resize(count: usize) -> Vec<String> {
         }
         let Ok(shell) = &shell else {
             // Kept with the shown workspace: the next switch away and back shows them.
-            eprintln!("shell unavailable, {dev}: {} windows stay hidden", show.len());
+            error!("shell unavailable, {dev}: {} windows stay hidden", show.len());
             m.hidden[count - 1] = show;
             continue;
         };
@@ -1302,6 +1314,17 @@ pub struct View {
     pub names: Vec<(String, String)>,       // device and its name, as `label` gives it (spec 0017)
     pub removals: Vec<Vec<Moved>>,          // what each screen moves, one list per count asked
     pub waiting: Vec<Waiting>,              // screens not plugged in (spec 0016 AC-9)
+    pub present: Vec<Present>,              // screens plugged in, left to right (spec 0020)
+}
+
+/// A screen plugged in, for the settings page's Where it shows: its id keys its own place.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Present {
+    pub id: String,
+    pub device: String,
+    pub name: String, // as `label` gives it, so twins read #1, #2 from the left
+    pub full: RECT,
+    pub work: RECT,
 }
 
 /// A remembered screen not plugged in, with its away windows per workspace (spec 0017 AC-SET-3).
@@ -1324,7 +1347,8 @@ pub fn view(counts: &[usize]) -> Option<View> {
     let active = s.monitors.values().filter_map(|m| Some((m.device.clone()?, m.active))).collect();
     let names = s.present.iter().map(|p| (p.device.clone(), label(&s, &p.id))).collect();
     let removals = counts.iter().map(|&n| moved(&s, n)).collect();
-    Some(View { active, windows, names, removals, waiting: waiting(&s) })
+    let present = s.present.iter().map(|p| Present { id: p.id.clone(), device: p.device.clone(), name: label(&s, &p.id), full: p.full, work: p.area }).collect();
+    Some(View { active, windows, names, removals, waiting: waiting(&s), present })
 }
 
 /// Every remembered screen not plugged in, by name, with how many windows wait for it on each workspace.
@@ -1353,12 +1377,12 @@ fn waiting(s: &State) -> Vec<Waiting> {
 pub fn forget(id: &str) {
     let mut s = state();
     if s.present.iter().any(|p| p.id == id) || s.monitors.get(id).is_none_or(|m| m.device.is_some()) {
-        return eprintln!("forget: {id} is not a remembered screen, nothing forgotten");
+        return warn!("forget: {id} is not a remembered screen, nothing forgotten");
     }
     let before = s.away.len();
     s.away.retain(|_, a| a.home != id);
     let name = s.monitors.remove(id).map_or(id.to_string(), |m| m.name);
-    println!("{name} ({id}) forgotten: {} stay where they are", words(before - s.away.len()));
+    info!("{name} ({id}) forgotten: {} stay where they are", words(before - s.away.len()));
     save(&mut s);
 }
 
@@ -1368,7 +1392,7 @@ pub fn show_workspace(device: &str, ws: usize) {
     if ws >= settings::get().workspaces {
         return;
     }
-    let Some(mon) = monitor_named(device) else { return eprintln!("overview: {device} not found") };
+    let Some(mon) = monitor_named(device) else { return warn!("overview: {device} not found") };
     let mut s = state();
     let id = id_of(&mut s, device);
     switch_to(&mut s, mon, &id, ws, None, None);
@@ -1424,7 +1448,7 @@ fn work_area(mon: HMONITOR) -> RECT {
 fn hung(h: HWND) -> bool {
     let hung = unsafe { IsHungAppWindow(h) }.as_bool();
     if hung {
-        eprintln!("\"{}\" is not responding, left as it is", title(h));
+        warn!("{} is not responding, left as it is", who(h));
     }
     hung
 }
@@ -1459,7 +1483,7 @@ pub fn show_desktop() {
         for &h in back.iter().rev() {
             focus(h);
         }
-        return println!("show desktop: {name}, {} window(s) back", back.len());
+        return info!("show desktop: {name}, {} window(s) back", back.len());
     }
     let list: Vec<HWND> = app_windows_on(mon).into_iter().filter(|&h| !unsafe { IsIconic(h) }.as_bool() && !hung(h)).collect();
     let fg = unsafe { GetForegroundWindow() };
@@ -1471,7 +1495,7 @@ pub fn show_desktop() {
         unsafe { let _ = SetForegroundWindow(GetShellWindow()); }
     }
     m.desktop = list.iter().map(|h| h.0 as isize).collect();
-    println!("show desktop: {name}, {} window(s) minimized", list.len());
+    info!("show desktop: {name}, {} window(s) minimized", list.len());
 }
 
 /// What app_next and app_previous rotate: the shown workspace's windows on the screen under
@@ -1485,24 +1509,24 @@ fn stack() -> (String, Vec<HWND>) {
 pub fn app_next() {
     let (name, stack) = stack();
     let Some(&h) = stack.last() else {
-        return println!("app_next: no window on {name}");
+        return info!("app_next: no window on {name}");
     };
     focus(h);
-    println!("app_next: \"{}\" on {name}", title(h));
+    info!("app_next: {} on {name}", who(h));
 }
 
 /// The top window goes to the bottom and the new top one gets focus (spec 0011).
 pub fn app_previous() {
     let (name, stack) = stack();
     let Some(&top) = stack.first() else {
-        return println!("app_previous: no window on {name}");
+        return info!("app_previous: no window on {name}");
     };
     let next = stack.get(1).copied().unwrap_or(top);
     if next != top && !hung(top) {
         unsafe { let _ = SetWindowPos(top, Some(HWND_BOTTOM), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE); }
     }
     focus(next);
-    println!("app_previous: \"{}\" on {name}", title(next));
+    info!("app_previous: {} on {name}", who(next));
 }
 
 fn hidden_on(s: &State, raw: isize) -> Option<(String, usize)> {
@@ -1516,7 +1540,7 @@ pub fn go_to(hwnd: HWND) -> Result<(), Miss> {
         return Err(Miss::Gone);
     }
     let mut s = state();
-    let t = title(hwnd);
+    let t = who(hwnd);
     let (name, ws) = match hidden_on(&s, hwnd.0 as isize) {
         Some((name, ws)) => {
             // Its screen left: check_screens folds it onto the main display if the screen stays gone.
@@ -1531,7 +1555,7 @@ pub fn go_to(hwnd: HWND) -> Result<(), Miss> {
         }
     };
     focus(hwnd);
-    println!("finder: -> \"{t}\" ({name} workspace {})", ws + 1);
+    info!("finder: -> {t} ({name} workspace {})", ws + 1);
     Ok(())
 }
 
@@ -1550,7 +1574,7 @@ fn show_on(hwnd: HWND, device: &str, activate: bool, who: &str) -> Result<(), Mi
     }
     let mut s = state();
     let raw = hwnd.0 as isize;
-    let t = title(hwnd);
+    let t = self::who(hwnd);
     let hidden = hidden_on(&s, raw);
     if let Some((id, _)) = &hidden
         && !s.present.iter().any(|p| &p.id == id)
@@ -1568,30 +1592,30 @@ fn show_on(hwnd: HWND, device: &str, activate: bool, who: &str) -> Result<(), Mi
         return Ok(());
     }
     let shell = Shell::new().map_err(|e| {
-        eprintln!("{who}: shell unavailable: {e}");
+        warn!("{who}: shell unavailable: {e}");
         Miss::CantMove
     })?;
     if from != device {
         let (Some(old), Some(new)) = (monitor_named(&from), monitor_named(device)) else {
-            eprintln!("{who}: {from} or {device} not found");
+            warn!("{who}: {from} or {device} not found");
             return Err(Miss::CantMove);
         };
         // Still cloaked if hidden, so it never flashes on its old screen.
         if let Err(e) = move_to(hwnd, old, new) {
-            eprintln!("{who}: could not move \"{t}\": {e}");
+            warn!("{who}: could not move {t}: {e}");
             return Err(Miss::CantMove);
         }
     }
     if let Some((dev, ws)) = &hidden {
         if let Err(e) = shell.hide(hwnd, false) {
-            eprintln!("{who}: could not show \"{t}\": {e}");
+            error!("{who}: could not show {t}: {e}");
             return Err(Miss::CantMove);
         }
         s.monitors.get_mut(dev).expect("found above").hidden[*ws].retain(|&w| w != raw);
     }
     claim(&mut s, raw, &format!("you brought it to {device}"));
     land(hwnd);
-    println!("{who}: brought \"{t}\" to {device}");
+    info!("{who}: brought {t} to {device}");
     save(&mut s);
     Ok(())
 }
@@ -1627,7 +1651,7 @@ pub fn place(hwnd: HWND, device: &str, ws: usize) -> Result<(), Miss> {
     }
     let mut s = state();
     let raw = hwnd.0 as isize;
-    let t = title(hwnd);
+    let t = who(hwnd);
     let hidden = hidden_on(&s, raw);
     if hidden.as_ref().is_some_and(|(dev, w)| dev == device && *w == ws) {
         return Ok(());
@@ -1637,7 +1661,7 @@ pub fn place(hwnd: HWND, device: &str, ws: usize) -> Result<(), Miss> {
         None => device_name(unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) }),
     };
     let shell = Shell::new().map_err(|e| {
-        eprintln!("overview: shell unavailable: {e}");
+        warn!("overview: shell unavailable: {e}");
         Miss::CantMove
     })?;
     if hidden.is_none()
@@ -1647,19 +1671,19 @@ pub fn place(hwnd: HWND, device: &str, ws: usize) -> Result<(), Miss> {
         if cloaked(hwnd) != 0 {
             let _ = shell.hide(hwnd, false);
         }
-        eprintln!("overview: could not hide \"{t}\": {e}");
+        warn!("overview: could not hide {t}: {e}");
         return Err(Miss::CantMove);
     }
     if from != device {
         let moved = match (monitor_named(&from), monitor_named(device)) {
-            (Some(old), Some(new)) => move_to(hwnd, old, new).map_err(|e| format!("could not move \"{t}\": {e}")),
+            (Some(old), Some(new)) => move_to(hwnd, old, new).map_err(|e| format!("could not move {t}: {e}")),
             _ => Err(format!("{from} or {device} not found")),
         };
         if let Err(e) = moved {
             if hidden.is_none() {
                 let _ = shell.hide(hwnd, false);
             }
-            eprintln!("overview: {e}");
+            warn!("overview: {e}");
             return Err(Miss::CantMove);
         }
     }
@@ -1667,13 +1691,13 @@ pub fn place(hwnd: HWND, device: &str, ws: usize) -> Result<(), Miss> {
         s.monitors.get_mut(dev).expect("found above").hidden[*w].retain(|&x| x != raw);
     }
     if s.pinned.remove(&raw) {
-        println!("overview: \"{t}\" unpinned, it goes to one workspace");
+        info!("overview: {t} unpinned, it goes to one workspace");
     }
     claim(&mut s, raw, "you dropped it on a workspace");
     // Front = top, as a send puts it.
     let id = id_of(&mut s, device);
     mon_mut(&mut s, &id).hidden[ws].insert(0, raw);
-    println!("overview: \"{t}\" -> {device} workspace {}/{count}, hidden", ws + 1);
+    info!("overview: {t} -> {device} workspace {}/{count}, hidden", ws + 1);
     save(&mut s);
     Ok(())
 }
@@ -1746,7 +1770,7 @@ fn shell_for_exit() -> Option<Shell> {
             Err(_) => std::thread::sleep(Duration::from_millis(250)),
         }
     }
-    eprintln!("shell unavailable for 5 s: hidden windows stay hidden, state.txt keeps them");
+    error!("shell unavailable for 5 s: hidden windows stay hidden, state.txt keeps them");
     None
 }
 
@@ -1774,7 +1798,7 @@ fn restore_in(s: &mut State) {
         }
     }
     if left > 0 {
-        eprintln!("{left} window(s) could not be shown: state.txt keeps them, the next start shows or adopts them");
+        error!("{left} window(s) could not be shown: state.txt keeps them, the next start shows or adopts them");
     }
     save_lines(s, left > 0);
 }
@@ -1787,7 +1811,7 @@ pub fn restore_after_panic() {
         Ok(mut s) => restore_in(&mut s),
         Err(std::sync::TryLockError::Poisoned(e)) => restore_in(&mut e.into_inner()),
         Err(std::sync::TryLockError::WouldBlock) => {
-            eprintln!("panic while the layout was locked: showing every window des-k cloaked");
+            warn!("panic while the layout was locked: showing every window des-k cloaked");
             let Some(shell) = shell_for_exit() else { return };
             for raw in crate::cloak::ours() {
                 let _ = shell.hide(HWND(raw as *mut _), false);
@@ -1873,7 +1897,7 @@ pub fn load() -> bool {
     let since = s.logon.map_or(0, |(_, t)| SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64) - t);
     let late = since > (st.restore_minutes as i64 + 2) * 60;
     if st.restore_enabled && new_sign_in && late {
-        println!("restore: signed in {} min ago, skipped", since / 60);
+        info!("restore: signed in {} min ago, skipped", since / 60);
     }
     let restoring = st.restore_enabled && if new_sign_in { !late } else { cut_short };
     // A restart in the same sign in: the same window, same pid, is still pinned.
@@ -1900,7 +1924,7 @@ pub fn load() -> bool {
         let cut = |(e, cut): (Entry, bool)| (new_sign_in || cut).then_some(e);
         let saved: Vec<Entry> =
             hidden.into_iter().filter_map(cut).chain(visible).chain(pinned.into_iter().filter_map(cut)).chain(aways.into_iter().filter_map(cut)).collect();
-        println!("restore: {} {} saved window(s), matching for {} min", if new_sign_in { "new sign in," } else { "resuming," }, saved.len(), st.restore_minutes);
+        info!("restore: {} {} saved window(s), matching for {} min", if new_sign_in { "new sign in," } else { "resuming," }, saved.len(), st.restore_minutes);
         s.restore = Some(Restore {
             pending: (0..saved.len()).collect(),
             saved,
@@ -1915,7 +1939,7 @@ pub fn load() -> bool {
 
     if !adopt.is_empty() {
         let (Ok(shell), Ok(vdm)) = (Shell::new(), unsafe { CoCreateInstance::<_, IVirtualDesktopManager>(&VirtualDesktopManager, None, CLSCTX_ALL) }) else {
-            eprintln!("shell unavailable, saved layout not loaded");
+            warn!("shell unavailable, saved layout not loaded");
             return restoring;
         };
         let (mut kept, mut shown) = (0, 0);
@@ -1943,7 +1967,7 @@ pub fn load() -> bool {
                     Ok(()) => shown += 1,
                     Err(e) => {
                         // Still hidden: tracked, so a switch, quit or screen check tries again.
-                        eprintln!("could not show saved window {raw:#x}: {e}, kept to try again");
+                        error!("could not show saved window {raw:#x}: {e}, kept to try again");
                         let m = mon_mut(s, &dev);
                         let ws = ws.min(m.hidden.len() - 1);
                         m.hidden[ws].push(raw);
@@ -1952,17 +1976,17 @@ pub fn load() -> bool {
                 },
             }
         }
-        println!("loaded saved layout: {kept} hidden window(s) adopted, {shown} shown again");
+        info!("loaded saved layout: {kept} hidden window(s) adopted, {shown} shown again");
         // At start: the log says it, no note.
         for id in fold_now {
             fold(s, &id, &mut Vec::new());
         }
     }
     if !s.away.is_empty() {
-        println!("loaded saved layout: {} wait for a screen not plugged in", words(s.away.len()));
+        info!("loaded saved layout: {} wait for a screen not plugged in", words(s.away.len()));
     }
     if !s.pinned.is_empty() {
-        println!("loaded saved layout: {} pinned window(s)", s.pinned.len());
+        info!("loaded saved layout: {} pinned window(s)", s.pinned.len());
     }
     save(s);
     restoring
@@ -2011,7 +2035,7 @@ pub fn restore_tick() -> bool {
                 Pick::Take(i) => i,
                 Pick::Unclear if pass == 2 => {
                     if r.unclear_logged.insert(key) {
-                        println!("restore: unclear match for \"{}\" ({}), left visible", fp.title, fp.app);
+                        info!("restore: unclear match for {}, left visible", fp.app);
                     }
                     continue;
                 }
@@ -2024,7 +2048,7 @@ pub fn restore_tick() -> bool {
                 r.pending.retain(|&p| p != i);
                 r.resolved.insert(key);
                 r.kept += 1;
-                println!("restore: \"{}\" stays visible, {why}", fp.title);
+                info!("restore: {} stays visible, {why}", fp.app);
             };
             let e = r.saved[i].clone();
             let raw = h.0 as isize;
@@ -2058,7 +2082,7 @@ pub fn restore_tick() -> bool {
                     if !hung(h)
                         && let Err(err) = put(h, Spot { rect: remap(from, main.area, spot.rect), state: spot.state })
                     {
-                        eprintln!("restore: could not place \"{}\": {err}", fp.title);
+                        warn!("restore: could not place {}: {err}", fp.app);
                     }
                 }
                 if e.pin {
@@ -2069,7 +2093,7 @@ pub fn restore_tick() -> bool {
                 r.resolved.insert(key);
                 r.kept += 1;
                 changed = true;
-                println!("restore: \"{}\" waits for {name}, workspace {}/{count}", fp.title, ws + 1);
+                info!("restore: {} waits for {name}, workspace {}/{count}", fp.app, ws + 1);
                 continue;
             }
             if e.pin {
@@ -2108,14 +2132,14 @@ pub fn restore_tick() -> bool {
                     r.resolved.insert(key);
                     r.hidden += 1;
                     changed = true;
-                    println!("restore: \"{}\" -> {dev} workspace {}/{count}", fp.title, ws + 1);
+                    info!("restore: {} -> {dev} workspace {}/{count}", fp.app, ws + 1);
                     if was_fg {
                         let mon = unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) };
                         let next = app_windows_on(mon).first().copied().unwrap_or(unsafe { GetShellWindow() });
                         unsafe {
                             let _ = SetForegroundWindow(next);
                             if GetForegroundWindow() != next {
-                                eprintln!("restore: could not move focus");
+                                warn!("restore: could not move focus");
                             }
                         }
                     }
@@ -2137,7 +2161,7 @@ pub fn restore_tick() -> bool {
 /// Unmatched entries are dropped: a window that reopens later is never hidden (AC-6).
 fn finish_restore(s: &mut State) {
     let Some(r) = s.restore.take() else { return };
-    println!("restore: done, {} hidden, {} kept visible, {} saved window(s) not matched", r.hidden, r.kept, r.pending.len());
+    info!("restore: done, {} hidden, {} kept visible, {} saved window(s) not matched", r.hidden, r.kept, r.pending.len());
     save(s);
 }
 
@@ -2175,12 +2199,12 @@ pub fn resync() {
                 match shell.hide(h, true) {
                     Ok(()) => hidden += 1,
                     Err(e) if cloaked(h) == 0 => {
-                        eprintln!("explorer restarted: could not hide {raw:#x} again ({e}), it stays in view");
+                        warn!("explorer restarted: could not hide {raw:#x} again ({e}), it stays in view");
                         in_view += 1;
                         return false;
                     }
                     Err(e) => {
-                        eprintln!("explorer restarted: could not hide {raw:#x} again ({e}), kept to try again");
+                        warn!("explorer restarted: could not hide {raw:#x} again ({e}), kept to try again");
                         failed += 1;
                     }
                 }
@@ -2188,7 +2212,7 @@ pub fn resync() {
             });
         }
     }
-    println!("explorer restarted: {hidden} hidden window(s) hidden again, {in_view} left in view, {failed} to try again");
+    info!("explorer restarted: {hidden} hidden window(s) hidden again, {in_view} left in view, {failed} to try again");
     if failed == 0 {
         RESYNC.store(0, Ordering::Relaxed);
     }
@@ -2202,13 +2226,13 @@ pub fn resync() {
 /// with their count.
 fn count_gone(gone: &mut HashMap<String, u32>, missing: &[String], tick: bool, limit: u32) -> Vec<(String, u32)> {
     for id in gone.keys().filter(|d| !missing.contains(*d)) {
-        println!("{id} is back: its workspaces were kept");
+        info!("{id} is back: its workspaces were kept");
     }
     gone.retain(|d, _| missing.contains(d));
     let mut due = Vec::new();
     for id in missing {
         let n = gone.entry(id.clone()).or_insert_with(|| {
-            println!("{id} disconnected: its windows fold onto the main display if it stays gone {limit} s");
+            info!("{id} disconnected: its windows fold onto the main display if it stays gone {limit} s");
             0
         });
         if tick {
@@ -2269,7 +2293,7 @@ fn check_in(s: &mut State, present: Vec<Screen>, tick: bool) -> Vec<Note> {
     s.away.retain(|&raw, a| {
         let open = unsafe { IsWindow(Some(HWND(raw as *mut _))) }.as_bool() && pid_of(HWND(raw as *mut _)) == a.pid;
         if !open {
-            println!("a window waiting for {} closed", a.home);
+            info!("a window waiting for {} closed", a.home);
         }
         open
     });
@@ -2308,7 +2332,7 @@ fn check_in(s: &mut State, present: Vec<Screen>, tick: bool) -> Vec<Note> {
         .collect();
     for id in forget {
         let name = s.monitors.remove(&id).map_or(String::new(), |m| m.name);
-        println!("{name} ({id}) forgotten: no window waits for it any more");
+        info!("{name} ({id}) forgotten: no window waits for it any more");
         dirty = true;
     }
 
@@ -2388,7 +2412,7 @@ fn mark_away(s: &mut State, id: &str) -> usize {
         n += 1;
     }
     if n > 0 {
-        println!("{id} disconnected: {} that were in view go back to it when it returns", words(n));
+        info!("{id} disconnected: {} that were in view go back to it when it returns", words(n));
     }
     n
 }
@@ -2398,9 +2422,9 @@ fn mark_away(s: &mut State, id: &str) -> usize {
 /// workspace is shown. Each keeps an away record of its home; the screen is remembered.
 fn fold(s: &mut State, id: &str, notes: &mut Vec<Note>) {
     let Some(main) = s.present.iter().find(|p| p.primary).cloned() else {
-        return eprintln!("{id} unplugged, and no main display to take its windows: trying again next check");
+        return warn!("{id} unplugged, and no main display to take its windows: trying again next check");
     };
-    let Ok(shell) = Shell::new() else { return eprintln!("shell unavailable: {id}'s windows fold at the next check") };
+    let Ok(shell) = Shell::new() else { return warn!("shell unavailable: {id}'s windows fold at the next check") };
     let count = settings::get().workspaces;
     let Some(gone) = s.monitors.get_mut(id) else { return };
     let lists = std::mem::replace(&mut gone.hidden, vec![Vec::new(); count]);
@@ -2426,7 +2450,7 @@ fn fold(s: &mut State, id: &str, notes: &mut Vec<Note>) {
             if !hung(h)
                 && let Err(e) = put(h, Spot { rect: remap(from, main.area, spot.rect), state: spot.state })
             {
-                eprintln!("fold: could not move \"{}\": {e}", title(h));
+                warn!("fold: could not move {}: {e}", who(h));
             }
             s.spots.insert(raw, (main.id.clone(), spot_of(h)));
             let ws = ws.min(count - 1);
@@ -2442,7 +2466,7 @@ fn fold(s: &mut State, id: &str, notes: &mut Vec<Note>) {
     let (_, stuck) = show_all(show, |raw| uncloak(&shell, raw));
     mon_mut(s, &main.id).hidden[main_active].extend(stuck);
     let waiting = s.away.values().filter(|a| a.home == id).count();
-    println!("{name} ({id}) unplugged: {} it hid moved to {} ({}), {} wait for it", words(n), main.name, main.id, words(waiting));
+    info!("{name} ({id}) unplugged: {} it hid moved to {} ({}), {} wait for it", words(n), main.name, main.id, words(waiting));
     if waiting > 0 {
         notes.push(Note {
             device: main.device.clone(),
@@ -2461,7 +2485,7 @@ fn fold(s: &mut State, id: &str, notes: &mut Vec<Note>) {
 fn give_back(s: &mut State, id: &str, last: bool, notes: &mut Vec<Note>) -> bool {
     let Some(p) = s.present.iter().find(|p| p.id == id).cloned() else { return false };
     let Ok(shell) = Shell::new() else {
-        eprintln!("shell unavailable: {}'s windows go back at the next check", p.name);
+        warn!("shell unavailable: {}'s windows go back at the next check", p.name);
         return false;
     };
     let count = settings::get().workspaces;
@@ -2483,9 +2507,9 @@ fn give_back(s: &mut State, id: &str, last: bool, notes: &mut Vec<Note>) -> bool
         let done = match (in_view, hidden_on(s, raw)) {
             // Already home and in place (a short drop Windows undid): nothing to move.
             (true, None) if screen_now(s, raw).as_deref() == Some(id) && spot_of(h) == to => Some(false),
-            (true, None) => put(h, to).inspect_err(|e| eprintln!("return: could not move \"{}\": {e}", title(h))).ok().map(|()| true),
+            (true, None) => put(h, to).inspect_err(|e| warn!("return: could not move {}: {e}", who(h))).ok().map(|()| true),
             (true, Some((sid, w))) => {
-                let ok = put(h, to).inspect_err(|e| eprintln!("return: could not move \"{}\": {e}", title(h))).is_ok() && uncloak(&shell, raw) == Some(true);
+                let ok = put(h, to).inspect_err(|e| warn!("return: could not move {}: {e}", who(h))).is_ok() && uncloak(&shell, raw) == Some(true);
                 if ok {
                     s.monitors.get_mut(&sid).expect("listed").hidden[w].retain(|&x| x != raw);
                 }
@@ -2493,7 +2517,7 @@ fn give_back(s: &mut State, id: &str, last: bool, notes: &mut Vec<Note>) -> bool
             }
             (false, Some((sid, w))) => {
                 // Still cloaked: moved, then listed with its home workspace.
-                let ok = put(h, to).inspect_err(|e| eprintln!("return: could not move \"{}\": {e}", title(h))).is_ok();
+                let ok = put(h, to).inspect_err(|e| warn!("return: could not move {}: {e}", who(h))).is_ok();
                 if ok {
                     s.monitors.get_mut(&sid).expect("listed").hidden[w].retain(|&x| x != raw);
                     mon_mut(s, id).hidden[ws].push(raw);
@@ -2506,10 +2530,10 @@ fn give_back(s: &mut State, id: &str, last: bool, notes: &mut Vec<Note>) -> bool
                     if cloaked(h) != 0 {
                         let _ = shell.hide(h, false);
                     }
-                    eprintln!("return: could not hide \"{}\": {e}", title(h));
+                    warn!("return: could not hide {}: {e}", who(h));
                     None
                 } else if let Err(e) = put(h, to) {
-                    eprintln!("return: could not move \"{}\": {e}", title(h));
+                    warn!("return: could not move {}: {e}", who(h));
                     if shell.hide(h, false).is_err() {
                         // Still cloaked: it must stay listed, so its home workspace takes it.
                         mon_mut(s, id).hidden[ws].push(raw);
@@ -2546,7 +2570,7 @@ fn give_back(s: &mut State, id: &str, last: bool, notes: &mut Vec<Note>) -> bool
     if left == 0 || last {
         e.0 = BACK_CHECKS + RETURN_TRIES; // no more tries until it returns again
         let stuck = if left > 0 { format!(", {left} could not be moved") } else { String::new() };
-        println!("{} ({id}) is back: {} returned{stuck}", p.name, words(total));
+        info!("{} ({id}) is back: {} returned{stuck}", p.name, words(total));
         if total > 0 || left > 0 {
             notes.push(Note {
                 device: p.device.clone(),
@@ -2816,7 +2840,7 @@ mod tests {
     // Two monitors of one model with no serial must stay apart, numbered left to right (AC-1).
     #[test]
     fn twins_are_numbered_left_to_right() {
-        let at = |id: &str, left| Screen { device: String::new(), id: id.into(), name: String::new(), area: rect(left, 0, left + 10, 10), primary: false };
+        let at = |id: &str, left| Screen { device: String::new(), id: id.into(), name: String::new(), area: rect(left, 0, left + 10, 10), full: rect(left, 0, left + 10, 10), primary: false };
         let mut list = vec![at("internal", -100), at("DEL-4123", 0), at("DEL-4123", 100)];
         number_twins(&mut list);
         assert_eq!(list.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["internal", "DEL-4123#1", "DEL-4123#2"]);

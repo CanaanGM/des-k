@@ -4,6 +4,7 @@
 // A bad value resets just that setting. A file that is not TOML resets all of them at start,
 // but keeps the settings in effect on a live reload. des-k always starts.
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::io::Write;
 use std::sync::LazyLock;
@@ -51,6 +52,72 @@ pub enum Style {
 }
 
 pub const STYLES: &[(&str, Style)] = &[("card", Style::Card), ("dots", Style::Dots)];
+
+/// Where the indicator sits on a screen's work area (spec 0020).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Spot {
+    TopLeft,
+    Top,
+    TopRight,
+    Left,
+    Center,
+    Right,
+    BottomLeft,
+    Bottom,
+    BottomRight,
+    Custom,
+}
+
+pub const SPOTS: &[(&str, Spot)] = &[
+    ("top-left", Spot::TopLeft),
+    ("top", Spot::Top),
+    ("top-right", Spot::TopRight),
+    ("left", Spot::Left),
+    ("center", Spot::Center),
+    ("right", Spot::Right),
+    ("bottom-left", Spot::BottomLeft),
+    ("bottom", Spot::Bottom),
+    ("bottom-right", Spot::BottomRight),
+    ("custom", Spot::Custom),
+];
+
+/// The indicator's place: a spot, its gap from the edges in pixels at 100% scale, and with
+/// `Custom` the card's center in percent of the work area (spec 0020 AC-7, AC-8).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Pos {
+    pub spot: Spot,
+    pub gap: u32,
+    pub x: f64,
+    pub y: f64,
+}
+
+impl Default for Pos {
+    fn default() -> Self {
+        Pos { spot: Spot::Center, gap: 24, x: 50.0, y: 50.0 }
+    }
+}
+
+/// One screen's `[indicator.screens."<id>"]`: a key left out comes from the default (AC-9).
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct PosOverride {
+    pub spot: Option<Spot>,
+    pub gap: Option<u32>,
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+}
+
+impl PosOverride {
+    pub fn over(&self, d: Pos) -> Pos {
+        Pos { spot: self.spot.unwrap_or(d.spot), gap: self.gap.unwrap_or(d.gap), x: self.x.unwrap_or(d.x), y: self.y.unwrap_or(d.y) }
+    }
+}
+
+/// des-k's accent: Windows' own, or a color you typed (spec 0020 AC-1, AC-2).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Accent {
+    Windows,
+    Rgb(u32),
+}
 
 /// What three or four fingers did on the touchpad (spec 0011).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -173,6 +240,9 @@ pub struct Settings {
     pub hints: Vec<Combo>,    // opens the Shortcut hints window (spec 0017); none by default
     pub indicator_enabled: bool,
     pub indicator_style: Style,
+    pub indicator_pos: Pos,
+    // By screen id (spec 0016); a table for a screen that isn't plugged in does nothing (AC-9).
+    pub indicator_screens: BTreeMap<String, PosOverride>,
     pub hold_ms: u32,
     pub fade_ms: u32,
     pub restore_enabled: bool,
@@ -186,6 +256,8 @@ pub struct Settings {
     pub swipe_mm: u32,
     pub twice_ms: u32,
     pub gestures: Vec<Gesture>,
+    pub accent: Accent,
+    pub ws_colors: [Option<u32>; 9], // None keeps look B's color (spec 0020 AC-4)
 }
 
 /// The map used when settings.toml has no [[gesture]] rule (spec 0011 AC-2).
@@ -230,6 +302,8 @@ impl Default for Settings {
             hints: vec![],
             indicator_enabled: true,
             indicator_style: Style::Card,
+            indicator_pos: Pos::default(),
+            indicator_screens: BTreeMap::new(),
             hold_ms: 550,
             fade_ms: 200,
             restore_enabled: true,
@@ -242,12 +316,14 @@ impl Default for Settings {
             swipe_mm: 15,
             twice_ms: 300,
             gestures: default_gestures(),
+            accent: Accent::Windows,
+            ws_colors: [None; 9],
         }
     }
 }
 
 /// Written verbatim when the file is missing. Must parse to `Settings::default()` (tested).
-const DEFAULT_FILE: &str = r#"# des-k settings. A saved change applies within two seconds; [restore] acts at the next start.
+const DEFAULT_FILE: &str = r##"# des-k settings. A saved change applies within two seconds; [restore] acts at the next start.
 
 workspaces = 4              # 2 to 9, every screen
 copilot_as_right_ctrl = true
@@ -280,8 +356,20 @@ hints = []
 [indicator]
 enabled = true
 style = "card"              # "card" or "dots"
+spot = "center"             # top-left, top, top-right, left, center, right, bottom-left, bottom, bottom-right or custom
+gap = 24                    # 0 to 400: pixels from the screen's edges at 100% scale (center ignores it)
+x = 50                      # 0 to 100, with spot = "custom": the card's center, in percent of the screen
+y = 50
 hold_ms = 550               # 0 to 5000
 fade_ms = 200               # 0 to 2000
+# A screen can have its own place: a table named by its id (spec 0016), with any of spot, gap, x, y.
+# [indicator.screens."DEL-A1B2-12345"]
+# spot = "top-right"
+
+[colors]
+accent = "windows"          # "windows" follows your Windows accent color, or your own "#RRGGBB"
+# Your own color for a workspace, in light and dark alike; a workspace left out keeps des-k's:
+# ws1 = "#79A4F3"
 
 [restore]
 enabled = true              # after a reboot or sign in, hide reopened windows back into their workspaces
@@ -357,11 +445,13 @@ do = "search"
 fingers = 4
 tap = true
 do = "notifications"
-"#;
+"##;
 
-const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activation", "fastest", "first_run_seen", "shortcuts", "indicator", "restore", "overview", "touchpad", "gesture"];
+const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activation", "fastest", "first_run_seen", "shortcuts", "indicator", "colors", "restore", "overview", "touchpad", "gesture"];
 const SHORTCUT_KEYS: &[&str] = &["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "jump", "send_to", "send_to_stay", "finder", "overview", "pin", "hints"];
-const INDICATOR_KEYS: &[&str] = &["enabled", "style", "hold_ms", "fade_ms"];
+const INDICATOR_KEYS: &[&str] = &["enabled", "style", "spot", "gap", "x", "y", "hold_ms", "fade_ms", "screens"];
+const SCREEN_KEYS: &[&str] = &["spot", "gap", "x", "y"];
+const COLORS_KEYS: &[&str] = &["accent", "ws1", "ws2", "ws3", "ws4", "ws5", "ws6", "ws7", "ws8", "ws9"];
 const RESTORE_KEYS: &[&str] = &["enabled", "minutes"];
 const OVERVIEW_KEYS: &[&str] = &["animation", "labels", "live", "fade_ms"];
 const TOUCHPAD_KEYS: &[&str] = &["enabled", "swipe_mm", "twice_ms"];
@@ -443,7 +533,7 @@ pub fn load() {
             PARSE_ERROR.set(text.parse::<Table>().err().map(|e| not_toml(&e.to_string(), e.message())));
             let (settings, warnings) = parse(&text);
             for w in &warnings {
-                eprintln!("settings: {w}");
+                warn!("settings: {w}");
             }
             (settings, warnings.into_iter().map(Problem::new).collect())
         }
@@ -451,19 +541,19 @@ pub fn load() {
             // create_new: never overwrite a file that appeared meanwhile.
             let written = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).and_then(|mut f| f.write_all(DEFAULT_FILE.as_bytes()));
             match written {
-                Ok(()) => println!("settings: wrote defaults to {}", path.display()),
-                Err(e) => eprintln!("settings: cannot write {} ({e}), using all defaults", path.display()),
+                Ok(()) => info!("settings: wrote defaults to {}", path.file_name().unwrap_or_default().display()),
+                Err(e) => error!("settings: cannot write {} ({e}), using all defaults", path.file_name().unwrap_or_default().display()),
             }
             SEEN.set(modified(&path));
             (Settings::default(), Vec::new())
         }
         Err(e) => {
             PARSE_ERROR.set(Some(format!("cannot read {} ({e})", path.display())));
-            eprintln!("settings: cannot read {} ({e}), using all defaults", path.display());
+            warn!("settings: cannot read {} ({e}), using all defaults", path.file_name().unwrap_or_default().display());
             (Settings::default(), Vec::new())
         }
     };
-    println!("settings: {}: {settings}", path.display());
+    info!("settings: {}: {settings}", path.file_name().unwrap_or_default().display());
     store(settings, problems);
 }
 
@@ -494,7 +584,7 @@ pub fn reload(source: Source) -> Result<Vec<Change>, String> {
     let (settings, warnings) = match text.and_then(|t| reparse(&t)) {
         Ok(got) => got,
         Err(why) => {
-            eprintln!("settings: {why}, keeping the settings in effect");
+            warn!("settings: {why}, keeping the settings in effect");
             PARSE_ERROR.set(Some(why.clone()));
             crate::settings_page::refresh();
             return Err(why);
@@ -505,7 +595,7 @@ pub fn reload(source: Source) -> Result<Vec<Change>, String> {
     // Only new problems are logged, so one bad value is not logged again on every save.
     let before = problems();
     for w in warnings.iter().filter(|w| !before.iter().any(|p| &p.message == *w)) {
-        eprintln!("settings: {w}");
+        warn!("settings: {w}");
     }
     let problems: Vec<Problem> = warnings.into_iter().map(Problem::new).collect();
     let changes = diff(old, &settings, source);
@@ -537,7 +627,7 @@ fn diff(old: &Settings, new: &Settings, source: Source) -> Vec<Change> {
     let mut changes = Vec::new();
     for ((key, was), (_, now)) in old.fields().into_iter().zip(new.fields()) {
         if was != now {
-            println!("settings: {key} {was} -> {now} ({from})");
+            info!("settings: {key} {was} -> {now} ({from})");
             changes.push(Change { key, was, now });
         }
     }
@@ -560,7 +650,7 @@ fn apply(old: &Settings, changes: &[Change]) -> Vec<String> {
     if new.workspaces != old.workspaces {
         moves = crate::ws::resize(new.workspaces);
         for line in &moves {
-            println!("settings: workspaces {} -> {}: {line}", old.workspaces, new.workspaces);
+            info!("settings: workspaces {} -> {}: {line}", old.workspaces, new.workspaces);
         }
     }
     if has("touchpad.enabled") && new.touchpad_enabled {
@@ -571,6 +661,10 @@ fn apply(old: &Settings, changes: &[Change]) -> Vec<String> {
     }
     if has("fastest") {
         crate::ui::transitions_all();
+    }
+    // Colors resolve in ui::theme_of on each paint; every window just needs to paint again.
+    if changes.iter().any(|c| c.key.starts_with("colors.")) {
+        crate::ui::repaint_all();
     }
     crate::welcome::refresh();
     crate::hints::refresh();
@@ -589,6 +683,12 @@ pub enum Edit {
     Gestures(Vec<Gesture>),
     /// Two edits in one write, so a clash is never saved halfway (AC-9).
     Pair(Box<Edit>, Box<Edit>),
+    /// A value at a path of keys, like ["indicator", "screens", "<id>", "spot"]; tables on
+    /// the way are made as needed, `screens` as an implicit one (spec 0020).
+    At(Vec<String>, toml_edit::Value),
+    /// Takes out the key or table at a path (Reset, Same as all screens). A screen table left
+    /// empty goes too, and so does an empty `screens`.
+    Remove(Vec<String>),
 }
 
 /// Changes one value in the file and keeps every other byte, then reloads (AC-3). The new
@@ -604,7 +704,7 @@ pub fn write(edit: Edit) -> Result<(), String> {
     let tmp = path.with_extension("toml.tmp");
     if let Err(e) = crate::ws::write_new(&tmp, &new).and_then(|()| std::fs::rename(&tmp, &path)) {
         let why = format!("cannot save {} ({e})", path.display());
-        eprintln!("settings: {why}");
+        warn!("settings: {why}");
         return Err(why);
     }
     reload(Source::Page).map(|_| ())
@@ -631,6 +731,60 @@ fn edit_doc(doc: &mut toml_edit::DocumentMut, edit: &Edit) -> Result<(), String>
             Ok(())
         }
         Edit::Pair(a, b) => edit_doc(doc, a).and_then(|()| edit_doc(doc, b)),
+        Edit::At(path, value) => set_at(doc, path, value.clone()),
+        Edit::Remove(path) => {
+            remove_at(doc, path);
+            Ok(())
+        }
+    }
+}
+
+fn set_at(doc: &mut toml_edit::DocumentMut, path: &[String], value: toml_edit::Value) -> Result<(), String> {
+    let Some((key, tables)) = path.split_last() else { return Ok(()) };
+    let mut table = doc.as_table_mut();
+    for (i, name) in tables.iter().enumerate() {
+        // A screen id is always a quoted key, whatever letters it has.
+        let quoted = i > 0 && tables[i - 1] == "screens";
+        let key: toml_edit::Key = if quoted { toml_edit::Value::from(name.as_str()).to_string().trim().parse().map_err(|_| format!("bad screen id {name}"))? } else { toml_edit::Key::new(name) };
+        let item = table.entry_format(&key).or_insert_with(|| {
+            let mut t = toml_edit::Table::new();
+            // [indicator.screens."<id>"] alone, never an empty [indicator.screens] above it.
+            t.set_implicit(i + 1 < tables.len());
+            toml_edit::Item::Table(t)
+        });
+        table = item.as_table_mut().ok_or_else(|| format!("{}: expected a table", tables[..=i].join(".")))?;
+    }
+    match table.get_mut(key) {
+        Some(item) => {
+            let mut value = value;
+            if let Some(old) = item.as_value() {
+                *value.decor_mut() = old.decor().clone();
+            }
+            *item = toml_edit::Item::Value(value);
+        }
+        None => {
+            table.insert(key, toml_edit::Item::Value(value));
+        }
+    }
+    Ok(())
+}
+
+fn remove_at(doc: &mut toml_edit::DocumentMut, path: &[String]) {
+    fn table_at<'a>(doc: &'a mut toml_edit::DocumentMut, path: &[String]) -> Option<&'a mut toml_edit::Table> {
+        path.iter().try_fold(doc.as_table_mut(), |t, name| t.get_mut(name)?.as_table_mut())
+    }
+    let Some((key, tables)) = path.split_last() else { return };
+    let Some(t) = table_at(doc, tables) else { return };
+    t.remove(key);
+    // Empty tables below a top section go: a screen table, then `screens`.
+    for depth in (2..=tables.len()).rev() {
+        let empty = table_at(doc, &path[..depth]).is_some_and(|t| t.is_empty());
+        if !empty {
+            break;
+        }
+        if let Some(parent) = table_at(doc, &path[..depth - 1]) {
+            parent.remove(&path[depth - 1]);
+        }
     }
 }
 
@@ -683,6 +837,19 @@ fn set_value(doc: &mut toml_edit::DocumentMut, name: &str, value: toml_edit::Val
         }
     }
     Ok(())
+}
+
+/// For the settings page's render test: what get() and problems() give from now on.
+#[cfg(test)]
+pub fn use_for_test(text: &str) {
+    let (settings, warnings) = parse(text);
+    store(settings, warnings.into_iter().map(Problem::new).collect());
+}
+
+/// For the settings page's tests: any text with an edit made.
+#[cfg(test)]
+pub fn apply_for_test(text: &str, edit: &Edit) -> String {
+    edit_text(text, edit).unwrap()
 }
 
 /// For the settings page's tests: the default file with one value changed.
@@ -787,6 +954,26 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
         s.indicator_style = choice(t, "style", "indicator.style", STYLES, s.indicator_style, &mut warn);
         s.hold_ms = int(t, "hold_ms", "indicator.hold_ms", 0, 5000, s.hold_ms as i64, &mut warn) as u32;
         s.fade_ms = int(t, "fade_ms", "indicator.fade_ms", 0, 2000, s.fade_ms as i64, &mut warn) as u32;
+        let d = Pos::default();
+        s.indicator_pos = Pos {
+            spot: choice(t, "spot", "indicator.spot", SPOTS, d.spot, &mut warn),
+            gap: int(t, "gap", "indicator.gap", 0, 400, d.gap as i64, &mut warn) as u32,
+            x: percent(t, "x", "indicator.x", d.x, &mut warn),
+            y: percent(t, "y", "indicator.y", d.y, &mut warn),
+        };
+        s.indicator_screens = screens(t, s.indicator_pos, &mut warn);
+    }
+
+    if let Some(t) = section(&top, "colors", &mut warn) {
+        unknown_keys(t, "colors.", COLORS_KEYS, &mut warn);
+        s.accent = match t.get("accent") {
+            Some(Value::String(w)) if w.eq_ignore_ascii_case("windows") => Accent::Windows,
+            _ => color(t, "accent", "colors.accent", "\"windows\"", &mut warn).map_or(Accent::Windows, Accent::Rgb),
+        };
+        for (i, c) in s.ws_colors.iter_mut().enumerate() {
+            let key = COLORS_KEYS[i + 1];
+            *c = color(t, key, &format!("colors.{key}"), "des-k's color", &mut warn);
+        }
     }
 
     if let Some(t) = section(&top, "restore", &mut warn) {
@@ -1083,6 +1270,75 @@ fn boolean(t: &Table, key: &str, name: &str, default: bool, warn: &mut Vec<Strin
     }
 }
 
+/// A percent, 0 to 100; a whole number or a decimal (spec 0020 AC-8).
+fn percent(t: &Table, key: &str, name: &str, default: f64, warn: &mut Vec<String>) -> f64 {
+    let n = match t.get(key) {
+        None => return default,
+        Some(Value::Integer(n)) => *n as f64,
+        Some(Value::Float(n)) => *n,
+        Some(v) => {
+            warn.push(format!("{name}: expected a number, got a {}, using default {default}", v.type_str()));
+            return default;
+        }
+    };
+    if (0.0..=100.0).contains(&n) {
+        n
+    } else {
+        warn.push(format!("{name}: {n} is not between 0 and 100, using default {default}"));
+        default
+    }
+}
+
+/// `#RRGGBB` text as 0xRRGGBB, hex digits in either case; None when missing or bad (AC-11).
+fn color(t: &Table, key: &str, name: &str, fallback: &str, warn: &mut Vec<String>) -> Option<u32> {
+    let text = match t.get(key)? {
+        Value::String(text) => text,
+        v => {
+            warn.push(format!("{name}: expected a \"#RRGGBB\" color, got a {}, using {fallback}", v.type_str()));
+            return None;
+        }
+    };
+    let rgb = text.strip_prefix('#').filter(|h| h.len() == 6 && h.bytes().all(|b| b.is_ascii_hexdigit())).and_then(|h| u32::from_str_radix(h, 16).ok());
+    if rgb.is_none() {
+        warn.push(format!("{name}: \"{text}\" is not a \"#RRGGBB\" color, using {fallback}"));
+    }
+    rgb
+}
+
+/// Runs one of the readers above on a screen table's key; None when the key is missing or bad,
+/// so the default fills it in (spec 0020 AC-11).
+fn opt<T>(t: &Table, key: &str, warn: &mut Vec<String>, read: impl FnOnce(&mut Vec<String>) -> T) -> Option<T> {
+    if !t.contains_key(key) {
+        return None;
+    }
+    let n = warn.len();
+    let v = read(warn);
+    (warn.len() == n).then_some(v)
+}
+
+/// The `[indicator.screens."<id>"]` tables, over the default place `d`.
+fn screens(t: &Table, d: Pos, warn: &mut Vec<String>) -> BTreeMap<String, PosOverride> {
+    let Some(v) = t.get("screens") else { return BTreeMap::new() };
+    let Some(list) = v.as_table().filter(|l| l.values().all(Value::is_table)) else {
+        let got = if v.is_table() { "table with plain values in it" } else { v.type_str() };
+        warn.push(format!("indicator.screens: expected [indicator.screens.\"<screen id>\"] tables, got a {got}, ignored"));
+        return BTreeMap::new();
+    };
+    let mut out = BTreeMap::new();
+    for (id, st) in list.iter().filter_map(|(id, v)| Some((id, v.as_table()?))) {
+        let name = |k: &str| format!("indicator.screens.\"{id}\".{k}");
+        unknown_keys(st, &name(""), SCREEN_KEYS, warn);
+        let o = PosOverride {
+            spot: opt(st, "spot", warn, |w| choice(st, "spot", &name("spot"), SPOTS, d.spot, w)),
+            gap: opt(st, "gap", warn, |w| int(st, "gap", &name("gap"), 0, 400, d.gap as i64, w) as u32),
+            x: opt(st, "x", warn, |w| percent(st, "x", &name("x"), d.x, w)),
+            y: opt(st, "y", warn, |w| percent(st, "y", &name("y"), d.y, w)),
+        };
+        out.insert(id.clone(), o);
+    }
+    out
+}
+
 /// Bad entries are dropped one by one; a list left empty by that falls back to `default`.
 /// A list written empty, `[]`, is off: the settings page writes it when you remove the last
 /// combo (spec 0012 AC-8).
@@ -1269,13 +1525,18 @@ impl fmt::Display for Gesture {
 }
 
 impl Settings {
+    /// The indicator's place on screen `id`: its own table's keys over the default (AC-9).
+    pub fn indicator_pos_for(&self, id: &str) -> Pos {
+        self.indicator_screens.get(id).map_or(self.indicator_pos, |o| o.over(self.indicator_pos))
+    }
+
     /// Every setting as (name, value) in file order: the start log line, and the change log
     /// that compares two of these (spec 0012 AC-15).
     fn fields(&self) -> Vec<(&'static str, String)> {
         let list = |l: &[Combo]| format!("[{}]", l.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(", "));
         let word = |w: Option<&str>| w.unwrap_or("").to_string();
         let gestures = self.gestures.iter().map(|g| format!("{g}: {}", g.action)).collect::<Vec<_>>().join(", ");
-        vec![
+        let mut fields = vec![
             ("workspaces", self.workspaces.to_string()),
             ("copilot_as_right_ctrl", self.copilot_as_right_ctrl.to_string()),
             ("follow_activation", self.follow_activation.to_string()),
@@ -1298,6 +1559,15 @@ impl Settings {
             ("indicator.style", word(STYLES.iter().find(|(_, v)| *v == self.indicator_style).map(|(w, _)| *w))),
             ("indicator.hold_ms", self.hold_ms.to_string()),
             ("indicator.fade_ms", self.fade_ms.to_string()),
+            ("indicator.spot", word(SPOTS.iter().find(|(_, v)| *v == self.indicator_pos.spot).map(|(w, _)| *w))),
+            ("indicator.gap", self.indicator_pos.gap.to_string()),
+            ("indicator.x", self.indicator_pos.x.to_string()),
+            ("indicator.y", self.indicator_pos.y.to_string()),
+            ("indicator.screens", screens_text(&self.indicator_screens)),
+            ("colors.accent", match self.accent {
+                Accent::Windows => "windows".to_string(),
+                Accent::Rgb(c) => hex(c),
+            }),
             ("restore.enabled", self.restore_enabled.to_string()),
             ("restore.minutes", self.restore_minutes.to_string()),
             ("overview.animation", word(ANIMATIONS.iter().find(|(_, v)| *v == self.overview_animation).map(|(w, _)| *w))),
@@ -1308,8 +1578,31 @@ impl Settings {
             ("touchpad.swipe_mm", self.swipe_mm.to_string()),
             ("touchpad.twice_ms", self.twice_ms.to_string()),
             ("gestures", format!("[{gestures}]")),
-        ]
+        ];
+        // [colors] ws1 to ws9, named like the file's keys.
+        const WS_NAMES: [&str; 9] = ["colors.ws1", "colors.ws2", "colors.ws3", "colors.ws4", "colors.ws5", "colors.ws6", "colors.ws7", "colors.ws8", "colors.ws9"];
+        let at = fields.iter().position(|(k, _)| *k == "restore.enabled").unwrap_or(fields.len());
+        let ws = WS_NAMES.iter().zip(self.ws_colors).map(|(k, c)| (*k, c.map_or(String::new(), hex)));
+        fields.splice(at..at, ws);
+        fields
     }
+}
+
+/// `#RRGGBB`, upper case, as the settings page writes a color.
+pub fn hex(c: u32) -> String {
+    format!("#{c:06X}")
+}
+
+/// Every screen's own place on one line, for the change log: the screen tables vary in number,
+/// so they are one field.
+fn screens_text(screens: &BTreeMap<String, PosOverride>) -> String {
+    let one = |o: &PosOverride| {
+        let spot = o.spot.and_then(|s| SPOTS.iter().find(|(_, v)| *v == s)).map(|(w, _)| format!("spot={w}"));
+        let rest = [o.gap.map(|g| format!("gap={g}")), o.x.map(|x| format!("x={x}")), o.y.map(|y| format!("y={y}"))];
+        std::iter::once(spot).chain(rest).flatten().collect::<Vec<_>>().join(" ")
+    };
+    let all: Vec<String> = screens.iter().map(|(id, o)| format!("{id}: {}", one(o))).collect();
+    format!("[{}]", all.join(", "))
 }
 
 impl fmt::Display for Settings {
@@ -1323,6 +1616,29 @@ impl fmt::Display for Settings {
 mod tests {
     use super::*;
 
+    // Spec 0020: a screen's place is written as its own [indicator.screens."<id>"] table and
+    // read back; taking out its last key takes out the table, leaving no empty headers behind.
+    #[test]
+    fn screen_tables_come_and_go_whole() {
+        let at = |k: &str| vec!["indicator".to_string(), "screens".into(), "DEL-A1B2-12345".into(), k.into()];
+        let one = edit_text(DEFAULT_FILE, &Edit::At(at("spot"), "top-right".into())).unwrap();
+        assert!(one.contains("[indicator.screens.\"DEL-A1B2-12345\"]
+spot = \"top-right\""), "{one}");
+        assert!(!one.contains("[indicator.screens]"));
+        let (s, w) = parse(&one);
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(s.indicator_screens["DEL-A1B2-12345"].spot, Some(Spot::TopRight));
+        let two = edit_text(&one, &Edit::At(at("gap"), 40.into())).unwrap();
+        let back = edit_text(&two, &Edit::Remove(at("gap"))).unwrap();
+        assert_eq!(back, one);
+        let gone = edit_text(&one, &Edit::Remove(at("spot"))).unwrap();
+        assert_eq!(gone, DEFAULT_FILE);
+        let whole = edit_text(&two, &Edit::Remove(at("spot")[..3].to_vec())).unwrap();
+        assert_eq!(whole, DEFAULT_FILE);
+        let colors = edit_text(DEFAULT_FILE, &Edit::At(vec!["colors".into(), "ws2".into()], "#123456".into())).unwrap();
+        assert_eq!(parse(&colors).0.ws_colors[1], Some(0x123456));
+    }
+
     // The file des-k writes for you and the values it falls back to are two copies of the
     // defaults. If they drift, a fresh install behaves differently from a broken file.
     #[test]
@@ -1335,7 +1651,9 @@ mod tests {
         let (sc, ind, res) = (top["shortcuts"].as_table().unwrap(), top["indicator"].as_table().unwrap(), top["restore"].as_table().unwrap());
         assert!(TOP_KEYS.iter().all(|k| top.contains_key(*k)));
         assert!(SHORTCUT_KEYS.iter().all(|k| sc.contains_key(*k)));
-        assert!(INDICATOR_KEYS.iter().all(|k| ind.contains_key(*k)));
+        // Screen tables and workspace colors have no default to write; the file shows an example.
+        assert!(INDICATOR_KEYS.iter().filter(|k| **k != "screens").all(|k| ind.contains_key(*k)));
+        assert!(top["colors"].as_table().unwrap().contains_key("accent"));
         assert!(RESTORE_KEYS.iter().all(|k| res.contains_key(*k)));
         assert!(OVERVIEW_KEYS.iter().all(|k| top["overview"].as_table().unwrap().contains_key(*k)));
         assert!(TOUCHPAD_KEYS.iter().all(|k| top["touchpad"].as_table().unwrap().contains_key(*k)));
@@ -1895,6 +2213,74 @@ do = "previous"
         let mut unique = names.clone();
         unique.sort();
         unique.dedup();
-        assert_eq!((names.len(), unique.len()), (32, 32));
+        assert_eq!((names.len(), unique.len()), (47, 47));
+    }
+
+    // Spec 0020 AC-9: a screen's table changes only the keys it sets; the rest, and every screen
+    // without a table (or one not plugged in), follow [indicator].
+    #[test]
+    fn a_screen_table_overrides_only_its_own_keys() {
+        let text = "[indicator]
+spot = \"top-right\"
+gap = 10
+[indicator.screens.\"DEL-A1B2-1\"]
+spot = \"custom\"
+x = 80.5
+[indicator.screens.internal]
+gap = 0
+";
+        let (s, warn) = parse(text);
+        assert!(warn.is_empty(), "{warn:?}");
+        let d = Pos { spot: Spot::TopRight, gap: 10, x: 50.0, y: 50.0 };
+        assert_eq!(s.indicator_pos, d);
+        assert_eq!(s.indicator_pos_for("DEL-A1B2-1"), Pos { spot: Spot::Custom, x: 80.5, ..d });
+        assert_eq!(s.indicator_pos_for("internal"), Pos { gap: 0, ..d });
+        assert_eq!(s.indicator_pos_for("LG-unplugged"), d);
+    }
+
+    // AC-11: one bad value costs only that key, and in a screen table it falls back to the
+    // default's value rather than to center, so a typo never jumps the card across the screen.
+    #[test]
+    fn a_bad_place_or_color_resets_only_itself() {
+        let text = "[indicator]
+spot = \"middle\"
+x = 120
+gap = 24
+y = 10
+[indicator.screens.s1]
+spot = \"top\"
+gap = 900
+width = 3
+[colors]
+accent = \"#abc\"
+ws1 = \"#1e2a78\"
+ws3 = \"blue\"
+";
+        let (s, warn) = parse(text);
+        assert_eq!(s.indicator_pos, Pos { y: 10.0, ..Pos::default() });
+        assert_eq!(s.indicator_pos_for("s1"), Pos { spot: Spot::Top, y: 10.0, ..Pos::default() });
+        assert_eq!(s.accent, Accent::Windows);
+        assert_eq!(s.ws_colors[..3], [Some(0x1E2A78), None, None]);
+        let keys: Vec<&str> = warn.iter().map(|w| w.split(": ").next().unwrap()).collect();
+        assert_eq!(keys, ["indicator.spot", "indicator.x", "unknown key indicator.screens.\"s1\".width, ignored", "indicator.screens.\"s1\".gap", "colors.accent", "colors.ws3"]);
+        // Not tables at all: the whole screens key goes, the rest of [indicator] stays.
+        let (s, warn) = parse("[indicator]
+spot = \"left\"
+screens = 5
+");
+        assert_eq!((s.indicator_pos.spot, s.indicator_screens.len()), (Spot::Left, 0));
+        assert!(warn[0].starts_with("indicator.screens: expected"), "{warn:?}");
+    }
+
+    // AC-2: "windows" in any case follows Windows; a typed color is kept exactly.
+    #[test]
+    fn the_accent_is_windows_or_your_color() {
+        assert_eq!(parse("[colors]
+accent = \"Windows\"
+").0.accent, Accent::Windows);
+        assert_eq!(parse("[colors]
+accent = \"#E0457b\"
+").0.accent, Accent::Rgb(0xE0457B));
+        assert_eq!(hex(0xE0457B), "#E0457B");
     }
 }

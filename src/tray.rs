@@ -86,7 +86,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             install::WM_INSTALL => {
                 match install::unpack(wp, lp) {
                     Some((m, v)) => install_said(m, v),
-                    None => eprintln!("tray: an install message it cannot read ({:#x}, {:#x})", wp.0, lp.0),
+                    None => warn!("tray: an install message it cannot read ({:#x}, {:#x})", wp.0, lp.0),
                 }
                 LRESULT(0)
             }
@@ -116,13 +116,13 @@ pub fn init() {
                 // its restart otherwise (spec 0008). Only these two, nothing else.
                 for m in [WM_TRAY, TASKBAR_CREATED.get()] {
                     if let Err(e) = ChangeWindowMessageFilterEx(h, m, MSGFLT_ALLOW, None) {
-                        eprintln!("tray: message {m:#x} not let in from explorer: {e}");
+                        warn!("tray: message {m:#x} not let in from explorer: {e}");
                     }
                 }
                 WND.set(Some(h));
                 add(h);
             }
-            Err(e) => eprintln!("tray: window not created: {e}"),
+            Err(e) => warn!("tray: window not created: {e}"),
         }
     }
 }
@@ -153,13 +153,13 @@ fn add(hwnd: HWND) {
     unsafe {
         // At login explorer may not be ready yet; its TaskbarCreated brings us back here.
         if !Shell_NotifyIconW(NIM_ADD, &nid).as_bool() && !Shell_NotifyIconW(NIM_MODIFY, &nid).as_bool() {
-            return eprintln!("tray: icon not added");
+            return error!("tray: icon not added");
         }
         // Set again after every add: a restarted explorer forgets it. Version 4 tells a
         // keyboard open from a click (spec 0017 AC-TRY-8).
         nid.Anonymous.uVersion = NOTIFYICON_VERSION_4;
         if !Shell_NotifyIconW(NIM_SETVERSION, &nid).as_bool() {
-            eprintln!("tray: icon version 4 refused, the menu can't tell a keyboard open from a click");
+            warn!("tray: icon version 4 refused, the menu can't tell a keyboard open from a click");
         }
     }
 }
@@ -208,7 +208,7 @@ pub fn warn_if_broken() {
         return;
     }
     BROKEN.set(true);
-    eprintln!("hiding windows does not work: Windows refuses des-k's SetCloak call, most likely after an update changed it. Switching hides nothing until des-k is updated.");
+    warn!("hiding windows does not work: Windows refuses des-k's SetCloak call, most likely after an update changed it. Switching hides nothing until des-k is updated.");
     balloon(
         "des-k cannot hide windows",
         "A Windows update most likely changed what des-k uses to hide windows. Switching hides nothing until des-k is updated. The log says more.",
@@ -221,7 +221,7 @@ pub fn warn_if_broken() {
 /// screen. Never over the warning that hiding does not work: then the indicator and the log say it.
 pub fn screens_changed(lines: &[String]) {
     if BROKEN.get() {
-        return println!("tray: no balloon over the hiding warning: {}", lines.join("; "));
+        return info!("tray: no balloon over the hiding warning: {}", lines.join("; "));
     }
     balloon("Screens changed", &lines.join("\n"), false, None);
 }
@@ -247,7 +247,7 @@ fn balloon(title: &str, text: &str, warn: bool, click: Option<Click>) {
     copy(&mut nid.szInfo, text);
     unsafe {
         if !Shell_NotifyIconW(NIM_MODIFY, &nid).as_bool() {
-            eprintln!("tray: balloon {title:?} not shown");
+            warn!("tray: balloon {title:?} not shown");
         }
     }
 }
@@ -287,7 +287,7 @@ fn log_or_page(v: Version) -> Click {
 fn install_said(m: Msg, v: Version) {
     let Msg::Failed(f) = m else { return };
     if BROKEN.get() {
-        return println!("tray: no balloon over the hiding warning: the install of {v} failed ({f:?})");
+        return info!("tray: no balloon over the hiding warning: the install of {v} failed ({f:?})");
     }
     match f {
         InstallFail::SetupStopped => balloon("des-k was not updated", &format!("The update to {v} did not install. Click here to open the setup's log."), true, Some(log_or_page(v))),
@@ -304,7 +304,7 @@ pub fn installed(o: Outcome) {
         Outcome::NotUpdated(v) => ("des-k was not updated", format!("The update to {v} did not install. Click here to open the setup's log."), true, Some(log_or_page(v))),
     };
     if BROKEN.get() {
-        return println!("tray: no balloon over the hiding warning: {title}: {text}");
+        return info!("tray: no balloon over the hiding warning: {title}: {text}");
     }
     balloon(title, &text, warn, click);
 }
@@ -347,7 +347,7 @@ pub fn draw_icon() -> Option<HICON> {
         let icon = CreateIconIndirect(&info); // copies both bitmaps
         let _ = DeleteObject(color.into());
         let _ = DeleteObject(hmask.into());
-        icon.inspect_err(|e| eprintln!("tray: icon not drawn: {e}")).ok()
+        icon.inspect_err(|e| warn!("tray: icon not drawn: {e}")).ok()
     }
 }
 
@@ -413,7 +413,7 @@ pub fn act(id: Id) {
 /// as you can rewrite. Also takes a settings page like `ms-settings:devices-touchpad`.
 pub fn open(path: &Path) {
     if let Err(e) = unsafe { open_by_explorer(path) } {
-        eprintln!("tray: explorer did not open {} ({e}); open it yourself, or try again once explorer runs", path.display());
+        warn!("tray: explorer did not open {} ({e}); open it yourself, or try again once explorer runs", path.file_name().unwrap_or_default().display());
     }
 }
 

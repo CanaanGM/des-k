@@ -61,7 +61,7 @@ pub(crate) fn check(screens: Vec<(RECT, (i32, i32))>) {
     let spawned = std::thread::Builder::new().name("wallpaper".into()).spawn(move || {
         unsafe { let _ = CoInitializeEx(None, COINIT_MULTITHREADED); }
         if let Err(e) = read(&screens) {
-            eprintln!("wallpaper: not read ({e}), the tiles show the card color");
+            warn!("wallpaper: not read ({e}), the tiles show the card color");
             for (screen, _) in &screens {
                 store(*screen, None, Face::Card);
             }
@@ -70,7 +70,7 @@ pub(crate) fn check(screens: Vec<(RECT, (i32, i32))>) {
         BUSY.store(false, Ordering::Release);
     });
     if let Err(e) = spawned {
-        eprintln!("wallpaper: no thread to read it ({e})");
+        warn!("wallpaper: no thread to read it ({e})");
         BUSY.store(false, Ordering::Release);
     }
 }
@@ -147,7 +147,7 @@ fn read(screens: &[(RECT, (i32, i32))]) -> windows::core::Result<()> {
         match decode(&path, screen, all.unwrap_or(screen), fit, size, back) {
             Some(p) => store(screen, Some(key), Face::Picture(Arc::new(p))),
             None => {
-                eprintln!("wallpaper: {path} not decoded, its tiles show the background color");
+                warn!("wallpaper: {} not decoded, its tiles show the background color", std::path::Path::new(&path).file_name().unwrap_or_default().display());
                 plain(screen);
             }
         }

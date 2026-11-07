@@ -298,14 +298,14 @@ fn load() -> Option<File> {
         Ok(text) => {
             let (f, warn) = parse(&text);
             for w in warn {
-                eprintln!("touchpad.txt: {w}");
+                warn!("touchpad.txt: {w}");
             }
             Some(f)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => {
             // Not a first start: the box would open at every start otherwise.
-            eprintln!("touchpad.txt: cannot read it ({e}), so no saved values");
+            warn!("touchpad.txt: cannot read it ({e}), so no saved values");
             Some(File::default())
         }
     }
@@ -317,7 +317,7 @@ fn save(f: &File) -> bool {
     match crate::ws::write_new(&tmp, &format(f)).and_then(|()| std::fs::rename(&tmp, path())) {
         Ok(()) => true,
         Err(e) => {
-            eprintln!("touchpad.txt: cannot write it: {e}");
+            warn!("touchpad.txt: cannot write it: {e}");
             false
         }
     }
@@ -333,7 +333,7 @@ pub fn start() {
     }
     let off = windows_off();
     if !crate::settings::get().touchpad_enabled && off.is_ok() {
-        eprintln!(
+        warn!(
             "touchpad reading is off in settings.toml, but Windows' three and four finger gestures are set to Nothing, so they do nothing; set them back in Settings, Touchpad"
         );
     }
@@ -346,7 +346,7 @@ pub fn start() {
         Some(File { saved: Some(_), .. }) => "your values saved",
         Some(_) => "no values saved",
     };
-    println!("touchpad setup: {gestures}, {saved}");
+    info!("touchpad setup: {gestures}, {saved}");
 }
 
 /// An exit wrote your values back (the `restored` line). If that was earlier in this sign in,
@@ -358,19 +358,19 @@ fn after_write_back(f: &mut File) {
     match logon_time() {
         Ok(now) if now == t && equals_saved(&reads(), saved) => {
             if crate::settings::get().touchpad_enabled {
-                eprintln!(
+                warn!(
                     "Quit wrote your Windows gestures back earlier in this sign in; setting them off again. If you changed them in Settings since, every gesture now acts twice; press Give gestures back."
                 );
                 let failed = write_all(VALUES.map(|(_, off)| Some(off)));
                 if !failed.is_empty() {
-                    eprintln!("touchpad setup: could not set {} off again", names(&failed));
+                    warn!("touchpad setup: could not set {} off again", names(&failed));
                 }
             } else {
-                eprintln!("Windows' gestures come back at your next sign in; until then three and four finger gestures do nothing");
+                error!("Windows' gestures come back at your next sign in; until then three and four finger gestures do nothing");
             }
         }
         Ok(_) => {} // you signed in since, or changed them yourself
-        Err(e) => eprintln!("touchpad setup: cannot read this sign in's logon time ({e}), so the earlier write back is left as it is"),
+        Err(e) => warn!("touchpad setup: cannot read this sign in's logon time ({e}), so the earlier write back is left as it is"),
     }
 }
 
@@ -382,21 +382,21 @@ pub fn write_back() {
     let Some(mut f) = load() else { return };
     let Some(saved) = f.saved else { return };
     if let Err(why) = windows_off() {
-        println!("touchpad setup: nothing written back, Windows' gestures are not all off ({why})");
+        info!("touchpad setup: nothing written back, Windows' gestures are not all off ({why})");
         return;
     }
     let t = match logon_time() {
         Ok(t) => t,
-        Err(e) => return eprintln!("touchpad setup: nothing written back, cannot read this sign in's logon time ({e})"),
+        Err(e) => return error!("touchpad setup: nothing written back, cannot read this sign in's logon time ({e})"),
     };
     // First, so a crash partway leaves a line the next start can act on.
     f.restored = Some(t);
     if !save(&f) {
-        return eprintln!("touchpad setup: nothing written back, since touchpad.txt could not record it");
+        return error!("touchpad setup: nothing written back, since touchpad.txt could not record it");
     }
     match write_all(saved).as_slice() {
-        [] => println!("touchpad setup: wrote your Windows gesture values back; Windows uses them from your next sign in"),
-        failed => eprintln!("touchpad setup: could not write back {}", names(failed)),
+        [] => info!("touchpad setup: wrote your Windows gesture values back; Windows uses them from your next sign in"),
+        failed => error!("touchpad setup: could not write back {}", names(failed)),
     }
 }
 
@@ -427,9 +427,9 @@ pub fn use_gestures() {
             match to_saved(&reads) {
                 Ok(s) => {
                     f.saved = Some(s);
-                    println!("touchpad setup: your Windows gesture values saved");
+                    info!("touchpad setup: your Windows gesture values saved");
                 }
-                Err(why) => eprintln!("touchpad setup: your Windows gesture values not saved, {why}"),
+                Err(why) => warn!("touchpad setup: your Windows gesture values not saved, {why}"),
             }
         }
         save(&f); // also when nothing changed: the screen never opens on its own again
@@ -450,10 +450,10 @@ pub fn give_back() -> Option<GaveBack> {
         let cleared = if failed.is_empty() {
             f.saved = None;
             f.restored = None;
-            println!("touchpad setup: gave Windows its gestures back, from your next sign in");
+            info!("touchpad setup: gave Windows its gestures back, from your next sign in");
             save(&f)
         } else {
-            eprintln!("touchpad setup: could not give back {}, your values stay saved", names(&failed));
+            error!("touchpad setup: could not give back {}, your values stay saved", names(&failed));
             false
         };
         GaveBack { wrote, cleared }
