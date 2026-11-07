@@ -1,3 +1,35 @@
 // The exe's resources: its icon (res/make-icon.py draws it). Explorer, the Start menu entry,
 // Apps and the taskbar button of des-k's own windows all show it.
 1 ICON "des-k.ico"
+
+// Its version card, which Explorer's Details tab and Task Manager show; an unsigned exe with
+// none is one more thing Defender's model holds against it. build.rs passes the VER_ numbers
+// from Cargo.toml so the card never drifts from the release.
+1 VERSIONINFO
+FILEVERSION VER_MAJOR,VER_MINOR,VER_PATCH,0
+PRODUCTVERSION VER_MAJOR,VER_MINOR,VER_PATCH,0
+FILEFLAGSMASK 0x3F
+FILEFLAGS 0x0
+FILEOS 0x40004
+FILETYPE 0x1
+FILESUBTYPE 0x0
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "CanaanGM"
+            VALUE "FileDescription", "des-k, per monitor virtual desktops"
+            VALUE "FileVersion", VER_TEXT
+            VALUE "InternalName", "des-k"
+            VALUE "LegalCopyright", "GPL-3.0-or-later"
+            VALUE "OriginalFilename", "des-k.exe"
+            VALUE "ProductName", "des-k"
+            VALUE "ProductVersion", VER_TEXT
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
