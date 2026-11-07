@@ -16,14 +16,17 @@
 //   as WM_RECORDED (wparam = vk, lparam = modifier bits) (spec 0012 AC-7, spec 0017 AC-HNT-4).
 // - A watch: Windows silently removes a low level hook that answers too slowly, and then
 //   every shortcut goes to Windows. Raw input counts the keys too; keys it saw that the hook
-//   never did mean the hook is gone, and it is installed again.
+//   never did mean the hook is gone, and it is installed again. While one of des-k's own
+//   windows has focus, raw keyboard input is off: with it on, Windows skips this process's
+//   hook then, so Win+Tab over the overview opened Task View (tried 2026-11-07).
 use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 use windows::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, WPARAM},
-    System::LibraryLoader::GetModuleHandleW,
+    System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentProcessId},
     UI::{
-        Input::{KeyboardAndMouse::*, RAWINPUTDEVICE, RIDEV_INPUTSINK, RegisterRawInputDevices},
+        Accessibility::{HWINEVENTHOOK, SetWinEventHook},
+        Input::{KeyboardAndMouse::*, RAWINPUTDEVICE, RIDEV_INPUTSINK, RIDEV_REMOVE, RegisterRawInputDevices},
         WindowsAndMessaging::*,
     },
 };
@@ -94,6 +97,9 @@ thread_local! {
     static HOOK: Cell<Option<HHOOK>> = const { Cell::new(None) };
     static HOOK_CALLS: Cell<u32> = const { Cell::new(0) };
     static RAW_KEYS: Cell<u32> = const { Cell::new(0) };
+    // The watch window raw input goes to, and whether raw input is on now.
+    static WATCH: Cell<Option<HWND>> = const { Cell::new(None) };
+    static RAW_ON: Cell<bool> = const { Cell::new(false) };
 }
 
 const WATCH_CLASS: PCWSTR = w!("des-k-keys");
@@ -429,13 +435,43 @@ fn start_watch() {
             Ok(h) => h,
             Err(e) => return eprintln!("keyboard hook: no watch window, a hook Windows removes stays gone: {e}"),
         };
-        // INPUTSINK: keys arrive whatever window has focus. Keyboard: usage page 1, usage 6.
-        let rid = RAWINPUTDEVICE { usUsagePage: 0x01, usUsage: 0x06, dwFlags: RIDEV_INPUTSINK, hwndTarget: hwnd };
-        if let Err(e) = RegisterRawInputDevices(&[rid], size_of::<RAWINPUTDEVICE>() as u32) {
-            return eprintln!("keyboard hook: no raw input, a hook Windows removes stays gone: {e}");
+        WATCH.set(Some(hwnd));
+        raw(!ours(GetForegroundWindow()));
+        // Out of context, so it comes through this thread's message loop.
+        if SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, None, Some(on_foreground), 0, 0, WINEVENT_OUTOFCONTEXT).is_invalid() {
+            eprintln!("keyboard hook: no foreground hook, so Win+Tab over des-k's own windows goes to Windows");
         }
         SetTimer(Some(hwnd), WATCH_TIMER, WATCH_MS, None);
     }
+}
+
+fn ours(h: HWND) -> bool {
+    let mut pid = 0;
+    unsafe { GetWindowThreadProcessId(h, Some(&mut pid)) };
+    pid == unsafe { GetCurrentProcessId() }
+}
+
+/// Raw keyboard input on or off. Off, the watch counts no keys, so it never calls the hook gone.
+fn raw(on: bool) {
+    let Some(hwnd) = WATCH.get() else { return };
+    if RAW_ON.get() == on {
+        return;
+    }
+    // INPUTSINK: keys arrive whatever window has focus. Keyboard: usage page 1, usage 6.
+    let rid = if on {
+        RAWINPUTDEVICE { usUsagePage: 0x01, usUsage: 0x06, dwFlags: RIDEV_INPUTSINK, hwndTarget: hwnd }
+    } else {
+        RAWINPUTDEVICE { usUsagePage: 0x01, usUsage: 0x06, dwFlags: RIDEV_REMOVE, hwndTarget: HWND::default() }
+    };
+    match unsafe { RegisterRawInputDevices(&[rid], size_of::<RAWINPUTDEVICE>() as u32) } {
+        Ok(()) => RAW_ON.set(on),
+        Err(e) if on => eprintln!("keyboard hook: no raw input, a hook Windows removes stays gone: {e}"),
+        Err(e) => eprintln!("keyboard hook: raw input stays on, so des-k's own windows let Win+Tab through: {e}"),
+    }
+}
+
+unsafe extern "system" fn on_foreground(_: HWINEVENTHOOK, _: u32, h: HWND, _: i32, _: i32, _: u32, _: u32) {
+    raw(!ours(h));
 }
 
 pub fn spawn(main_thread: u32) {
