@@ -101,6 +101,10 @@ pub(crate) struct Node {
     pub(crate) greyed: bool,
     pub(crate) focusable: bool,
     pub(crate) focused: bool,
+    /// A switch: on or off, read as a toggle (the settings page).
+    pub(crate) toggled: Option<bool>,
+    /// A number or a choice: its value as painted, read only (the settings page).
+    pub(crate) value: Option<String>,
 }
 
 /// A window's tree: the root is the window itself. The window replaces it after each paint;
@@ -252,7 +256,7 @@ impl IRawElementProviderFragmentRoot_Impl for Root_Impl {
 }
 
 /// A node below the root, found again by its path on every call.
-#[implement(IRawElementProviderSimple, IRawElementProviderFragment, ISelectionItemProvider, ISelectionProvider)]
+#[implement(IRawElementProviderSimple, IRawElementProviderFragment, ISelectionItemProvider, ISelectionProvider, IToggleProvider, IValueProvider)]
 struct Elem {
     hwnd: HWND,
     tree: Tree,
@@ -271,9 +275,10 @@ impl IRawElementProviderSimple_Impl for Elem_Impl {
     }
 
     fn GetPatternProvider(&self, id: UIA_PATTERN_ID) -> Result<IUnknown> {
-        let (item, list) = at(&self.tree, &self.path, |n| (n.selected.is_some(), n.kids.iter().any(|k| k.selected.is_some())))?;
+        let (item, list, toggle, value) = at(&self.tree, &self.path, |n| (n.selected.is_some(), n.kids.iter().any(|k| k.selected.is_some()), n.toggled.is_some(), n.value.is_some()))?;
         let me: IRawElementProviderSimple = self.to_interface();
-        if (id == UIA_SelectionItemPatternId && item) || (id == UIA_SelectionPatternId && list) { me.cast() } else { Err(Error::empty()) }
+        let has = (id == UIA_SelectionItemPatternId && item) || (id == UIA_SelectionPatternId && list) || (id == UIA_TogglePatternId && toggle) || (id == UIA_ValuePatternId && value);
+        if has { me.cast() } else { Err(Error::empty()) }
     }
 
     fn GetPropertyValue(&self, id: UIA_PROPERTY_ID) -> Result<VARIANT> {
@@ -361,6 +366,32 @@ impl ISelectionItemProvider_Impl for Elem_Impl {
 
     fn SelectionContainer(&self) -> Result<IRawElementProviderSimple> {
         self.parent().cast()
+    }
+}
+
+/// A switch is the window's to flip (its own keys and clicks); UIA can only read it.
+impl IToggleProvider_Impl for Elem_Impl {
+    fn Toggle(&self) -> Result<()> {
+        Err(Error::from(HRESULT(UIA_E_INVALIDOPERATION as i32)))
+    }
+
+    fn ToggleState(&self) -> Result<ToggleState> {
+        at(&self.tree, &self.path, |n| if n.toggled == Some(true) { ToggleState_On } else { ToggleState_Off })
+    }
+}
+
+/// A value is read only to UIA: it changes through the window's own keys and clicks.
+impl IValueProvider_Impl for Elem_Impl {
+    fn SetValue(&self, _: &windows::core::PCWSTR) -> Result<()> {
+        Err(Error::from(HRESULT(UIA_E_INVALIDOPERATION as i32)))
+    }
+
+    fn Value(&self) -> Result<BSTR> {
+        at(&self.tree, &self.path, |n| BSTR::from(n.value.as_deref().unwrap_or("")))
+    }
+
+    fn IsReadOnly(&self) -> Result<BOOL> {
+        Ok(BOOL(1))
     }
 }
 

@@ -1,4 +1,4 @@
-# Verify: Look B screens · spec 0017 · updated 2026-11-07 (slice 4)
+# Verify: Look B screens · spec 0017 · updated 2026-11-07 (slice 5)
 _Steps derived from spec 0017 acceptance criteria. `/check verify` runs these; `/test` locks the durable ones. Each slice adds its own section._
 
 ## Slice 1: indicator and the shared layer
@@ -171,7 +171,42 @@ Same build and start as slice 1. For the keyboard steps, Win B puts focus on the
 - [ ] Quit's line: Windows' gestures off with values saved → "…return at your next sign in"; none saved → "…no gestures until you turn Windows' on" → AC-TRY-5
 - [ ] Hints rows: every list and set in `[shortcuts]` and every `[[gesture]]` rule shows as the file has it → AC-HNT-3
 
+## Slice 5: settings page
+
+Built to `pdesk-design/restart/settings-r3.html` (r2.1) with the motion rows of `settings-r7.html` (handoff `des-k-motion-rows` revision 2, approved 2026-11-07). Run the build as in slice 1.
+
+### UI / manual
+- [ ] Tray › Settings with the mouse on each screen → opens there, 1040 wide; drag it wider → the column stops at 1000; it never goes narrower than 1040 → AC-SET-1
+- [ ] Side list: Workspaces, Shortcuts, Indicator, Restore, Overview, Motion, Touchpad; Welcome opens the welcome screen; Open settings.toml opens the file → AC-SET-2
+- [ ] Tiles: + adds a workspace on every screen; point at a last tile → × appears with a note listing what moves per screen, an unplugged one included; × removes one → AC-SET-3
+- [ ] Tab to the tiles: Right adds, Left and Delete remove; hold Delete → only one goes → AC-SET-3, spec 0012 AC-16
+- [ ] Indicator stays to 800 → "Default: 550 ms. Reset" in its caption; Reset puts 550 back. At 6 workspaces, point at Reset → the note says it removes 5 and 6 → AC-SET-3
+- [ ] Shortcuts: Open overview shows Win Tab with "Taken from Windows"; choose Windows → Win Tab goes and the caption says it is Windows' again; choose des-k → back → AC-SET-4
+- [ ] Add a key to Find a window, press Win Tab → the clash note, Cancel focused; Move it here → Open overview says Win Tab goes to "Find a window", its des-k / Windows is greyed → AC-SET-4
+- [ ] Open shortcut hints: Set key records one, and that key opens the hints window → AC-SET-4
+- [ ] In settings.toml set `hold_ms = "x"` → a note in the Indicator stays row with des-k's log line and a plain title, Indicator shows 1 in the side list; add `workspace = 3` → Notes appears with "“workspace” isn't a setting, so des-k skips it" → AC-SET-5
+- [ ] Touchpad: with Windows' gestures on, then off, then reading off → each note and row state; Open Windows Settings opens Settings › Touchpad; Give back → its result note, the same one the welcome screen shows → AC-SET-6
+- [ ] Indicator off → Style and Show greyed; on → the preview draws Card, then Dots, for the page's screen; Show puts the real one up → AC-SET-7
+- [ ] Overview fades for greyed with "Not in use: Overview animation is None"; choose Fade → it works, − and + step 50 ms; turn Skip animations on → greyed again with both reasons; the Skip animations link scrolls to Motion and focuses the switch → AC-SET-8, AC-11
+- [ ] Skip animations on → Indicator fades out greyed, its time line shows no fade, every Motion lane says At once; set the indicator fade to 1500 → the chart's axis runs to 2000 ms → AC-11
+- [ ] Set `fastest = "yes"` by hand → a note in the Skip animations row, Motion shows 1; Reset writes false → AC-11, AC-SET-5
+- [ ] Break settings.toml (a line with no `=`) → the read only banner, nothing changes on a click, links still scroll → spec 0012 AC-14
+- [ ] Light, dark, Aquatic: compare with `captures/sr3-*` and `sr7-B-*`; switch Windows' mode with the page open → it repaints within 1 s → AC-1, AC-2, AC-SET-9
+- [ ] Narrator: Tab and Up / Down through the page → a switch reads as a toggle with on or off, a number with its value, a greyed one as unavailable with its reason, the Motion chart as one sentence, Reset and the chart's links as links → AC-SET-10, AC-5
+- [ ] Keyboard: one stop per row; Left / Right pick des-k or Windows on a shortcut row; Enter records a new key; Delete removes its last key; Esc closes a menu, then Cancel on a clash, then a banner, then the page → spec 0012 AC-16
+- [ ] A 150% and a 100% screen → sharp at each, and resizing at 150% keeps it sharp (spec "check on the real machine") → AC-SET-1, AC-4
+
+### Commands
+- [ ] `cargo test` → all pass, including `greyed_rows_name_every_reason`, `problems_get_plain_titles`, `problems_have_a_home`, `windows_key_first_maps_back_to_the_file`, `a_taken_windows_key_names_its_holder`, `hand_edits_read_in_the_page_words`, `the_menu_offers_every_action_once`, `every_row_round_trips_through_the_file` → AC-SET-4, AC-SET-5, AC-SET-8
+- [ ] `cargo test render_settings -- --ignored` → `target/settings/` holds 9 states in light, dark, Aquatic and light 150%; compare with the captures above → AC-1
+
+### Value sourcing
+- [ ] Screen names: two screens of one model → "#1" and "#2", left to right, in the rows and the removal note → AC-SET-3
+- [ ] Workspace numbers: switch on one screen → within 1 s its row's ringed tile and its picture's number move → AC-SET-3
+- [ ] The preview's screen: drag the page to the other screen → the preview names that screen and its workspace → AC-SET-7
+
 ## Acceptance-criteria coverage
+- Slice 5: AC-SET-1 to AC-SET-10 the settings page steps · AC-11 its motion rows · AC-1 its render step · AC-2, AC-4, AC-5 its theme, scaling and Narrator steps
 - Slice 4: AC-TRY-1 to AC-TRY-11 the tray menu steps · AC-HNT-1 to AC-HNT-8 the hints steps · AC-1 their render step · AC-2, AC-4, AC-5 their theme, scaling and Narrator steps
 - Slice 3: AC-OVR-1 to AC-OVR-11 the overview steps · AC-1 its render step · AC-2, AC-4, AC-5, AC-6, AC-7, AC-8 its theme, scaling, Narrator, fastest, fade time and speed steps
 - Slice 2: AC-FND-1 to AC-FND-9 the finder steps · AC-1 its render step · AC-2, AC-4, AC-5 its theme, scaling and Narrator steps

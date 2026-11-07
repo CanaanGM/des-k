@@ -103,6 +103,13 @@ pub(crate) struct B {
     pub(crate) held: u32,
     /// des-k's mark, four squares: top left, top right, bottom left, bottom right.
     pub(crate) mark: [u32; 4],
+    /// A drawn screen's bezel and its stand (the settings page's and first run's pictures).
+    pub(crate) bez: u32,
+    pub(crate) stand: u32,
+    /// A link in a caption, like Reset: the purple, lighter on dark.
+    pub(crate) link: u32,
+    /// A chart's grid lines (the settings page's Motion).
+    pub(crate) grid: u32,
 }
 
 /// The mark's colors, the tray icon's (approved with the first run).
@@ -136,6 +143,10 @@ const B_LIGHT: B = B {
     alpha: 0.92,
     held: 0xF1E8FB,
     mark: MARK,
+    bez: 0x3A3A3A,
+    stand: 0xC8C8C8,
+    link: 0x8E3FD9,
+    grid: 0xD0D0D0,
 };
 
 const B_DARK: B = B {
@@ -163,6 +174,10 @@ const B_DARK: B = B {
     alpha: 0.92,
     held: 0x3B2A55,
     mark: MARK,
+    bez: 0x0A0A0A,
+    stand: 0x454545,
+    link: 0xC9A5F0,
+    grid: 0x4A4A4A,
 };
 
 pub(crate) const DARK: Theme = Theme {
@@ -295,6 +310,10 @@ pub(crate) fn high_contrast(sys: [u32; 5]) -> Theme {
             alpha: 1.0,
             held: hl_fg,
             mark: [fg; 4],
+            bez: fg,
+            stand: fg,
+            link: hl,
+            grid: fg,
         },
     }
 }
@@ -753,38 +772,54 @@ impl<'a> Canvas<'a> {
     /// Wrapped text from runs (text, font, color) that flow on; breaks only at spaces.
     /// Returns its height.
     pub(crate) fn para(&self, x: f32, y: f32, w: f32, lh: f32, runs: &[(&str, F, u32)]) -> f32 {
+        self.para_boxes(x, y, w, lh, runs).0
+    }
+
+    /// `para`, also giving where each run landed: one box per line it spans, so a link inside
+    /// a caption can be clicked and ringed (the settings page's Reset).
+    pub(crate) fn para_boxes(&self, x: f32, y: f32, w: f32, lh: f32, runs: &[(&str, F, u32)]) -> (f32, Vec<Vec<Bx>>) {
         // Words glued to the one before (no space between) never break from it.
-        let mut words: Vec<(bool, Vec<Run>)> = vec![];
+        let mut words: Vec<(bool, Vec<(usize, Run)>)> = vec![];
         let mut space = false;
-        for &(text, f, c) in runs {
+        for (r, &(text, f, c)) in runs.iter().enumerate() {
             for (i, piece) in text.split(' ').enumerate() {
                 space |= i > 0;
                 if piece.is_empty() {
                     continue;
                 }
                 match words.last_mut() {
-                    Some(last) if !space => last.1.push((piece, f, c)),
-                    _ => words.push((space && !words.is_empty(), vec![(piece, f, c)])),
+                    Some(last) if !space => last.1.push((r, (piece, f, c))),
+                    _ => words.push((space && !words.is_empty(), vec![(r, (piece, f, c))])),
                 }
                 space = false;
             }
         }
+        let mut boxes: Vec<Vec<Bx>> = vec![vec![]; runs.len()];
         let (mut line, mut cx) = (0.0, 0.0);
         for (space, pieces) in words {
-            let ww: f32 = pieces.iter().map(|(t, f, _)| self.width(t, *f)).sum();
-            let sw = if space { self.width(" ", pieces[0].1) } else { 0.0 };
+            let ww: f32 = pieces.iter().map(|(_, (t, f, _))| self.width(t, *f)).sum();
+            let sw = if space { self.width(" ", pieces[0].1.1) } else { 0.0 };
             if cx > 0.0 && cx + sw + ww > w + 0.01 {
                 line += 1.0;
                 cx = 0.0;
             } else if cx > 0.0 {
+                // A space inside one run belongs to it, so a two word link is one box.
+                if let Some(b) = boxes[pieces[0].0].last_mut().filter(|b| b.1 == y + line * lh) {
+                    b.2 += sw;
+                }
                 cx += sw;
             }
-            for (t, f, c) in pieces {
+            for (r, (t, f, c)) in pieces {
                 self.text(x + cx, y + line * lh, lh, t, f, c);
-                cx += self.width(t, f);
+                let tw = self.width(t, f);
+                match boxes[r].last_mut() {
+                    Some(b) if b.1 == y + line * lh && (b.0 + b.2 - (x + cx)).abs() < 0.01 => b.2 += tw,
+                    _ => boxes[r].push((x + cx, y + line * lh, tw, lh)),
+                }
+                cx += tw;
             }
         }
-        (line + 1.0) * lh
+        ((line + 1.0) * lh, boxes)
     }
 
     fn brush(&self, argb: u32) -> *mut gp::GpBrush {

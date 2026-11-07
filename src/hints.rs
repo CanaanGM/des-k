@@ -162,11 +162,11 @@ fn hwnd() -> Option<HWND> {
 
 // ---- What it reads ----
 
-fn caps(c: &Combo) -> Vec<String> {
+pub(crate) fn caps(c: &Combo) -> Vec<String> {
     c.to_string().split('+').map(String::from).collect()
 }
 
-fn mods_caps(mods: u8) -> Vec<String> {
+pub(crate) fn mods_caps(mods: u8) -> Vec<String> {
     settings::mods_text(Some(mods)).split('+').map(String::from).collect()
 }
 
@@ -192,7 +192,7 @@ fn pair(previous: &[Combo], next: &[Combo], (both, prev_title, next_title): (&st
 }
 
 /// An action as the hints name it, with the first run's full names.
-fn name(a: Action) -> String {
+pub(crate) fn name(a: Action) -> String {
     match a {
         Action::Switch(d) => if d < 0 { "Previous workspace" } else { "Next workspace" }.into(),
         Action::Send(d, follow) => format!("Send window to {} workspace{}", if d < 0 { "previous" } else { "next" }, if follow { "" } else { " and stay" }),

@@ -829,7 +829,8 @@ pub fn show(first: bool) {
     }
 }
 
-fn give() {
+/// Give back, from here or the settings page: one result both screens show (spec 0017 AC-SET-6).
+pub(crate) fn give() {
     if let Some(b) = setup::give_back() {
         LAST.set(Some(b));
     }

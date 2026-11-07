@@ -1116,30 +1116,57 @@ fn in_order(mut all: Vec<(String, RECT)>) -> Vec<String> {
 /// its device name (spec 0012 AC-6). The windows on screen count for the workspace shown.
 fn moves(s: &State, count: usize) -> Vec<String> {
     let order = screen_order();
+    let mut out = Vec::new();
+    for m in moved(s, count).into_iter().filter(|m| m.windows > 0) {
+        let name = m.device.and_then(|d| order.iter().position(|o| *o == d)).map_or(m.name, |i| format!("Screen {}", i + 1));
+        let from: Vec<String> = m.from.iter().map(|ws| (ws + 1).to_string()).collect();
+        let (win, go) = if m.windows == 1 { ("window", "moves") } else { ("windows", "move") };
+        out.push(format!("{name}: {} {win} from {} {go} to {count}", m.windows, from.join(", ")));
+    }
+    out
+}
+
+/// What one screen would move if the count went down (spec 0017 AC-SET-3): every screen, those
+/// with nothing to move too, plugged in ones first in screen order. An unplugged screen counts
+/// its away windows, which are hidden on another screen, so that screen leaves them out.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Moved {
+    pub name: String, // as `label` gives it
+    pub device: Option<String>,
+    pub unplugged: bool,
+    pub windows: usize,
+    pub from: Vec<usize>, // the removed workspaces with windows, 0 based
+}
+
+fn moved(s: &State, count: usize) -> Vec<Moved> {
+    let order = screen_order();
     let at = |m: &Monitor| m.device.as_ref().and_then(|d| order.iter().position(|o| o == d));
     let mut ids: Vec<&String> = s.monitors.keys().collect();
     ids.sort_by_key(|id| (at(&s.monitors[*id]).unwrap_or(usize::MAX), id.to_string()));
+    let live = |raw: isize| unsafe { IsWindow(Some(HWND(raw as *mut _))) }.as_bool();
     let mut out = Vec::new();
     for id in ids {
         let m = &s.monitors[id];
-        let (mut from, mut n) = (Vec::new(), 0);
-        for ws in count..m.hidden.len() {
-            let k = if ws == m.active {
-                mon_of(s, id).map_or(0, |mon| app_windows_on(mon).len())
+        let unplugged = !s.present.iter().any(|p| &p.id == id);
+        let mut per = vec![0; m.hidden.len().max(count)];
+        for (ws, list) in m.hidden.iter().enumerate() {
+            per[ws] = if ws == m.active && !unplugged {
+                mon_of(s, id).map_or(0, |mon| app_windows_on(mon).iter().filter(|h| !s.away.contains_key(&(h.0 as isize))).count())
             } else {
-                m.hidden[ws].iter().filter(|&&h| unsafe { IsWindow(Some(HWND(h as *mut _))) }.as_bool()).count()
+                list.iter().filter(|&&raw| live(raw) && !s.away.contains_key(&raw)).count()
             };
-            if k > 0 {
-                from.push((ws + 1).to_string());
-                n += k;
+        }
+        for (raw, a) in &s.away {
+            if &a.home == id && live(*raw) {
+                if a.ws >= per.len() {
+                    per.resize(a.ws + 1, 0);
+                }
+                per[a.ws] += 1;
             }
         }
-        if n == 0 {
-            continue;
-        }
-        let name = at(m).map_or(m.name.clone(), |i| format!("Screen {}", i + 1));
-        let (win, go) = if n == 1 { ("window", "moves") } else { ("windows", "move") };
-        out.push(format!("{name}: {n} {win} from {} {go} to {count}", from.join(", ")));
+        let from: Vec<usize> = (count..per.len()).filter(|&ws| per[ws] > 0).collect();
+        let windows = from.iter().map(|&ws| per[ws]).sum();
+        out.push(Moved { name: label(s, id), device: m.device.clone(), unplugged, windows, from });
     }
     out
 }
@@ -1272,8 +1299,17 @@ fn display_names() -> HashMap<String, String> {
 pub struct View {
     pub active: Vec<(String, usize)>,       // device and the workspace it shows
     pub windows: Vec<(String, usize, RECT)>, // device, workspace, where it sits
-    pub removals: Vec<Vec<String>>,          // removal's lines, one list per count asked
-    pub waiting: Vec<(String, String, usize)>, // screens not plugged in: id, name, windows waiting (spec 0016 AC-9)
+    pub names: Vec<(String, String)>,       // device and its name, as `label` gives it (spec 0017)
+    pub removals: Vec<Vec<Moved>>,          // what each screen moves, one list per count asked
+    pub waiting: Vec<Waiting>,              // screens not plugged in (spec 0016 AC-9)
+}
+
+/// A remembered screen not plugged in, with its away windows per workspace (spec 0017 AC-SET-3).
+#[derive(Clone, PartialEq, Default, Debug)]
+pub struct Waiting {
+    pub id: String,
+    pub name: String,
+    pub windows: Vec<usize>, // per workspace, 0 based
 }
 
 /// The layout now, or None while a switch holds it: the page can be asked to refresh from
@@ -1286,19 +1322,29 @@ pub fn view(counts: &[usize]) -> Option<View> {
     };
     let windows = windows_in(&mut s).into_iter().map(|p| (p.device, p.workspace, real_rect(p.hwnd))).collect();
     let active = s.monitors.values().filter_map(|m| Some((m.device.clone()?, m.active))).collect();
-    let removals = counts.iter().map(|&n| moves(&s, n)).collect();
-    Some(View { active, windows, removals, waiting: waiting(&s) })
+    let names = s.present.iter().map(|p| (p.device.clone(), label(&s, &p.id))).collect();
+    let removals = counts.iter().map(|&n| moved(&s, n)).collect();
+    Some(View { active, windows, names, removals, waiting: waiting(&s) })
 }
 
-/// Every remembered screen not plugged in, by name: its id, name and how many windows wait for it.
-fn waiting(s: &State) -> Vec<(String, String, usize)> {
-    let mut out: Vec<(String, String, usize)> = s
+/// Every remembered screen not plugged in, by name, with how many windows wait for it on each workspace.
+fn waiting(s: &State) -> Vec<Waiting> {
+    let mut out: Vec<Waiting> = s
         .monitors
         .iter()
         .filter(|(id, m)| m.device.is_none() && !s.present.iter().any(|p| &p.id == *id))
-        .map(|(id, m)| (id.clone(), m.name.clone(), s.away.values().filter(|a| &a.home == id).count()))
+        .map(|(id, m)| {
+            let mut windows = vec![0; m.hidden.len()];
+            for a in s.away.values().filter(|a| &a.home == id) {
+                if a.ws >= windows.len() {
+                    windows.resize(a.ws + 1, 0);
+                }
+                windows[a.ws] += 1;
+            }
+            Waiting { id: id.clone(), name: m.name.clone(), windows }
+        })
         .collect();
-    out.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+    out.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
     out
 }
 
