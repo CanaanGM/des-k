@@ -481,7 +481,7 @@ fn describe(exe: &str) -> Option<String> {
             VerQueryValueW(data.as_ptr().cast(), &HSTRING::from(sub), &mut p, &mut len).as_bool().then_some((p as *const u16, len as usize))
         };
         let mut langs: Vec<(u16, u16)> = match query(r"\VarFileInfo\Translation") {
-            Some((p, bytes)) => std::slice::from_raw_parts(p, bytes / 2).chunks_exact(2).map(|c| (c[0], c[1])).collect(),
+            Some((p, bytes)) => std::slice::from_raw_parts(p, bytes / 2).as_chunks::<2>().0.iter().map(|c| (c[0], c[1])).collect(),
             None => vec![],
         };
         langs.push((0x0409, 0x04B0));
