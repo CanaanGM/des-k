@@ -370,7 +370,7 @@ impl Screen {
     /// the chosen one selected, and the bar's words.
     fn node(&self, chosen: Option<HWND>, bar: Option<Bar>) -> Node {
         let text = |name: String, rect: RECT| Node { role: UIA_TextControlTypeId, name, rect, ..Node::default() };
-        let item = |name: String, rect: RECT, selected: bool| Node { role: UIA_ListItemControlTypeId, name, rect, selected: Some(selected), kids: vec![] };
+        let item = |name: String, rect: RECT, selected: bool| Node { role: UIA_ListItemControlTypeId, name, rect, selected: Some(selected), ..Node::default() };
         let tiles = (self.tiles.iter().enumerate())
             .map(|(i, t)| {
                 let how = if i == self.shown { "shown" } else { "not shown" };
@@ -378,9 +378,9 @@ impl Screen {
             })
             .collect();
         let band = RECT { left: 0, top: 0, right: self.size().0, bottom: self.band_h() };
-        let mut kids = vec![Node { role: UIA_ListControlTypeId, name: "Workspaces".into(), rect: band, selected: None, kids: tiles }];
+        let mut kids = vec![Node { role: UIA_ListControlTypeId, name: "Workspaces".into(), rect: band, selected: None, kids: tiles, ..Node::default() }];
         let windows = self.slots.iter().map(|s| item(window_words(s, &finder::program(s.hwnd), chosen == Some(s.hwnd)), s.rect, chosen == Some(s.hwnd))).collect();
-        kids.push(Node { role: UIA_ListControlTypeId, name: "Windows".into(), rect: self.spread_area(), selected: None, kids: windows });
+        kids.push(Node { role: UIA_ListControlTypeId, name: "Windows".into(), rect: self.spread_area(), selected: None, kids: windows, ..Node::default() });
         if self.slots.is_empty() {
             kids.push(text("No windows".into(), self.spread_area()));
         }
@@ -388,7 +388,7 @@ impl Screen {
             kids.push(text(bar_words(self, b), self.bar_strip()));
         }
         let (w, h) = self.size();
-        Node { role: UIA_PaneControlTypeId, name: "Overview".into(), rect: RECT { left: 0, top: 0, right: w, bottom: h }, selected: None, kids }
+        Node { role: UIA_PaneControlTypeId, name: "Overview".into(), rect: RECT { left: 0, top: 0, right: w, bottom: h }, selected: None, kids, ..Node::default() }
     }
 }
 

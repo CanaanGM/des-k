@@ -168,6 +168,7 @@ pub struct Settings {
     pub finder: Vec<Combo>, // opens the window finder (spec 0007)
     pub overview: Vec<Combo>, // opens the workspace overview (spec 0010)
     pub pin: Vec<Combo>,      // keeps the focused window on every workspace (spec 0014)
+    pub hints: Vec<Combo>,    // opens the Shortcut hints window (spec 0017); none by default
     pub indicator_enabled: bool,
     pub indicator_style: Style,
     pub hold_ms: u32,
@@ -223,6 +224,7 @@ impl Default for Settings {
             finder: vec![Combo { mods: WIN, vk: b'F' as u16 }],
             overview: vec![Combo { mods: WIN, vk: VK_TAB.0 }],
             pin: vec![Combo { mods: WIN | CTRL, vk: b'U' as u16 }],
+            hints: vec![],
             indicator_enabled: true,
             indicator_style: Style::Card,
             hold_ms: 550,
@@ -268,6 +270,8 @@ finder = ["Win+F"]
 overview = ["Win+Tab"]
 # Keep the focused window on every workspace of its screen; press again to undo.
 pin = ["Win+Ctrl+U"]
+# Opens the Shortcut hints window: every des-k shortcut and gesture, as set now. [] is no key.
+hints = []
 
 [indicator]
 enabled = true
@@ -352,7 +356,7 @@ do = "notifications"
 "#;
 
 const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activation", "fastest", "shortcuts", "indicator", "restore", "overview", "touchpad", "gesture"];
-const SHORTCUT_KEYS: &[&str] = &["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "jump", "send_to", "send_to_stay", "finder", "overview", "pin"];
+const SHORTCUT_KEYS: &[&str] = &["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "jump", "send_to", "send_to_stay", "finder", "overview", "pin", "hints"];
 const INDICATOR_KEYS: &[&str] = &["enabled", "style", "hold_ms", "fade_ms"];
 const RESTORE_KEYS: &[&str] = &["enabled", "minutes"];
 const OVERVIEW_KEYS: &[&str] = &["animation", "labels", "live", "fade_ms"];
@@ -565,6 +569,7 @@ fn apply(old: &Settings, changes: &[Change]) -> Vec<String> {
         crate::ui::transitions_all();
     }
     crate::welcome::refresh();
+    crate::hints::refresh();
     moves
 }
 
@@ -727,9 +732,9 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
         } else {
             (s.previous, s.next) = (previous, next);
         }
-        // Switch keys always win: a send list (or the finder, the overview, pin) sharing a combo with
-        // them, or with an earlier list still on, is turned off (an empty list never matches)
-        // (specs 0004, 0007, 0010, 0014).
+        // Switch keys always win: a send list (or the finder, the overview, pin, hints) sharing a combo
+        // with them, or with an earlier list still on, is turned off (an empty list never matches)
+        // (specs 0004, 0007, 0010, 0014, 0017).
         let mut taken = vec![("previous", s.previous.clone()), ("next", s.next.clone())];
         let sends = [
             ("send_previous", &mut s.send_previous),
@@ -739,6 +744,7 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
             ("finder", &mut s.finder),
             ("overview", &mut s.overview),
             ("pin", &mut s.pin),
+            ("hints", &mut s.hints),
         ];
         for (key, list) in sends {
             let got = combos(t, key, &format!("shortcuts.{key}"), list, &mut warn);
@@ -852,7 +858,7 @@ pub fn savable(vk: u16) -> bool {
 }
 
 /// The shortcut lists in the order the hook tries them, then the digit sets (keys::shortcut).
-pub const LISTS: [&str; 9] = ["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "finder", "overview", "pin"];
+pub const LISTS: [&str; 10] = ["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "finder", "overview", "pin", "hints"];
 pub const SETS: [&str; 3] = ["jump", "send_to", "send_to_stay"];
 
 /// Who already uses a combo the page is about to save (spec 0012 AC-9).
@@ -881,6 +887,7 @@ impl Settings {
             "finder" => &self.finder,
             "overview" => &self.overview,
             "pin" => &self.pin,
+            "hints" => &self.hints,
             _ => &[],
         }
     }
@@ -1280,6 +1287,7 @@ impl Settings {
             ("shortcuts.finder", list(&self.finder)),
             ("shortcuts.overview", list(&self.overview)),
             ("shortcuts.pin", list(&self.pin)),
+            ("shortcuts.hints", list(&self.hints)),
             ("indicator.enabled", self.indicator_enabled.to_string()),
             ("indicator.style", word(STYLES.iter().find(|(_, v)| *v == self.indicator_style).map(|(w, _)| *w))),
             ("indicator.hold_ms", self.hold_ms.to_string()),
@@ -1378,6 +1386,25 @@ mod tests {
         assert_eq!((s.overview_animation, s.overview_fade_ms), (Animation::Fade, 250));
         assert_eq!(warn.len(), 1, "{warn:?}");
         assert!(warn[0].starts_with("overview.fade_ms:"), "{warn:?}");
+    }
+
+    // The hints window has no key until you set one (your words: "nothing by default"), a key
+    // you set must stick, and one that another shortcut already has must not steal it: the
+    // earlier list keeps it and only hints turns off (spec 0017 AC-HNT-4).
+    #[test]
+    fn the_hints_key_is_off_by_default_and_loses_a_clash() {
+        assert!(parse("").0.hints.is_empty());
+        let (s, warn) = parse("[shortcuts]
+hints = [\"Win+Ctrl+H\"]
+");
+        assert_eq!(s.hints, [Combo { mods: WIN | CTRL, vk: b'H' as u16 }]);
+        assert!(warn.is_empty(), "{warn:?}");
+        let (s, warn) = parse("[shortcuts]
+hints = [\"Win+F\"]
+");
+        assert_eq!((s.hints.is_empty(), s.finder.clone()), (true, Settings::default().finder));
+        assert_eq!(warn, ["shortcuts: Win+F is in both finder and hints, hints turned off"]);
+        assert_eq!(s.combo_owner("hints", Combo { mods: WIN, vk: b'F' as u16 }), Some(Owner::List("finder")));
     }
 
     // Off must stay the default (the overview opens at once unless you ask), a chosen style
@@ -1837,6 +1864,6 @@ do = "previous"
         let mut unique = names.clone();
         unique.sort();
         unique.dedup();
-        assert_eq!((names.len(), unique.len()), (30, 30));
+        assert_eq!((names.len(), unique.len()), (31, 31));
     }
 }

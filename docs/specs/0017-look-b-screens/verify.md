@@ -1,4 +1,4 @@
-# Verify: Look B screens · spec 0017 · updated 2026-11-06 (slice 3)
+# Verify: Look B screens · spec 0017 · updated 2026-11-07 (slice 4)
 _Steps derived from spec 0017 acceptance criteria. `/check verify` runs these; `/test` locks the durable ones. Each slice adds its own section._
 
 ## Slice 1: indicator and the shared layer
@@ -123,7 +123,56 @@ Same build and start as slice 1. Turn on `[overview] animation = "fade"` for the
 - [ ] Workspace chips: workspace 2's chip is #DDB43C, full on the shown tile, soft on the others → index tokens
 - [ ] Wallpaper: set Fit, then Fill, then Span on two screens → each tile matches its screen's desktop → AC-OVR-3
 - [ ] Narrator names: the words read equal the painted title and the app name the finder shows → AC-OVR-11
+## Slice 4: tray menu and Shortcut hints
+
+Same build and start as slice 1. For the keyboard steps, Win B puts focus on the taskbar's corner; arrows reach des-k's icon.
+
+### UI / manual: tray menu
+- [ ] Left click des-k's icon, then right click it → each opens des-k's own menu by the icon, inside the work area, never over the icon: the mark, des-k and its version, your screens with workspace chips and names, then Shortcut hints, Settings | Open log, Check for updates | Quit des-k with its grey line → AC-TRY-1, AC-TRY-2, AC-TRY-3, AC-TRY-5
+- [ ] The tooltip "des-k" still shows when you point at the icon (version 4 needs NIF_SHOWTIP) → AC-TRY-8
+- [ ] Point at an item → menu grey; nothing purple except New → AC-TRY-1
+- [ ] Click outside, press Esc, or click the icon again → it closes; the click on the icon does not open it again → AC-TRY-9
+- [ ] With the menu open, press Win Ctrl →, Win F, Win Tab, or swipe → the menu closes first, then that runs → AC-TRY-9
+- [ ] Win B, arrows to the icon, Enter (then again with Shift F10, and the menu key) → it opens with a ring on Shortcut hints; arrows wrap, Home and End jump, Q moves to Quit des-k without quitting, Enter on Quit quits (spec "check on the real machine") → AC-TRY-8
+- [ ] Three or more screens (or a test with a TV) → a map in Windows' arrangement, each screen in its workspace's color with its number; the bar sits under the screen the menu opened on; point at a screen for about half a second → its name, plus "main display" → AC-TRY-3, AC-TRY-4
+- [ ] Settings, Open log, Check for updates, Quit des-k do what they did before; with no log file yet (a debug build in a console) Open log is greyed → AC-TRY-5
+- [ ] Check for updates → while it runs the item reads "Checking for updates…", greyed; the answer comes as Windows' notification as before; click a "newer" notification → its page opens (balloon clicks after the move to version 4, spec "check on the real machine") → AC-TRY-7, AC-TRY-8
+- [ ] Hiding broken (hard to cause; a render shows it): the warning box sits under the screens, and every update answer stays on the item until the next check → AC-TRY-6, AC-TRY-7
+- [ ] Narrator on, open from the keyboard → it reads the menu, each item's name, its grey line, and "unavailable" for a greyed one; screens are read with their workspace (spec "check on the real machine") → AC-TRY-10, AC-5
+- [ ] Only the main taskbar holds tray icons on build 26200 (spec "check on the real machine")
+- [ ] Switch workspaces with the menu open on another screen → the menu is never hidden → AC-TRY-11
+
+### UI / manual: Shortcut hints
+- [ ] Tray › Shortcut hints → the window opens centred on the screen under the mouse, in front with focus, with every row of your settings; not in Alt Tab, no taskbar button → AC-HNT-1, AC-HNT-7
+- [ ] Set key → "Press the new key"; des-k's shortcuts pause; Esc alone cancels; press Win Ctrl H → saved, the footer reads "Opens with Win Ctrl H" with Change and Remove → AC-HNT-4
+- [ ] Set key, press Win F → "Win F is already in use", Cancel has focus; Cancel changes nothing; again with Move it here → Find a window loses Win F (settings page and file agree) → AC-HNT-4
+- [ ] Press Win H while recording → it saves, and Win H then opens hints instead of voice typing (spec "check on the real machine") → AC-HNT-4
+- [ ] Start recording on the settings page, then Set key here → the settings page's recording stops; a key goes only here → AC-HNT-4
+- [ ] With a key set: press it on the window's screen → it closes; open it, move the mouse to the other screen, press it → it moves there → AC-HNT-2
+- [ ] Esc or the title bar's X closes it → AC-HNT-2
+- [ ] Change a shortcut on the settings page with the window open → it shows at once; edit `settings.toml` by hand → it shows within 2 s → AC-HNT-3
+- [ ] Settings › Shortcuts shows a "Shortcut hints" row in today's look; setting it there shows in the window → AC-HNT-4
+- [ ] Tab reaches Set key (or Change and Remove), the touchpad note's button, and Open settings; Enter presses the focused one; your other shortcuts keep working while it is open → AC-HNT-6
+- [ ] Turn one of Windows' gestures back on → reopen or click back to the window: "1 of 4 is still on in Windows", cards greyed, Touchpad setup opens Settings › Touchpad → AC-HNT-5
+- [ ] `[touchpad] enabled = false` → "Touchpad reading is off" with Turn reading on, which turns it back on → AC-HNT-5
+- [ ] Give gestures back on the welcome screen, then open hints → "Given back to Windows at your next sign-in" (UX review M11, spec "check on the real machine") → AC-HNT-5
+- [ ] A 1366 × 768 screen at 125% (or a short work area) → the window fits it, the middle scrolls with the wheel and Page Up or Down, the footer stays in view → AC-HNT-1
+- [ ] Narrator: each row is read as its action then its keys, each note, and the footer's buttons (spec "check on the real machine") → AC-HNT-8, AC-5
+- [ ] A 150% and a 100% screen → sharp at each; dark and high contrast → AC-1, AC-4
+
+### Commands
+- [ ] `cargo test` → all pass, including `the_hints_key_is_off_by_default_and_loses_a_clash`, `the_hints_key_fires_only_once_set`, `only_the_window_recording_can_stop_it`, `the_map_fits_and_no_screen_is_too_small`, `the_items_say_what_they_do_now`, `the_rows_follow_the_settings`, `the_gestures_say_what_each_one_does`, `every_touchpad_state_says_why`, `a_recorded_key_saves_or_asks_first` → AC-HNT-1, AC-HNT-4, AC-TRY-4, AC-TRY-5, AC-TRY-7, AC-HNT-3, AC-HNT-5
+- [ ] `cargo test render -- --ignored` → `target/tray/` holds 13 states and `target/hints/` 12, each in light, dark, Aquatic, Desert and light 150%; compare with `pdesk-design/restart/captures/trr4-*` and `hr3-*` → AC-1
+
+### Value sourcing
+- [ ] Menu colors follow Windows' mode (taskbar), the hints window the apps' mode: set them apart and look → AC-2
+- [ ] Version: the header shows the version the update check reads → AC-TRY-2
+- [ ] Map: rearrange screens in Display settings → the next open shows the new arrangement → AC-TRY-3
+- [ ] Quit's line: Windows' gestures off with values saved → "…return at your next sign in"; none saved → "…no gestures until you turn Windows' on" → AC-TRY-5
+- [ ] Hints rows: every list and set in `[shortcuts]` and every `[[gesture]]` rule shows as the file has it → AC-HNT-3
+
 ## Acceptance-criteria coverage
+- Slice 4: AC-TRY-1 to AC-TRY-11 the tray menu steps · AC-HNT-1 to AC-HNT-8 the hints steps · AC-1 their render step · AC-2, AC-4, AC-5 their theme, scaling and Narrator steps
 - Slice 3: AC-OVR-1 to AC-OVR-11 the overview steps · AC-1 its render step · AC-2, AC-4, AC-5, AC-6, AC-7, AC-8 its theme, scaling, Narrator, fastest, fade time and speed steps
 - Slice 2: AC-FND-1 to AC-FND-9 the finder steps · AC-1 its render step · AC-2, AC-4, AC-5 its theme, scaling and Narrator steps
 - AC-1 render step · AC-2 theme steps · AC-4 corners, shadow, scaling · AC-5 and AC-IND-9 Narrator · AC-6 and AC-IND-8 `fastest` · AC-IND-1 to AC-IND-7 the card steps · AC-IND-10 is built in the settings page and first run slices (the drawing call exists: `indicator::draw_preview`)

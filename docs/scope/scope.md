@@ -277,7 +277,7 @@ spec [0016](../specs/0016-return-windows-to-their-screens/index.md) · code in `
 ### 20. Look B screens · in-progress · from spec 0017
 Every des-k window rebuilt to its approved look B design (first run, Shortcut hints, settings page, indicator, finder, overview, tray menu), one shared drawing layer in `ui.rs`, Narrator support, a `fastest` switch and an overview fade time, released together as 0.4.0.
 **Done when:** each screen matches its approved design in light, dark and high contrast on your screens, Narrator reads them, `fastest` makes every fade instant, and the overview logs at most 100 ms on the screens you have.
-spec [0017](../specs/0017-look-b-screens/index.md) · code in `src/ui.rs`, `src/uia.rs`, `src/indicator.rs`, `src/finder.rs`, `src/overview.rs`, `src/wallpaper.rs`, `src/tray.rs`, `src/hints.rs`, `src/settings_page.rs`, `src/welcome.rs`, `src/settings.rs`, `src/keys.rs`, `src/main.rs`, `src/ws.rs`
+spec [0017](../specs/0017-look-b-screens/index.md) · code in `src/ui.rs`, `src/uia.rs`, `src/indicator.rs`, `src/finder.rs`, `src/overview.rs`, `src/wallpaper.rs`, `src/tray.rs`, `src/tray_menu.rs`, `src/hints.rs`, `src/settings_page.rs`, `src/welcome.rs`, `src/settings.rs`, `src/keys.rs`, `src/main.rs`, `src/ws.rs`
 - [x] Design it (spec): `/architect the new screens`
 - [ ] Build it: `/develop look b screens`
   - [ ] Design side first: cross flow review of the seven boards, and the rows for `fastest` and the overview fade time approved (AC-11)

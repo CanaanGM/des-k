@@ -350,10 +350,10 @@ impl Session {
                 name: self.words(i),
                 rect: rect(ROW_X, BOX + LIST_PAD + (k - self.scroll) as f32 * ROW, ROW_W, ROW),
                 selected: Some(k == self.selected),
-                kids: vec![],
+                ..Node::default()
             })
             .collect();
-        kids.push(Node { role: UIA_ListControlTypeId, name: "Windows".into(), rect: rect(0.0, BOX, WIDTH, self.list_h()), selected: None, kids: rows });
+        kids.push(Node { role: UIA_ListControlTypeId, name: "Windows".into(), rect: rect(0.0, BOX, WIDTH, self.list_h()), selected: None, kids: rows, ..Node::default() });
         if let Some(e) = self.empty_text() {
             kids.push(text(e.into(), rect(ROW_X, BOX + LIST_PAD, ROW_W, self.list_h() - 2.0 * LIST_PAD)));
         }
@@ -361,7 +361,7 @@ impl Session {
             let (_, line, under, _) = n.words(&self.main);
             kids.push(text(under.map_or_else(|| line.to_string(), |u| format!("{line}. {u}")), rect(8.0, BOX + self.list_h(), WIDTH - 16.0, self.note_h() - 8.0)));
         }
-        Node { role: UIA_PaneControlTypeId, name: PLACEHOLDER.into(), rect: rect(0.0, 0.0, WIDTH, self.height()), selected: None, kids }
+        Node { role: UIA_PaneControlTypeId, name: PLACEHOLDER.into(), rect: rect(0.0, 0.0, WIDTH, self.height()), selected: None, kids, ..Node::default() }
     }
 }
 

@@ -99,7 +99,14 @@ pub(crate) struct B {
     pub(crate) bar_edge: f32,
     /// A see through popup's opacity (the indicator's card).
     pub(crate) alpha: f32,
+    /// A key cap held while recording.
+    pub(crate) held: u32,
+    /// des-k's mark, four squares: top left, top right, bottom left, bottom right.
+    pub(crate) mark: [u32; 4],
 }
+
+/// The mark's colors, the tray icon's (approved with the first run).
+const MARK: [u32; 4] = [0xB93C87, 0xE53935, 0x8E3FD9, 0xB93C87];
 
 /// The nine workspace colors: one lightness, the same hex in light and dark (approved 2026-11-04).
 const WS: [u32; 9] = [0x79A4F3, 0xDDB43C, 0x36BE9C, 0xBB8DE3, 0xE68A4E, 0x27B5DC, 0xDF80B8, 0xB99F88, 0xF97676];
@@ -127,6 +134,8 @@ const B_LIGHT: B = B {
     ws_edge: 0.10,
     bar_edge: 0.30,
     alpha: 0.92,
+    held: 0xF1E8FB,
+    mark: MARK,
 };
 
 const B_DARK: B = B {
@@ -152,6 +161,8 @@ const B_DARK: B = B {
     ws_edge: 0.0,
     bar_edge: 0.0,
     alpha: 0.92,
+    held: 0x3B2A55,
+    mark: MARK,
 };
 
 pub(crate) const DARK: Theme = Theme {
@@ -282,6 +293,8 @@ pub(crate) fn high_contrast(sys: [u32; 5]) -> Theme {
             ws_edge: 0.0,
             bar_edge: 0.0,
             alpha: 1.0,
+            held: hl_fg,
+            mark: [fg; 4],
         },
     }
 }
@@ -465,12 +478,30 @@ pub(crate) enum F {
     Number,    // the indicator's workspace number
     Icon,      // Segoe Fluent Icons
     IconSmall, // a 12 px icon, like the finder's pin chip
+    Heading,   // a window's 24 px title, like Shortcut hints'
+    IconTiny,  // a 10 px icon: an arrow on a key cap
+    TinyBold,  // a small screen's number in the tray menu's map
 }
 
 /// Per F: face (0 text, 1 display, 2 mono, 3 icons), size in dip, weight: 400 or 600 only
 /// (spec 0017 AC-3).
-const FACES: [(u8, f32, i32); 12] =
-    [(0, 14.0, 400), (0, 14.0, 600), (0, 12.0, 400), (0, 12.0, 600), (0, 14.0, 600), (1, 28.0, 600), (1, 16.0, 600), (1, 20.0, 600), (2, 12.0, 400), (1, 36.0, 600), (3, 16.0, 400), (3, 12.0, 400)];
+const FACES: [(u8, f32, i32); 15] = [
+    (0, 14.0, 400),
+    (0, 14.0, 600),
+    (0, 12.0, 400),
+    (0, 12.0, 600),
+    (0, 14.0, 600),
+    (1, 28.0, 600),
+    (1, 16.0, 600),
+    (1, 20.0, 600),
+    (2, 12.0, 400),
+    (1, 36.0, 600),
+    (3, 16.0, 400),
+    (3, 12.0, 400),
+    (1, 24.0, 600),
+    (3, 10.0, 400),
+    (0, 10.0, 600),
+];
 
 /// Every F at one scale; deleted when dropped.
 pub(crate) struct Fonts([HFONT; FACES.len()]);
@@ -942,6 +973,35 @@ impl<'a> Canvas<'a> {
         self.circle(cx, cy, 6.5, None, Some((argb, 1.25)));
         self.circle(cx, cy - 3.0, 0.95, Some(argb), None);
         self.lines(&[(cx, cy - 0.75), (cx, cy + 3.25)], 1.4, argb);
+    }
+
+    /// des-k's mark, 16 dip square at x, y: four rounded squares.
+    pub(crate) fn mark(&self, x: f32, y: f32) {
+        let m = self.t.b.mark;
+        for (i, (dx, dy)) in [(0.0, 0.0), (9.0, 0.0), (0.0, 9.0), (9.0, 9.0)].into_iter().enumerate() {
+            self.fill_rr((x + dx, y + dy, 7.0, 7.0), 2.0, op(m[i]));
+        }
+    }
+
+    /// A key cap `h` dip tall (20 in a menu, 22 in a window) at x, y: the key's name, or an
+    /// arrow for Left, Right, Up and Down, on the key color with its 1 px edge and the 1 px
+    /// shadow under it. `held`: a key held while recording, in the purple. Returns its width.
+    pub(crate) fn key_cap(&self, x: f32, y: f32, h: f32, key: &str, held: bool) -> f32 {
+        let b = self.t.b;
+        let (label, f) = match key {
+            "Left" => ("\u{E72B}", F::IconTiny),
+            "Right" => ("\u{E72A}", F::IconTiny),
+            "Up" => ("\u{E74A}", F::IconTiny),
+            "Down" => ("\u{E74B}", F::IconTiny),
+            k => (k, F::Small),
+        };
+        let tw = self.width(label, f);
+        let w = (tw + 2.0 * (h / 2.0 - 5.0) + 2.0).max(h);
+        let (fill, edge) = if held { (b.held, b.acc) } else { (b.key, b.key_edge) };
+        self.fill_rr((x, y + 1.0, w, h), 4.0, op(edge));
+        self.boxed((x, y, w, h), 4.0, fill, Some(edge));
+        self.text(x + (w - tw) / 2.0, y, h, label, f, b.tx);
+        w
     }
 }
 

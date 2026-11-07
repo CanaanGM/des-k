@@ -1,39 +1,39 @@
-// Tray icon near the clock: shows des-k is running, with Settings, Open log, Check for updates
-// (spec 0015) and Quit, and warns once when hiding windows stopped working. Lives on the main thread (its messages come
-// through main's loop), adds itself again whenever explorer restarts, and has des-k hide its
-// windows again then.
+// Tray icon near the clock: shows des-k is running, opens des-k's own menu (tray_menu.rs, spec
+// 0017) with Shortcut hints, Settings, Open log, Check for updates (spec 0015) and Quit, and
+// runs what you pick there. Warns once when hiding windows stopped working. Lives on the main
+// thread (its messages come through main's loop), adds itself again whenever explorer
+// restarts, and has des-k hide its windows again then.
+use crate::tray_menu::{self, Check, Id, Menu, Quit};
 use crate::update::{self, Answer};
 use std::cell::{Cell, RefCell};
 use std::path::Path;
 use windows::Win32::{
-    Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM},
+    Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Graphics::Gdi::{CreateBitmap, DeleteObject},
     System::{
         Com::{CLSCTX_LOCAL_SERVER, CoCreateInstance, IDispatch, IServiceProvider},
         LibraryLoader::GetModuleHandleW,
+        SystemInformation::GetTickCount,
         Variant::{VARIANT, VT_I4},
     },
     UI::{
+        Input::KeyboardAndMouse::GetDoubleClickTime,
         Shell::{
-            CSIDL_DESKTOP, IShellBrowser, IShellDispatch2, IShellFolderViewDual, IShellWindows, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIIF_WARNING,
-            NIN_BALLOONUSERCLICK,
-            NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, SID_STopLevelBrowser, SVGIO_BACKGROUND, SWC_DESKTOP, SWFO_NEEDDISPATCH, ShellWindows,
-            Shell_NotifyIconW,
+            CSIDL_DESKTOP, IShellBrowser, IShellDispatch2, IShellFolderViewDual, IShellWindows, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_INFO,
+            NIIF_WARNING, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NIN_BALLOONUSERCLICK, NIN_SELECT, NINF_KEY, NOTIFYICON_VERSION_4, NOTIFYICONDATAW,
+            NOTIFYICONIDENTIFIER, SID_STopLevelBrowser, SVGIO_BACKGROUND, SWC_DESKTOP, SWFO_NEEDDISPATCH, ShellWindows, Shell_NotifyIconGetRect, Shell_NotifyIconW,
         },
         WindowsAndMessaging::*,
     },
 };
-use windows::core::{BOOL, BSTR, HSTRING, Interface, PCWSTR, w};
+use windows::core::{BOOL, BSTR, Interface, PCWSTR, w};
 
 const CLASS: PCWSTR = w!("des-k-tray");
 /// Window message (not a thread message): the shell's callback for clicks on the icon. Its
 /// own id all the same: main's loop matches thread messages by id alone, and normal programs
 /// may post this one to the admin des-k (spec 0008).
 const WM_TRAY: u32 = WM_APP + 11;
-const ID_SETTINGS: usize = 1;
-const ID_LOG: usize = 2;
-const ID_QUIT: usize = 3;
-const ID_UPDATE: usize = 4;
+const NIN_KEYSELECT: u32 = NIN_SELECT | NINF_KEY;
 
 thread_local! {
     static WND: Cell<Option<HWND>> = const { Cell::new(None) };
@@ -42,9 +42,13 @@ thread_local! {
     static BROKEN: Cell<bool> = const { Cell::new(false) }; // warned that hiding does not work
     /// What a click on the current balloon opens: only a "newer" balloon has one.
     static BALLOON_URL: RefCell<Option<String>> = const { RefCell::new(None) };
-    /// A newer release found while the broken warning shows (AC-9): the menu item's label
-    /// and the page it opens, instead of "Check for updates".
-    static UPDATE_ITEM: RefCell<Option<(String, String)>> = const { RefCell::new(None) };
+    /// An update answer while the broken warning shows (spec 0015 AC-9, spec 0017 AC-TRY-7):
+    /// the menu's update item says it instead of a balloon, until the next check.
+    static ANSWER: Cell<Option<Answer>> = const { Cell::new(None) };
+    /// The icon's last mouse or key event (mouse moves aside), and the last one that opened
+    /// or closed the menu with its time (AC-TRY-8).
+    static PREV: Cell<u32> = const { Cell::new(0) };
+    static TOGGLED: Cell<Option<(u32, u32)>> = const { Cell::new(None) };
 }
 
 const TIP: &str = "des-k";
@@ -53,14 +57,23 @@ const BROKEN_TIP: &str = "des-k: hiding windows does not work, see the log";
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         match msg {
-            WM_TRAY if matches!(lp.0 as u32, WM_LBUTTONUP | WM_RBUTTONUP) => {
-                menu(hwnd);
-                LRESULT(0)
-            }
-            // Legacy callback: lParam is the notification itself.
-            WM_TRAY if lp.0 as u32 == NIN_BALLOONUSERCLICK => {
-                if let Some(url) = BALLOON_URL.take() {
-                    open(Path::new(&url));
+            // Version 4: the event is lParam's low word, the icon's point is in wParam.
+            WM_TRAY => {
+                let event = (lp.0 & 0xFFFF) as u32;
+                match event {
+                    NIN_SELECT | NIN_KEYSELECT | WM_CONTEXTMENU => {
+                        let at = POINT { x: (wp.0 & 0xFFFF) as i16 as i32, y: (wp.0 >> 16 & 0xFFFF) as i16 as i32 };
+                        clicked(hwnd, event, at);
+                    }
+                    NIN_BALLOONUSERCLICK => {
+                        if let Some(url) = BALLOON_URL.take() {
+                            open(Path::new(&url));
+                        }
+                    }
+                    _ => {}
+                }
+                if event != WM_MOUSEMOVE {
+                    PREV.set(event);
                 }
                 LRESULT(0)
             }
@@ -123,16 +136,52 @@ fn add(hwnd: HWND) {
     }
     ICON.set(draw_icon());
     let mut nid = data(hwnd);
-    nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    // Version 4 hides the tooltip unless asked to show it.
+    nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_SHOWTIP;
     nid.uCallbackMessage = WM_TRAY;
     nid.hIcon = ICON.get().unwrap_or_default();
     copy(&mut nid.szTip, if BROKEN.get() { BROKEN_TIP } else { TIP });
     unsafe {
         // At login explorer may not be ready yet; its TaskbarCreated brings us back here.
         if !Shell_NotifyIconW(NIM_ADD, &nid).as_bool() && !Shell_NotifyIconW(NIM_MODIFY, &nid).as_bool() {
-            eprintln!("tray: icon not added");
+            return eprintln!("tray: icon not added");
+        }
+        // Set again after every add: a restarted explorer forgets it. Version 4 tells a
+        // keyboard open from a click (spec 0017 AC-TRY-8).
+        nid.Anonymous.uVersion = NOTIFYICON_VERSION_4;
+        if !Shell_NotifyIconW(NIM_SETVERSION, &nid).as_bool() {
+            eprintln!("tray: icon version 4 refused, the menu can't tell a keyboard open from a click");
         }
     }
+}
+
+/// A click on the icon, Enter or Space on it, or its context menu: opens the menu, or closes
+/// it. A repeat of the same event within a double click's time is ignored (Enter often sends
+/// NIN_KEYSELECT twice), and so is an open right after the menu lost focus, which was this
+/// same click on the icon (AC-TRY-9).
+fn clicked(hwnd: HWND, event: u32, at: POINT) {
+    let (now, dbl) = unsafe { (GetTickCount(), GetDoubleClickTime()) };
+    if TOGGLED.get().is_some_and(|(e, t)| e == event && now.wrapping_sub(t) < dbl) {
+        return;
+    }
+    TOGGLED.set(Some((event, now)));
+    if tray_menu::is_open() {
+        return tray_menu::close(true);
+    }
+    if tray_menu::just_lost() {
+        return;
+    }
+    // A right click sends WM_RBUTTONUP just before its WM_CONTEXTMENU; Shift+F10 and the menu key don't.
+    let keyboard = event == NIN_KEYSELECT || (event == WM_CONTEXTMENU && PREV.get() != WM_RBUTTONUP);
+    let id = NOTIFYICONIDENTIFIER { cbSize: size_of::<NOTIFYICONIDENTIFIER>() as u32, hWnd: hwnd, uID: 1, ..Default::default() };
+    let icon: Option<RECT> = unsafe { Shell_NotifyIconGetRect(&id) }.ok();
+    tray_menu::open(menu(), at, icon, keyboard);
+}
+
+/// The tray's hidden window: it owns the hints window, which keeps that out of the taskbar
+/// and Alt+Tab (spec 0017 AC-HNT-7).
+pub fn window() -> Option<HWND> {
+    WND.get()
 }
 
 /// `text` into a fixed buffer, cut to fit, always ending in a 0.
@@ -186,14 +235,18 @@ fn balloon(title: &str, text: &str, warn: bool, url: Option<String>) {
     }
 }
 
+/// des-k's version: the one update.rs reads, else the one it was built as.
+fn version() -> String {
+    update::ours().map_or_else(|| env!("CARGO_PKG_VERSION").to_string(), |v| v.to_string())
+}
+
 /// The update check's answer (spec 0015). The worker already logged it. While the broken
-/// warning shows, a balloon would replace it, so a newer release goes on the menu item (AC-9).
+/// warning shows, a balloon would replace it, so the answer goes on the menu's item instead
+/// (spec 0015 AC-9, spec 0017 AC-TRY-7).
 fn answered(a: Answer) {
-    let ours = update::ours().map_or_else(|| env!("CARGO_PKG_VERSION").to_string(), |v| v.to_string());
+    let ours = version();
     if BROKEN.get() {
-        if let Answer::Newer(v) = a {
-            UPDATE_ITEM.replace(Some((format!("Update to {v} (open page)"), update::page(v))));
-        }
+        ANSWER.set(Some(a));
         return;
     }
     match a {
@@ -205,7 +258,7 @@ fn answered(a: Answer) {
 
 /// Four rounded squares in one blend, purple at the bottom left to red at the top right.
 /// Both colors are strong enough to read on light and dark taskbars.
-fn draw_icon() -> Option<HICON> {
+pub fn draw_icon() -> Option<HICON> {
     const PURPLE: [u32; 3] = [0x8E, 0x3F, 0xD9];
     const RED: [u32; 3] = [0xE5, 0x39, 0x35];
     let s = unsafe { GetSystemMetrics(SM_CXSMICON) }.max(16);
@@ -245,47 +298,56 @@ fn draw_icon() -> Option<HICON> {
     }
 }
 
-fn menu(hwnd: HWND) {
-    let log = crate::ws::data_dir().join("des-k.log");
-    let flag = |ok: bool| if ok { MF_STRING } else { MF_GRAYED };
-    unsafe {
-        let Ok(m) = CreatePopupMenu() else { return };
-        let _ = AppendMenuW(m, MF_STRING, ID_SETTINGS, w!("Settings"));
+/// What the menu shows now (spec 0017 AC-TRY-2 to AC-TRY-7).
+fn menu() -> Menu {
+    let ours = update::ours();
+    let check = match ANSWER.get() {
+        _ if update::running() => Check::Busy,
+        Some(Answer::Newer(v)) => Check::Newer(v),
+        Some(Answer::Newest(v)) => Check::Newest(ours.unwrap_or(v)),
+        Some(Answer::Failed(f)) => Check::Failed(f),
+        None => Check::Ready,
+    };
+    // With Windows' gestures off, quitting leaves the touchpad with none: say for how long.
+    let st = crate::setup::state();
+    let quit = match (st.off, st.saved) {
+        (true, true) => Quit::Saved,
+        (true, false) => Quit::Stops,
+        _ => Quit::Plain,
+    };
+    Menu {
+        version: version(),
+        screens: crate::ws::tray_screens(),
+        broken: BROKEN.get(),
+        hints_key: crate::settings::get().hints.first().copied(),
         // Debug builds with a console log there instead of to the file.
-        let _ = AppendMenuW(m, flag(log.exists()), ID_LOG, w!("Open log"));
-        let item = UPDATE_ITEM.with_borrow(Clone::clone);
-        let (on, label) = match &item {
-            _ if update::running() => (false, "Checking for updates…"),
-            Some((label, _)) => (true, label.as_str()),
-            None => (true, "Check for updates"),
-        };
-        let _ = AppendMenuW(m, flag(on), ID_UPDATE, &HSTRING::from(label));
-        let _ = AppendMenuW(m, MF_SEPARATOR, 0, PCWSTR::null());
-        // With Windows' gestures off, quitting leaves the touchpad with none: say for how long.
-        let st = crate::setup::state();
-        let quit = match (st.off, st.saved) {
-            (true, true) => "Quit (shows every window; gestures return at next sign in)",
-            (true, false) => "Quit (shows every window; touchpad gestures stop)",
-            _ => "Quit (shows every window)",
-        };
-        let _ = AppendMenuW(m, MF_STRING, ID_QUIT, &HSTRING::from(quit));
-        let mut pt = POINT::default();
-        let _ = GetCursorPos(&mut pt);
-        // Without this the menu stays open after a click elsewhere.
-        let _ = SetForegroundWindow(hwnd);
-        let cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, None, hwnd, None);
-        let _ = DestroyMenu(m);
-        match cmd.0 as usize {
-            ID_SETTINGS => crate::settings_page::open(None),
-            ID_LOG => open(&log),
-            ID_UPDATE => match item {
-                Some((_, url)) => open(Path::new(&url)),
-                None => update::check(hwnd),
-            },
-            // Main's loop breaks on WM_CLOSE, the same path as `des-k --quit`.
-            ID_QUIT => { let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)); }
-            _ => {}
-        }
+        log: log_path().exists(),
+        check,
+        quit,
+    }
+}
+
+fn log_path() -> std::path::PathBuf {
+    crate::ws::data_dir().join("des-k.log")
+}
+
+/// Runs what you picked in the menu, which has closed already.
+pub fn act(id: Id) {
+    let Some(hwnd) = WND.get() else { return };
+    match id {
+        Id::Hints => crate::hints::show(),
+        Id::Settings => crate::settings_page::open(None),
+        Id::Log => open(&log_path()),
+        Id::Update => match ANSWER.get() {
+            Some(Answer::Newer(v)) => open(Path::new(&update::page(v))),
+            // A check you start answers anew: the old answer goes.
+            _ => {
+                ANSWER.set(None);
+                update::check(hwnd);
+            }
+        },
+        // Main's loop breaks on WM_CLOSE, the same path as `des-k --quit`.
+        Id::Quit => unsafe { let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)); },
     }
 }
 

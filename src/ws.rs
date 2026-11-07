@@ -1058,6 +1058,30 @@ pub fn present() -> (usize, String) {
     (s.present.len(), main)
 }
 
+/// One present screen as the tray menu shows it (spec 0017 AC-TRY-3).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrayScreen {
+    pub name: String, // as the indicator names it, " #1" and " #2" for twins
+    pub rect: RECT,   // the whole screen, physical pixels
+    pub active: usize, // the workspace it shows, 0 based
+    pub main: bool,
+}
+
+/// Every present screen, left to right, copied out so the menu paints with no lock held.
+pub fn tray_screens() -> Vec<TrayScreen> {
+    let full = screens(); // before the lock: it asks Windows
+    let s = state();
+    s.present
+        .iter()
+        .map(|p| TrayScreen {
+            name: label(&s, &p.id),
+            rect: full.iter().find(|(d, _)| *d == p.device).map_or(p.area, |(_, r)| *r),
+            active: s.monitors.get(&p.id).map_or(0, |m| m.active),
+            main: p.primary,
+        })
+        .collect()
+}
+
 /// Every present screen's device and full rectangle.
 pub fn screens() -> Vec<(String, RECT)> {
     unsafe extern "system" fn push(m: HMONITOR, _: HDC, r: *mut RECT, out: LPARAM) -> BOOL {

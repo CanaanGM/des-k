@@ -139,8 +139,8 @@ const ROWS: &[(Section, Row)] = &[
     (Section::Touchpad, row("touchpad.twice_ms", "Wait for a second go", "Only gestures with a twice action wait. Their once action runs after the wait.",step(100, 1000, 50, "ms"))),
 ];
 
-/// The 12 [shortcuts] entries: key and title.
-const SHORTCUTS: [(&str, &str); 12] = [
+/// The 13 [shortcuts] entries: key and title.
+const SHORTCUTS: [(&str, &str); 13] = [
     ("shortcuts.previous", "Previous workspace"),
     ("shortcuts.next", "Next workspace"),
     ("shortcuts.send_previous", "Send window to previous, and go"),
@@ -153,6 +153,7 @@ const SHORTCUTS: [(&str, &str); 12] = [
     ("shortcuts.finder", "Finder"),
     ("shortcuts.overview", "Overview"),
     ("shortcuts.pin", "Pin window to every workspace"),
+    ("shortcuts.hints", "Shortcut hints"),
 ];
 
 static DEFAULTS: LazyLock<Settings> = LazyLock::new(Settings::default);
@@ -1658,18 +1659,30 @@ fn start_rec(rec: Rec) {
         w.refused = None;
         w.prompt = None;
     });
-    crate::keys::record(true);
+    crate::hints::cancel_recording(); // one recording at a time
+    if let Some(h) = hwnd() {
+        crate::keys::record(h, true);
+    }
     refresh();
 }
 
 /// Ends recording, after a combo, Esc, Cancel, a click, focus loss or close.
 fn stop_rec() {
-    crate::keys::record(false);
+    if let Some(h) = hwnd() {
+        crate::keys::record(h, false);
+    }
     let _ = set(|w| {
         w.rec = None;
         w.refused = None;
     });
     refresh();
+}
+
+/// The hints window starts recording, so a recording here stops (spec 0017 AC-HNT-4).
+pub fn cancel_recording() {
+    if get(|w| w.rec.is_some()) == Some(true) {
+        stop_rec();
+    }
 }
 
 /// The hook's WM_RECORDED: the first key down that is not a modifier, and the modifiers held
@@ -2330,7 +2343,7 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                 LRESULT(0)
             }
             WM_DESTROY => {
-                crate::keys::record(false);
+                crate::keys::record(h, false);
                 drop(WIN.with_borrow_mut(Option::take));
                 LRESULT(0)
             }

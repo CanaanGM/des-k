@@ -5,7 +5,8 @@
 // provider never borrows a window's state, locks ws, writes settings or sends a message.
 //
 // Two shapes: `Text`, a window whose whole content is one piece of text (the indicator), and a
-// `Tree` of `Node`s the window keeps in step with its paint (the finder's count, rows and note).
+// `Tree` of `Node`s the window keeps in step with its paint (the finder's count, rows and note,
+// the tray menu's items with their keyboard focus).
 use std::sync::{Arc, Mutex};
 use windows::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
@@ -87,7 +88,8 @@ pub(crate) fn answer(h: HWND, wp: WPARAM, lp: LPARAM, text: String) -> LRESULT {
 }
 
 /// One piece of a window as it was painted: its role, its name (the painted words), where it
-/// sits in client pixels, and for a list item whether it is the chosen one.
+/// sits in client pixels, and for a list item whether it is the chosen one. A menu item also
+/// has its grey second line (`help`), whether it is greyed, and keyboard focus.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Node {
     pub(crate) role: UIA_CONTROLTYPE_ID,
@@ -95,6 +97,10 @@ pub(crate) struct Node {
     pub(crate) rect: RECT,
     pub(crate) selected: Option<bool>, // Some: a list item
     pub(crate) kids: Vec<Node>,
+    pub(crate) help: String,
+    pub(crate) greyed: bool,
+    pub(crate) focusable: bool,
+    pub(crate) focused: bool,
 }
 
 /// A window's tree: the root is the window itself. The window replaces it after each paint;
@@ -136,11 +142,32 @@ fn property(n: &Node, id: UIA_PROPERTY_ID) -> VARIANT {
         VARIANT::from(BSTR::from(n.name.as_str()))
     } else if id == UIA_ControlTypePropertyId {
         VARIANT::from(n.role.0)
+    } else if id == UIA_HelpTextPropertyId && !n.help.is_empty() {
+        VARIANT::from(BSTR::from(n.help.as_str()))
+    } else if id == UIA_IsEnabledPropertyId {
+        VARIANT::from(!n.greyed)
     } else if id == UIA_IsKeyboardFocusablePropertyId {
-        VARIANT::from(false) // focus stays in the window's own text box
+        VARIANT::from(n.focusable) // the finder's stays in its own text box
+    } else if id == UIA_HasKeyboardFocusPropertyId {
+        VARIANT::from(n.focused)
     } else {
         VARIANT::default()
     }
+}
+
+/// The path of the node with keyboard focus, if one has it.
+fn focus_path(n: &Node, path: &mut Vec<usize>) -> bool {
+    if n.focused {
+        return true;
+    }
+    for (i, k) in n.kids.iter().enumerate() {
+        path.push(i);
+        if focus_path(k, path) {
+            return true;
+        }
+        path.pop();
+    }
+    false
 }
 
 /// The window itself, hosted by its HWND (UIA adds the HWND's own properties and children).
@@ -215,7 +242,12 @@ impl IRawElementProviderFragmentRoot_Impl for Root_Impl {
     }
 
     fn GetFocus(&self) -> Result<IRawElementProviderFragment> {
-        Err(Error::empty()) // focus is in the native text box, which UIA knows itself
+        // None painted (the finder's focus is in its native text box, which UIA knows itself).
+        let mut path = vec![];
+        match at(&self.tree, &[], |n| focus_path(n, &mut path))? {
+            true if !path.is_empty() => Ok(make(self.hwnd, &self.tree, path)),
+            _ => Err(Error::empty()),
+        }
     }
 }
 
@@ -351,6 +383,26 @@ impl ISelectionProvider_Impl for Elem_Impl {
 
     fn IsSelectionRequired(&self) -> Result<BOOL> {
         Ok(BOOL(0))
+    }
+}
+
+/// Tells Narrator that `event` happened on the node at `path` (the window itself when empty),
+/// say a menu opening. Nothing is made while no screen reader listens.
+pub(crate) fn raise(h: HWND, tree: &Tree, path: &[usize], event: UIA_EVENT_ID, who: &str) {
+    if !listening() {
+        return;
+    }
+    let raised = make(h, tree, path.to_vec()).cast::<IRawElementProviderSimple>().and_then(|p| unsafe { UiaRaiseAutomationEvent(&p, event) });
+    if let Err(e) = raised {
+        eprintln!("narrator: {who}'s event {} was not sent ({e})", event.0);
+    }
+}
+
+/// Keyboard focus moved to another painted node: Narrator reads it.
+pub(crate) fn focus_moved(h: HWND, tree: &Tree, who: &str) {
+    let mut path = vec![];
+    if tree.try_lock().is_ok_and(|n| focus_path(&n, &mut path)) && !path.is_empty() {
+        raise(h, tree, &path, UIA_AutomationFocusChangedEventId, who);
     }
 }
 

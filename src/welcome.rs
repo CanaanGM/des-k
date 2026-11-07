@@ -608,6 +608,12 @@ fn paint_button(c: &Canvas, p: &Place, (x, y, w, h): Bx, pressed: bool, disabled
     }
 }
 
+/// The last give back's result, while it lasts: the hints window words its touchpad state
+/// from it too (spec 0017 AC-HNT-5).
+pub(crate) fn gave_back() -> Option<GaveBack> {
+    LAST.get()
+}
+
 fn read_view(first: bool) -> View {
     let st = setup::state();
     if st.off {
