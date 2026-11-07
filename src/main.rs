@@ -192,11 +192,16 @@ fn main() -> windows::core::Result<()> {
     unsafe { let _ = SetConsoleCtrlHandler(Some(on_console_close), true); }
 
     keys::spawn(unsafe { GetCurrentThreadId() });
-    let first_start = setup::start(); // before the touchpad thread reads Windows' gestures
+    setup::start(); // before the touchpad thread reads Windows' gestures
     touchpad::spawn(unsafe { GetCurrentThreadId() });
     tray::init();
-    if first_start {
-        welcome::show(true);
+    // Read at start only; written the moment it opens, so a crash can never make it loop
+    // (spec 0017 AC-9).
+    if settings::get().first_run_seen != Some(true) {
+        welcome::show();
+        if let Err(why) = settings::write(settings::Edit::Value("first_run_seen", true.into())) {
+            eprintln!("first run: could not write first_run_seen = true, so it opens again at the next start ({why})");
+        }
     }
     println!("des-k running: the shortcuts switch the monitor under the mouse ({} workspaces each).", settings::get().workspaces);
 
@@ -229,10 +234,14 @@ fn main() -> windows::core::Result<()> {
             tray_menu::close(msg.message != WM_FOLLOW); // a follow already moved focus
         }
         match msg.message {
-            WM_APP => ws::switch(msg.wParam.0 as isize),
+            WM_APP => {
+                ws::switch(msg.wParam.0 as isize);
+                welcome::tried(welcome::Try::Switch);
+            }
             indicator::WM_DISPLAY_CHANGED => {
                 ws::check_screens(false);
                 settings_page::tick();
+                welcome::tick();
             }
             WM_FOLLOW => {
                 let h = HWND(msg.wParam.0 as *mut _);
@@ -249,15 +258,19 @@ fn main() -> windows::core::Result<()> {
                 overview::close(true);
                 finder::toggle();
             }
-            // To the window that is recording: the settings page or the hints window.
+            // To the window that is recording: the settings page, the first run or the hints window.
             keys::WM_RECORDED => match keys::recording_window() {
                 Some(h) if hints::owns(h) => hints::recorded(msg.wParam.0 as u16, msg.lParam.0 as u8),
+                Some(h) if welcome::owns(h) => welcome::recorded(msg.wParam.0 as u16, msg.lParam.0 as u8),
                 _ => settings_page::recorded(msg.wParam.0 as u16, msg.lParam.0 as u8),
             },
             keys::WM_HINTS => hints::toggle(),
             keys::WM_OVERVIEW => {
                 finder::close(true);
                 overview::toggle();
+                if overview::is_open() {
+                    welcome::tried(welcome::Try::Overview);
+                }
             }
             touchpad::WM_GESTURE => gestures::run(msg.wParam.0),
             touchpad::WM_TOUCHPADS_CHANGED => {
@@ -281,6 +294,7 @@ fn main() -> windows::core::Result<()> {
                 ws::resync();
                 tray::warn_if_broken();
                 settings_page::tick();
+                welcome::tick();
             }
             // Posted by `des-k --quit` (to the indicator) and the tray's Quit. The finder and
             // the overview post WM_CLOSE to any window they close, des-k's own settings page
@@ -288,10 +302,10 @@ fn main() -> windows::core::Result<()> {
             WM_CLOSE if matches!(ws::class_name(msg.hwnd).as_str(), "des-k-indicator" | "des-k-tray") => break,
             // Indicator, tray, tray menu, finder, overview, welcome screen, hints window and settings
             // page messages. TranslateMessage makes the finder's typed characters and IME input;
-            // the finder and the overview take their own keys before that, and the welcome
-            // screen's and the hints window's go through IsDialogMessageW (Tab, Enter, Esc). The
-            // settings page and the tray menu take their keys in their wndprocs.
-            _ if welcome::key(&msg) || hints::key(&msg) || finder::key(&msg) || overview::key(&msg) => {}
+            // the finder and the overview take their own keys before that, and the hints
+            // window's go through IsDialogMessageW (Tab, Enter, Esc). The settings page, the
+            // first run and the tray menu take their keys in their wndprocs.
+            _ if hints::key(&msg) || finder::key(&msg) || overview::key(&msg) => {}
             _ => unsafe {
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);

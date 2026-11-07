@@ -29,41 +29,12 @@ use windows::Win32::{
 };
 use windows::core::{BOOL, HSTRING, PCWSTR, w};
 
-/// Colors as 0xRRGGBB: the design file's tokens (provisional, the indicator's).
+/// The look des-k's windows draw in: light or dark, high contrast, and look B's tokens.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) struct Theme {
     pub(crate) dark: bool,
     pub(crate) hc: bool,
-    pub(crate) surface: u32,
-    pub(crate) text: u32,
-    pub(crate) dim: u32,
-    pub(crate) stroke: u32,
-    pub(crate) accent: u32,
-    pub(crate) on_accent: u32,
-    pub(crate) band_a: u32,
-    pub(crate) band_b: u32,
-    pub(crate) on_band: u32,
-    pub(crate) card: u32,
-    pub(crate) card_edge: u32,
-    pub(crate) tile: u32,
-    pub(crate) tile_ico: u32,
-    pub(crate) tile_ico_fg: u32,
-    pub(crate) chip_on: u32,
-    pub(crate) chip_on_fg: u32,
-    pub(crate) chip_off: u32,
-    pub(crate) chip_off_fg: u32,
-    pub(crate) chip_err: u32,
-    pub(crate) chip_err_fg: u32,
-    pub(crate) note: u32,
-    pub(crate) note_edge: u32,
-    pub(crate) warn: u32,
-    pub(crate) warn_edge: u32,
-    pub(crate) btn: u32,
-    pub(crate) btn_edge: u32,
-    pub(crate) foot: u32,
-    pub(crate) disabled: u32,
-    /// Look B (spec 0017). The fields above are the old look, each deleted with the last screen
-    /// that draws it.
+    /// Look B's tokens (spec 0017); the old look's went with the first run, its last screen.
     pub(crate) b: B,
 }
 
@@ -183,68 +154,12 @@ const B_DARK: B = B {
 pub(crate) const DARK: Theme = Theme {
     dark: true,
     hc: false,
-    surface: 0x202020,
-    text: 0xF2F2F2,
-    dim: 0xA3A3A3,
-    stroke: 0x555555,
-    accent: 0x60A5FA,
-    on_accent: 0x0A1A30,
-    band_a: 0x1D4ED8,
-    band_b: 0x6D28D9,
-    on_band: 0xFFFFFF,
-    card: 0x2A2A2E,
-    card_edge: 0x3A3A40,
-    tile: 0x26262B,
-    tile_ico: 0x1E3A5F,
-    tile_ico_fg: 0x93C5FD,
-    chip_on: 0x4A3A10,
-    chip_on_fg: 0xFDE68A,
-    chip_off: 0x123D24,
-    chip_off_fg: 0x86EFAC,
-    chip_err: 0x3A2A2A,
-    chip_err_fg: 0xFCA5A5,
-    note: 0x1E2A3D,
-    note_edge: 0x2F4A73,
-    warn: 0x3A2E12,
-    warn_edge: 0x6B5418,
-    btn: 0x34343A,
-    btn_edge: 0x4A4A52,
-    foot: 0x1A1A1D,
-    disabled: 0x8A8A8A,
     b: B_DARK,
 };
 
 pub(crate) const LIGHT: Theme = Theme {
     dark: false,
     hc: false,
-    surface: 0xFFFFFF,
-    text: 0x1A1A1A,
-    dim: 0x555555,
-    stroke: 0xB8B8B8,
-    accent: 0x1F6FDB,
-    on_accent: 0xFFFFFF,
-    band_a: 0x1F6FDB,
-    band_b: 0x7C3AED,
-    on_band: 0xFFFFFF,
-    card: 0xF5F7FB,
-    card_edge: 0xE3E8F2,
-    tile: 0xF5F7FB,
-    tile_ico: 0xDBEAFE,
-    tile_ico_fg: 0x1D4ED8,
-    chip_on: 0xFEF3C7,
-    chip_on_fg: 0x7A4A00,
-    chip_off: 0xDCFCE7,
-    chip_off_fg: 0x14532D,
-    chip_err: 0xFEE2E2,
-    chip_err_fg: 0x7F1D1D,
-    note: 0xEFF6FF,
-    note_edge: 0xBFDBFE,
-    warn: 0xFFFBEB,
-    warn_edge: 0xFCD34D,
-    btn: 0xFFFFFF,
-    btn_edge: 0xC9CED8,
-    foot: 0xF5F7FB,
-    disabled: 0x767676,
     b: B_LIGHT,
 };
 
@@ -257,34 +172,6 @@ pub(crate) fn high_contrast(sys: [u32; 5]) -> Theme {
     Theme {
         dark: !light,
         hc: true,
-        surface: bg,
-        text: fg,
-        dim: fg,
-        stroke: fg,
-        accent: hl,
-        on_accent: hl_fg,
-        band_a: bg,
-        band_b: bg,
-        on_band: fg,
-        card: bg,
-        card_edge: fg,
-        tile: bg,
-        tile_ico: bg,
-        tile_ico_fg: fg,
-        chip_on: bg,
-        chip_on_fg: fg,
-        chip_off: bg,
-        chip_off_fg: fg,
-        chip_err: bg,
-        chip_err_fg: fg,
-        note: bg,
-        note_edge: fg,
-        warn: bg,
-        warn_edge: fg,
-        btn: bg,
-        btn_edge: fg,
-        foot: bg,
-        disabled: gray,
         b: B {
             bg,
             card: bg,
@@ -489,9 +376,6 @@ pub(crate) enum F {
     Bold,
     Small,
     SmallBold,
-    Glyph,
-    H1,
-    H2,
     Title,  // the settings page's headings
     Mono,   // setting names as the file spells them
     Number,    // the indicator's workspace number
@@ -504,14 +388,11 @@ pub(crate) enum F {
 
 /// Per F: face (0 text, 1 display, 2 mono, 3 icons), size in dip, weight: 400 or 600 only
 /// (spec 0017 AC-3).
-const FACES: [(u8, f32, i32); 15] = [
+const FACES: [(u8, f32, i32); 12] = [
     (0, 14.0, 400),
     (0, 14.0, 600),
     (0, 12.0, 400),
     (0, 12.0, 600),
-    (0, 14.0, 600),
-    (1, 28.0, 600),
-    (1, 16.0, 600),
     (1, 20.0, 600),
     (2, 12.0, 400),
     (1, 36.0, 600),
@@ -942,6 +823,21 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// A closed shape, filled, with its edge: the first run's mouse pointer.
+    pub(crate) fn polygon(&self, pts: &[(f32, f32)], fill: u32, (edge, width): (u32, f32)) {
+        if !self.shapes() {
+            return;
+        }
+        let pts: Vec<gp::PointF> = pts.iter().map(|(x, y)| gp::PointF { X: x * self.s, Y: y * self.s }).collect();
+        let (b, pen) = (self.brush(fill), self.pen(edge, width));
+        unsafe {
+            gp::GdipFillPolygon(self.g, b, pts.as_ptr(), pts.len() as i32, gp::FillModeAlternate);
+            gp::GdipDrawPolygon(self.g, pen, pts.as_ptr(), pts.len() as i32);
+            gp::GdipDeleteBrush(b);
+            gp::GdipDeletePen(pen);
+        }
+    }
+
     pub(crate) fn gradient(&self, x: f32, y: f32, w: f32, h: f32, a: u32, b: u32) {
         if !self.shapes() {
             return;
@@ -996,18 +892,6 @@ impl<'a> Canvas<'a> {
         }
         let (px, py, side) = ((x * self.s).round() as i32 - self.o.0, (y * self.s).round() as i32 - self.o.1, (size * self.s).round() as i32);
         self.with_dc(|dc| unsafe { let _ = DrawIconEx(dc, px, py, icon, side, side, 0, None, DI_NORMAL); });
-    }
-
-    /// A check mark in a `size` square at x, y.
-    pub(crate) fn check(&self, x: f32, y: f32, size: f32, width: f32, argb: u32) {
-        self.lines(&[(x, y + size * 0.55), (x + size * 0.36, y + size * 0.9), (x + size, y + size * 0.12)], width, argb);
-    }
-
-    /// The circled i of an information banner.
-    pub(crate) fn info(&self, cx: f32, cy: f32, argb: u32) {
-        self.circle(cx, cy, 6.5, None, Some((argb, 1.25)));
-        self.circle(cx, cy - 3.0, 0.95, Some(argb), None);
-        self.lines(&[(cx, cy - 0.75), (cx, cy + 3.25)], 1.4, argb);
     }
 
     /// des-k's mark, 16 dip square at x, y: four rounded squares.

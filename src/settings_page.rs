@@ -125,7 +125,7 @@ fn home(key: &str) -> Option<Section> {
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum Kind {
+pub(crate) enum Kind {
     Toggle,
     /// A switch drawn as two choices: the word for on, then for off.
     Pair(&'static str, &'static str),
@@ -135,11 +135,11 @@ enum Kind {
     Choice(&'static [(&'static str, &'static str)]),
 }
 
-struct Row {
-    key: &'static str,
-    title: &'static str,
-    cap: &'static str,
-    kind: Kind,
+pub(crate) struct Row {
+    pub(crate) key: &'static str,
+    pub(crate) title: &'static str,
+    pub(crate) cap: &'static str,
+    pub(crate) kind: Kind,
 }
 
 // The first run's words (AC-SET-6): Never, None and Fade; the file's words stay.
@@ -156,7 +156,7 @@ const fn step(lo: i64, hi: i64, by: i64, unit: &'static str) -> Kind {
 }
 
 /// Every plain setting.
-const ROWS: &[Row] = &[
+pub(crate) const ROWS: &[Row] = &[
     row("follow_activation", "Follow a window", "When a hidden window comes to the front (an app reuses it, a dialog pops up), go to its workspace.", Kind::Toggle),
     row("copilot_as_right_ctrl", "Copilot key as Right Ctrl", "", Kind::Pair("des-k", "Windows")),
     row("indicator.enabled", "Workspace indicator", "", Kind::Toggle),
@@ -176,11 +176,11 @@ const ROWS: &[Row] = &[
 ];
 
 /// The workspace count: drawn as the tiles, not as a row of its own (AC-SET-3).
-const WORKSPACES: Row = row("workspaces", "Workspaces per screen", "", step(2, 9, 1, ""));
+pub(crate) const WORKSPACES: Row = row("workspaces", "Workspaces per screen", "", step(2, 9, 1, ""));
 
-static DEFAULTS: LazyLock<Settings> = LazyLock::new(Settings::default);
+pub(crate) static DEFAULTS: LazyLock<Settings> = LazyLock::new(Settings::default);
 
-fn find_row(key: &str) -> Option<&'static Row> {
+pub(crate) fn find_row(key: &str) -> Option<&'static Row> {
     ROWS.iter().chain([&WORKSPACES]).find(|r| r.key == key)
 }
 
@@ -189,7 +189,7 @@ fn word<T: Copy + PartialEq>(list: &[(&'static str, T)], v: T) -> &'static str {
 }
 
 /// A row's value as a number: on and off as 1 and 0, a choice as its index.
-fn value(s: &Settings, key: &str) -> i64 {
+pub(crate) fn value(s: &Settings, key: &str) -> i64 {
     let index = |w: &str, words: &[(&str, &str)]| words.iter().position(|(x, _)| *x == w).unwrap_or(0) as i64;
     match key {
         "workspaces" => s.workspaces as i64,
@@ -213,7 +213,7 @@ fn value(s: &Settings, key: &str) -> i64 {
     }
 }
 
-fn file_value(row: &Row, v: i64) -> toml_edit::Value {
+pub(crate) fn file_value(row: &Row, v: i64) -> toml_edit::Value {
     match row.kind {
         Kind::Toggle | Kind::Pair(..) => (v != 0).into(),
         Kind::Step { .. } => v.into(),
@@ -222,7 +222,7 @@ fn file_value(row: &Row, v: i64) -> toml_edit::Value {
 }
 
 /// A value in the page's words: "550 ms", "on", "des-k", "On hover".
-fn shown(row: &Row, v: i64) -> String {
+pub(crate) fn shown(row: &Row, v: i64) -> String {
     match row.kind {
         Kind::Toggle => if v != 0 { "on" } else { "off" }.into(),
         Kind::Pair(on, off) => if v != 0 { on } else { off }.into(),
@@ -233,7 +233,7 @@ fn shown(row: &Row, v: i64) -> String {
 }
 
 /// The next value on the step grid. A hand written value off the grid steps onto it.
-fn stepped(v: i64, lo: i64, hi: i64, by: i64, up: bool) -> i64 {
+pub(crate) fn stepped(v: i64, lo: i64, hi: i64, by: i64, up: bool) -> i64 {
     let off = v.rem_euclid(by);
     let n = if up { v - off + by } else if off != 0 { v - off } else { v - by };
     n.clamp(lo, hi)
@@ -242,13 +242,13 @@ fn stepped(v: i64, lo: i64, hi: i64, by: i64, up: bool) -> i64 {
 /// Why a kept value is not in use now (AC-SET-8): every reason, in the caption's order. The
 /// Style row greys with the indicator and needs no words: the switch is right above it.
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum Why {
+pub(crate) enum Why {
     AnimationNone,
     Skip,
     IndicatorOff,
 }
 
-fn unused(s: &Settings, key: &str) -> Vec<Why> {
+pub(crate) fn unused(s: &Settings, key: &str) -> Vec<Why> {
     match key {
         "indicator.style" if !s.indicator_enabled => vec![Why::IndicatorOff],
         "indicator.fade_ms" if s.fastest => vec![Why::Skip],
@@ -270,15 +270,15 @@ fn unused(s: &Settings, key: &str) -> Vec<Why> {
 
 /// Windows' own key for an action: a combo, or a digit action's modifiers.
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum WinKey {
+pub(crate) enum WinKey {
     Combo(Combo),
     Digits(u8),
 }
 
-struct Short {
-    key: &'static str,
-    title: &'static str,
-    win: Option<(WinKey, &'static str)>, // and what it does in Windows
+pub(crate) struct Short {
+    pub(crate) key: &'static str,
+    pub(crate) title: &'static str,
+    pub(crate) win: Option<(WinKey, &'static str)>, // and what it does in Windows
 }
 
 const fn combo(mods: u8, vk: u16) -> WinKey {
@@ -291,7 +291,7 @@ const fn short(key: &'static str, title: &'static str, win: Option<(WinKey, &'st
 
 use settings::{ALT, CTRL, SHIFT, WIN};
 
-const MOVE: &[Short] = &[
+pub(crate) const MOVE: &[Short] = &[
     short("shortcuts.previous", "Previous workspace", Some((combo(WIN | CTRL, 0x25), "switches desktops"))),
     short("shortcuts.next", "Next workspace", Some((combo(WIN | CTRL, 0x27), "switches desktops"))),
     short("shortcuts.jump", "Go to workspace 1–9", Some((WinKey::Digits(WIN), "opens taskbar app 1–9"))),
@@ -300,7 +300,7 @@ const MOVE: &[Short] = &[
     short("shortcuts.hints", "Open shortcut hints", None),
 ];
 
-const SEND: &[Short] = &[
+pub(crate) const SEND: &[Short] = &[
     short("shortcuts.send_previous", "Send window to previous workspace", None),
     short("shortcuts.send_next", "Send window to next workspace", None),
     short("shortcuts.send_previous_stay", "Send window to previous workspace and stay", None),
@@ -311,25 +311,25 @@ const SEND: &[Short] = &[
 ];
 
 /// A [shortcuts] key's name: "shortcuts.finder" → "finder".
-fn name_of(key: &str) -> &str {
+pub(crate) fn name_of(key: &str) -> &str {
     key.strip_prefix("shortcuts.").unwrap_or(key)
 }
 
-fn is_digits(key: &str) -> bool {
+pub(crate) fn is_digits(key: &str) -> bool {
     settings::SETS.contains(&name_of(key))
 }
 
-fn shortcut(key: &str) -> Option<&'static Short> {
+pub(crate) fn shortcut(key: &str) -> Option<&'static Short> {
     MOVE.iter().chain(SEND).find(|s| s.key == key || name_of(s.key) == key)
 }
 
 /// An action by its name in [shortcuts]: its page key and title.
-fn entry(name: &str) -> (&'static str, &'static str) {
+pub(crate) fn entry(name: &str) -> (&'static str, &'static str) {
     shortcut(name).map_or(("", ""), |s| (s.key, s.title))
 }
 
 /// A key in words, as its caps read: "Win Ctrl ←".
-fn spelled(caps: &[String]) -> String {
+pub(crate) fn spelled(caps: &[String]) -> String {
     caps.iter()
         .map(|k| match k.as_str() {
             "Left" => "←".to_string(),
@@ -349,12 +349,12 @@ fn win_caps(k: WinKey) -> Vec<String> {
     }
 }
 
-fn digit_caps(mods: u8) -> Vec<String> {
+pub(crate) fn digit_caps(mods: u8) -> Vec<String> {
     crate::hints::mods_caps(mods).into_iter().chain(["1–9".to_string()]).collect()
 }
 
 /// An action's keys as their caps, in the file's order, each with its place in the file.
-fn keys_of(s: &Settings, key: &str) -> Vec<Vec<String>> {
+pub(crate) fn keys_of(s: &Settings, key: &str) -> Vec<Vec<String>> {
     let name = name_of(key);
     if is_digits(key) {
         return s.set(name).map(digit_caps).into_iter().collect();
@@ -364,7 +364,7 @@ fn keys_of(s: &Settings, key: &str) -> Vec<Vec<String>> {
 
 /// The order the row draws its keys: Windows' own key first (AC-SET-4), then the file's order.
 /// Each item is its index in the file, so × and a recording act on the right one.
-fn drawn_order(s: &Settings, sh: &Short) -> Vec<usize> {
+pub(crate) fn drawn_order(s: &Settings, sh: &Short) -> Vec<usize> {
     let n = keys_of(s, sh.key).len();
     let mut order: Vec<usize> = (0..n).collect();
     if let Some((WinKey::Combo(c), _)) = sh.win
@@ -377,7 +377,7 @@ fn drawn_order(s: &Settings, sh: &Short) -> Vec<usize> {
 }
 
 /// The action holds Windows' own key now.
-fn has_win(s: &Settings, sh: &Short) -> bool {
+pub(crate) fn has_win(s: &Settings, sh: &Short) -> bool {
     match sh.win {
         Some((WinKey::Combo(c), _)) => s.list(name_of(sh.key)).contains(&c),
         Some((WinKey::Digits(m), _)) => s.set(name_of(sh.key)) == Some(m),
@@ -386,7 +386,7 @@ fn has_win(s: &Settings, sh: &Short) -> bool {
 }
 
 /// Another action holds this one's Windows key: its title.
-fn took(s: &Settings, sh: &Short) -> Option<&'static str> {
+pub(crate) fn took(s: &Settings, sh: &Short) -> Option<&'static str> {
     let me = name_of(sh.key);
     match sh.win?.0 {
         WinKey::Combo(c) => match s.combo_owner(me, c)? {
@@ -501,19 +501,19 @@ fn fix_line(key: &str, s: &Settings) -> String {
 
 /// What the recorder is recording for (spec 0012 AC-7, AC-12).
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum Rec {
+pub(crate) enum Rec {
     List(&'static str, Option<usize>), // a shortcut list, and the key it replaces (None: +)
     Digits(&'static str),
     Gesture(usize, u8), // a GESTURE_ROWS row and its times: Key combo…
 }
 
 /// A clash the recorder found, waiting for Move it here or Cancel. Nothing is saved until you choose.
-struct Prompt {
-    key: &'static str, // the row it shows under
-    held: Vec<String>, // the caps of the key it found
-    title: String,
-    sub: String,
-    edit: Edit,
+pub(crate) struct Prompt {
+    pub(crate) key: &'static str, // the row it shows under
+    pub(crate) held: Vec<String>, // the caps of the key it found
+    pub(crate) title: String,
+    pub(crate) sub: String,
+    pub(crate) edit: Edit,
 }
 
 /// Where a caption link goes.
@@ -614,47 +614,47 @@ struct Hit {
 
 /// The gesture picker's menu, drawn over the page (as the design places it, inside the window).
 #[derive(Clone, Copy, PartialEq, Debug)]
-struct Menu {
-    row: usize,
-    times: u8,
-    family: Option<usize>, // a digit family's own list: Go to workspace and the two Send window to
-    at: Bx,                // the picker it opened from
-    focus: usize,
+pub(crate) struct Menu {
+    pub(crate) row: usize,
+    pub(crate) times: u8,
+    pub(crate) family: Option<usize>, // a digit family's own list: Go to workspace and the two Send window to
+    pub(crate) at: Bx,                // the picker it opened from
+    pub(crate) focus: usize,
 }
 
 /// What a menu line does.
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum Does {
+pub(crate) enum Does {
     Set(Option<Action>), // None: no twice action
     Combo,               // Key combo…: records one
     Family(usize),
     Twice, // opens the done twice menu
 }
 
-struct Line {
-    text: String,
-    col: u8, // 0 des-k, 1 Windows and media, 2 the footer, 3 the done twice line
-    does: Does,
-    on: bool,
-    default: bool,
+pub(crate) struct Line {
+    pub(crate) text: String,
+    pub(crate) col: u8, // 0 des-k, 1 Windows and media, 2 the footer, 3 the done twice line
+    pub(crate) does: Does,
+    pub(crate) on: bool,
+    pub(crate) default: bool,
 }
 
 type Family = fn(usize) -> Action;
-const FAMILIES: [(&str, Family); 3] = [("Go to workspace", Action::Jump), ("Send window to", |i| Action::SendTo(i, true)), ("Send window to … and stay", |i| Action::SendTo(i, false))];
+pub(crate) const FAMILIES: [(&str, Family); 3] = [("Go to workspace", Action::Jump), ("Send window to", |i| Action::SendTo(i, true)), ("Send window to … and stay", |i| Action::SendTo(i, false))];
 
 /// No twice rule and a twice rule that does nothing behave apart (the second still waits), so
 /// their words must not look alike (spec 0012 AC-12).
 const NO_TWICE: &str = "No twice action";
 const TWICE_NOTHING: &str = "Nothing (still waits)";
 
-fn once_label(a: Action) -> String {
+pub(crate) fn once_label(a: Action) -> String {
     match a {
         Action::Combo(c) => format!("Types {}", spelled(&crate::hints::caps(&c))),
         a => crate::hints::name(a),
     }
 }
 
-fn twice_label(a: Option<Action>) -> String {
+pub(crate) fn twice_label(a: Option<Action>) -> String {
     match a {
         None => NO_TWICE.into(),
         Some(Action::Nothing) => TWICE_NOTHING.into(),
@@ -675,7 +675,7 @@ fn is_desk(a: Action) -> bool {
 }
 
 /// The open menu's lines, in keyboard order.
-fn menu_lines(m: &Menu, s: &Settings) -> Vec<Line> {
+pub(crate) fn menu_lines(m: &Menu, s: &Settings) -> Vec<Line> {
     let (fingers, motion) = settings::GESTURE_ROWS[m.row];
     let now = s.rule(fingers, motion, m.times);
     let default = DEFAULTS.rule(fingers, motion, m.times);
@@ -2863,6 +2863,7 @@ fn start_rec(rec: Rec) {
         w.menu = None;
     });
     crate::hints::cancel_recording(); // one recording at a time
+    crate::welcome::cancel_recording();
     if let Some(h) = hwnd() {
         crate::keys::record(h, true);
     }
@@ -2925,8 +2926,28 @@ pub fn recorded(vk: u16, mods: u8) {
     }
 }
 
+/// What a key change does: nothing, a write, or a clash to ask about first.
+pub(crate) enum Plan {
+    Nothing,
+    Commit(Edit, &'static str), // and the action's title, for a failed save
+    Ask(Prompt),
+}
+
+/// Carries out a plan here: writes it, or shows its clash under its row.
+fn run(plan: Plan) {
+    match plan {
+        Plan::Nothing => {}
+        Plan::Commit(edit, title) => commit(edit, title),
+        Plan::Ask(p) => ask(p.key, p),
+    }
+}
+
 /// A key for a list: saved, or the clash prompt when another action has it.
 fn combo_recorded(key: &'static str, replace: Option<usize>, combo: Combo) {
+    run(plan_combo(key, replace, combo));
+}
+
+pub(crate) fn plan_combo(key: &'static str, replace: Option<usize>, combo: Combo) -> Plan {
     let (s, name) = (settings::get(), name_of(key));
     let mut mine = s.list(name).to_vec();
     match replace {
@@ -2939,14 +2960,14 @@ fn combo_recorded(key: &'static str, replace: Option<usize>, combo: Combo) {
         true
     });
     if mine == s.list(name) {
-        return;
+        return Plan::Nothing;
     }
     let title = entry(name).1;
     let caps = crate::hints::caps(&combo);
     let words = spelled(&caps);
     let edit = Edit::Combos(key, mine);
     let prompt = match s.combo_owner(name, combo) {
-        None => return commit(edit, title),
+        None => return Plan::Commit(edit, title),
         Some(Owner::List(other)) => {
             let (other_key, other_title) = entry(other);
             let rest: Vec<Combo> = s.list(other).iter().filter(|c| **c != combo).copied().collect();
@@ -2971,7 +2992,7 @@ fn combo_recorded(key: &'static str, replace: Option<usize>, combo: Combo) {
             }
         }
     };
-    ask(key, prompt);
+    Plan::Ask(prompt)
 }
 
 fn ask(key: &'static str, prompt: Prompt) {
@@ -2986,12 +3007,16 @@ fn ask(key: &'static str, prompt: Prompt) {
 /// Modifiers for a digit set: saved, or the clash prompt when another set has them. A list on
 /// one of their digits is no clash: the set skips that digit.
 fn digits_recorded(key: &'static str, mods: u8) {
+    run(plan_digits(key, mods));
+}
+
+pub(crate) fn plan_digits(key: &'static str, mods: u8) -> Plan {
     let (s, name) = (settings::get(), name_of(key));
     if s.set(name) == Some(mods) {
-        return;
+        return Plan::Nothing;
     }
     let edit = Edit::Digits(key, Some(mods));
-    let Some(other) = s.set_owner(name, mods) else { return commit(edit, entry(name).1) };
+    let Some(other) = s.set_owner(name, mods) else { return Plan::Commit(edit, entry(name).1) };
     let (other_key, other_title) = entry(other);
     let caps = digit_caps(mods);
     let prompt = Prompt {
@@ -3001,7 +3026,7 @@ fn digits_recorded(key: &'static str, mods: u8) {
         sub: format!("“{other_title}” uses it. Move it here and “{other_title}” turns off. Cancel changes nothing."),
         edit: Edit::Pair(Box::new(edit), Box::new(Edit::Digits(other_key, None))),
     };
-    ask(key, prompt);
+    Plan::Ask(prompt)
 }
 
 /// × on a key: that list loses it, a digit set turns off. No key left means off.
@@ -3020,20 +3045,24 @@ fn remove(key: &'static str, i: usize) {
 /// des-k or Windows for an action's Windows key (AC-SET-4): Windows removes that one key and
 /// keeps your others; des-k adds it back through the clash check.
 fn give_key(key: &'static str, desk: bool) {
-    let Some(sh) = shortcut(key) else { return };
-    let Some((wk, _)) = sh.win else { return };
+    run(plan_give(key, desk));
+}
+
+pub(crate) fn plan_give(key: &'static str, desk: bool) -> Plan {
+    let Some(sh) = shortcut(key) else { return Plan::Nothing };
+    let Some((wk, _)) = sh.win else { return Plan::Nothing };
     let s = settings::get();
     if desk == has_win(s, sh) || (desk && took(s, sh).is_some()) {
-        return;
+        return Plan::Nothing;
     }
     match (wk, desk) {
-        (WinKey::Combo(c), true) => combo_recorded(key, None, c),
-        (WinKey::Digits(m), true) => digits_recorded(key, m),
+        (WinKey::Combo(c), true) => plan_combo(key, None, c),
+        (WinKey::Digits(m), true) => plan_digits(key, m),
         (WinKey::Combo(c), false) => {
             let rest: Vec<Combo> = s.list(name_of(key)).iter().filter(|x| **x != c).copied().collect();
-            commit(Edit::Combos(key, rest), sh.title);
+            Plan::Commit(Edit::Combos(key, rest), sh.title)
         }
-        (WinKey::Digits(_), false) => commit(Edit::Digits(key, None), sh.title),
+        (WinKey::Digits(_), false) => Plan::Commit(Edit::Digits(key, None), sh.title),
     }
 }
 
@@ -3071,15 +3100,20 @@ fn reset_keys(key: &'static str) {
 /// One gesture row's once or twice action; None: no twice rule. The whole map is written again,
 /// every row's once rule included.
 fn set_gesture(row: usize, times: u8, action: Option<Action>) {
+    if let Some(edit) = gesture_edit(row, times, action) {
+        commit(edit, "Gestures");
+    }
+}
+
+pub(crate) fn gesture_edit(row: usize, times: u8, action: Option<Action>) -> Option<Edit> {
     let s = settings::get();
     let (fingers, motion) = settings::GESTURE_ROWS[row];
     let now = s.rule(fingers, motion, times);
     // A row with no once rule in the file shows Nothing; picking Nothing writes it down.
     if now == action && (times == 2 || now.is_some()) {
-        return;
+        return None;
     }
-    let map = settings::full_map(|f, m, t| if (f, m, t) == (fingers, motion, times) { action } else { s.rule(f, m, t) });
-    commit(Edit::Gestures(map), "Gestures");
+    Some(Edit::Gestures(settings::full_map(|f, m, t| if (f, m, t) == (fingers, motion, times) { action } else { s.rule(f, m, t) })))
 }
 
 /// Opens a picker's menu, its chosen line with the keyboard focus.
@@ -3119,7 +3153,7 @@ fn act(ctl: Ctl) {
     let s = settings::get();
     match ctl {
         Ctl::Side(sec) => jump(sec),
-        Ctl::Welcome => crate::welcome::show(false),
+        Ctl::Welcome => crate::welcome::show(),
         Ctl::Open => crate::tray::open(&settings::path()),
         Ctl::Toggle(key) => save(key, 1 - value(s, key)),
         Ctl::Minus(key) => step_key(key, false),

@@ -733,6 +733,9 @@ fn act(how: Act) {
         Ok(()) => {
             used(h);
             close(false);
+            if matches!(how, Act::Go) {
+                crate::welcome::tried(crate::welcome::Try::Find);
+            }
         }
         Err(Miss::Gone) => {
             println!("finder: \"{title}\" is gone");

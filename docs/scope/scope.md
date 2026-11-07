@@ -281,9 +281,9 @@ spec [0017](../specs/0017-look-b-screens/index.md) · code in `src/ui.rs`, `src/
 - [x] Design it (spec): `/architect the new screens`
 - [ ] Build it: `/develop look b screens`
   - [ ] Design side first: cross flow review of the seven boards, and the rows for `fastest` and the overview fade time approved (AC-11)
-  - [ ] Indicator with the shared layer: tokens, fonts, popup helper, theme check, motion, screen names, the start of the Narrator layer, `fastest` and `[indicator] style` (AC-1 to AC-6, AC-10)
-  - [ ] Finder and overview, with `[overview] fade_ms`, the repaint rules and the timing log line (AC-1, AC-4 to AC-8, AC-10)
-  - [ ] Tray menu popup and Shortcut hints, with `[shortcuts] hints`, `WM_APP + 14` and version 4 tray messages (AC-1, AC-4, AC-5, AC-10)
+  - [x] Indicator with the shared layer: tokens, fonts, popup helper, theme check, motion, screen names, the start of the Narrator layer, `fastest` and `[indicator] style` (AC-1 to AC-6, AC-10)
+  - [x] Finder and overview, with `[overview] fade_ms`, the repaint rules and the timing log line (AC-1, AC-4 to AC-8, AC-10)
+  - [x] Tray menu popup and Shortcut hints, with `[shortcuts] hints`, `WM_APP + 14` and version 4 tray messages (AC-1, AC-4, AC-5, AC-10)
   - [ ] Settings page and first run, with `first_run_seen`; then 0.4.0 (AC-1, AC-2, AC-5, AC-9 to AC-12)
 
 ## Deferred

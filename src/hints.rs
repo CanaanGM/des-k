@@ -975,6 +975,7 @@ fn close(h: HWND) {
 fn start_rec() {
     let Some(h) = hwnd() else { return };
     crate::settings_page::cancel_recording(); // one recording at a time
+    crate::welcome::cancel_recording();
     let _ = set(|w| {
         w.rec = Rec::Recording(None);
         w.error = None;

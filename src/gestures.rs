@@ -29,6 +29,7 @@ pub fn run(gesture: usize) {
         Action::Switch(dir) => {
             close();
             ws::switch(dir);
+            crate::welcome::tried(crate::welcome::Try::Switch);
         }
         Action::Send(dir, follow) => {
             close();
@@ -50,6 +51,7 @@ pub fn run(gesture: usize) {
         Action::Overview => {
             finder::close(true);
             overview::toggle();
+            crate::welcome::tried(crate::welcome::Try::Overview);
         }
         // With the finder or overview open, it only closes them.
         Action::ShowDesktop if finder::is_open() || overview::is_open() => close(),

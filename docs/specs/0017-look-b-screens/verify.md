@@ -1,4 +1,4 @@
-# Verify: Look B screens · spec 0017 · updated 2026-11-07 (slice 5)
+# Verify: Look B screens · spec 0017 · updated 2026-11-07 (slice 6)
 _Steps derived from spec 0017 acceptance criteria. `/check verify` runs these; `/test` locks the durable ones. Each slice adds its own section._
 
 ## Slice 1: indicator and the shared layer
@@ -205,7 +205,46 @@ Built to `pdesk-design/restart/settings-r3.html` (r2.1) with the motion rows of 
 - [ ] Workspace numbers: switch on one screen → within 1 s its row's ringed tile and its picture's number move → AC-SET-3
 - [ ] The preview's screen: drag the page to the other screen → the preview names that screen and its workspace → AC-SET-7
 
+## Slice 6: first run
+
+Built to `pdesk-design/restart/first-run-r11.html` (r9.2, approved 2026-11-04) with the More rows of `first-run-r15.html` (handoff `des-k-motion-rows` revision 2, approved 2026-11-07). Run the build as in slice 1.
+
+### UI / manual
+- [ ] A fresh install (`first_run_seen = false`) → the first run opens at start on the screen under the mouse, and the file now says `first_run_seen = true`; start again → it stays shut → AC-9, AC-FR-1
+- [ ] Upgrade: a 0.3.0 `settings.toml` (no `first_run_seen`) and an existing `touchpad.txt` → it opens once, step 2 says "Your shortcuts from before", the key lands above `[shortcuts]` with the comments kept → AC-9
+- [ ] Break settings.toml (a line with no `=`), start → it opens, the log says it couldn't write `first_run_seen`; it opens at every start until the file is fixed → AC-9
+- [ ] Settings › Welcome → it opens at any time, or comes to the front → AC-FR-1
+- [ ] Step 1: press Win Ctrl → → the row ticks, says which screen switched and to what, the picture's number changes; Win Tab, then Win F and Enter on a window → all three tick and "That's des-k. Next: your keys." shows, Skip goes → AC-FR-2
+- [ ] Next from Try it to Shortcuts → the window grows from its top edge (bottom moves, top stays) over about 150 ms; with Skip animations on → at once → AC-FR-7, AC-6
+- [ ] Step 2: Find a window → Windows → "No key. Windows keeps Win F: opens Feedback Hub." and Set key; → des-k → Win F is back → AC-FR-4
+- [ ] Give Win 1–9 back to Windows on Go to workspace, then record Win Ctrl and a digit there → the clash note, Cancel focused; Move it here → Send window to 1–9 and stay reads "No key. Win Ctrl 1–9 now goes to workspace 1–9." with des-k greyed → AC-FR-4
+- [ ] Record Switch workspace with Win Alt held, press ← → both arrows get Win Alt, the row shows Win Alt ← →; a letter instead → "Press ← or →", still recording → AC-FR-4
+- [ ] While recording, Shift and a digit on Go to workspace → "Shift alone can't be used", still recording; Esc alone cancels; a click anywhere cancels → AC-FR-3, AC-FR-6
+- [ ] An action with two keys (add Ctrl Alt O to Open overview in the settings page), give Win Tab back → Ctrl Alt O stays → AC-FR-4
+- [ ] Step 3: Tab to the workspaces − → the warning names what moves per screen; press it → every screen drops to 3 → AC-FR-4
+- [ ] Step 3 More: Overview fades for greyed with "Not in use: Overview animation is None"; − and + do nothing but stay Tab stops; Fade → it works; Skip animations on → Indicator fades out and Overview fades for greyed with every reason → AC-FR-8, AC-11
+- [ ] Restore after restart off → its caption says it applies from des-k's next start → AC-FR-2
+- [ ] Step 4: with Windows' gestures on → "Turn off four gestures in Windows" and Set up in Windows Settings; turn two off → "2 of 4 done", the rows say which; all four → "des-k runs these" → AC-FR-5
+- [ ] Step 4: click a picker → the menu with every action, the chosen one checked, kept inside the window; Done twice opens its own menu; Key combo… records into the picker → AC-FR-5, AC-FR-6
+- [ ] Step 4: Give back → its result note; make a write fail (lock the key) → "Give back failed" with Try again, Give back hidden, and it stays when Windows' gestures read off again → AC-FR-5
+- [ ] No precision touchpad → four steps, no Touchpad step, Done says none was found → AC-FR-5
+- [ ] Step 5: Show opens Shortcut hints; Set key records the hints key and that key opens them; the main shortcuts and the "Taken over from Windows" line follow what you changed in step 2 → AC-FR-4
+- [ ] Keyboard: Tab visits every control (a stepper's − and + apart), footer last; first focus on each step is Next; Enter presses Next unless a button has focus; Esc cancels a recording, a clash or a menu first, then closes; closing keeps what is set → AC-FR-3, AC-FR-6
+- [ ] Light, dark, Aquatic: compare with `captures/fr11-*` and `fr15-*`; switch Windows' mode with it open → it repaints within 1 s → AC-1, AC-2
+- [ ] Narrator: each step reads "Step n of N", its heading, then every control with its value and state; a greyed stepper reads unavailable with its reason → AC-FR-9, AC-5
+- [ ] A 150% and a 100% screen → sharp at each; drag it between them → it follows; on a 1080p screen at 150% both heights fit → AC-4, AC-FR-7
+- [ ] After a give back, whether Windows Settings shows the gestures as on while they stay off until sign in (UX review M11, spec "check on the real machine")
+
+### Commands
+- [ ] `cargo test` → all pass, including `first_run_seen_tells_fresh_from_upgrade`, `first_run_seen_lands_above_the_first_table`, `the_taken_line_follows_what_des_k_holds`, `a_shortcut_row_says_where_its_windows_key_is`, `a_pair_shows_as_one_key_only_when_it_is_one`, `the_touchpad_states_word_each_case` → AC-9, AC-FR-4, AC-FR-5
+- [ ] `cargo test render_first_run -- --ignored` → `target/welcome/` holds 16 states in light, dark, Aquatic and light 150%; compare with the captures above → AC-1
+
+### Value sourcing
+- [ ] Step 1's result: switch on the other screen → it names that screen and its new workspace; with one screen → "Switched to workspace 2" → AC-FR-2
+- [ ] Done's touchpad line: change Windows' gestures with the first run open → within 1 s the row follows → AC-FR-5
+
 ## Acceptance-criteria coverage
+- Slice 6: AC-FR-1 to AC-FR-9 the first run steps · AC-9 the start steps · AC-11 its More rows · AC-1 its render step · AC-2, AC-4, AC-5, AC-6 its theme, scaling, Narrator and fastest steps
 - Slice 5: AC-SET-1 to AC-SET-10 the settings page steps · AC-11 its motion rows · AC-1 its render step · AC-2, AC-4, AC-5 its theme, scaling and Narrator steps
 - Slice 4: AC-TRY-1 to AC-TRY-11 the tray menu steps · AC-HNT-1 to AC-HNT-8 the hints steps · AC-1 their render step · AC-2, AC-4, AC-5 their theme, scaling and Narrator steps
 - Slice 3: AC-OVR-1 to AC-OVR-11 the overview steps · AC-1 its render step · AC-2, AC-4, AC-5, AC-6, AC-7, AC-8 its theme, scaling, Narrator, fastest, fade time and speed steps

@@ -155,6 +155,8 @@ pub struct Settings {
     pub copilot_as_right_ctrl: bool,
     pub follow_activation: bool,
     pub fastest: bool, // every des-k fade and move instant (spec 0017)
+    // Read at start only (spec 0017 AC-9). None: the file lacks the key, as an upgrader's does.
+    pub first_run_seen: Option<bool>,
     pub previous: Vec<Combo>,
     pub next: Vec<Combo>,
     pub send_previous: Vec<Combo>, // these two switch along with the window
@@ -212,6 +214,7 @@ impl Default for Settings {
             copilot_as_right_ctrl: true,
             follow_activation: true,
             fastest: false,
+            first_run_seen: Some(false),
             previous: vec![Combo { mods: WIN | CTRL, vk: VK_LEFT.0 }],
             next: vec![Combo { mods: WIN | CTRL, vk: VK_RIGHT.0 }],
             send_previous: vec![Combo { mods: WIN | CTRL | SHIFT, vk: VK_LEFT.0 }],
@@ -250,6 +253,7 @@ workspaces = 4              # 2 to 9, every screen
 copilot_as_right_ctrl = true
 follow_activation = true    # switch to a hidden window's workspace when it comes to the front
 fastest = false             # true: every des-k fade and move is instant
+first_run_seen = false      # false: the first run opens at the next start
 
 [shortcuts]
 # Keep these two if you switch with the touchpad swipe.
@@ -355,7 +359,7 @@ tap = true
 do = "notifications"
 "#;
 
-const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activation", "fastest", "shortcuts", "indicator", "restore", "overview", "touchpad", "gesture"];
+const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activation", "fastest", "first_run_seen", "shortcuts", "indicator", "restore", "overview", "touchpad", "gesture"];
 const SHORTCUT_KEYS: &[&str] = &["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "jump", "send_to", "send_to_stay", "finder", "overview", "pin", "hints"];
 const INDICATOR_KEYS: &[&str] = &["enabled", "style", "hold_ms", "fade_ms"];
 const RESTORE_KEYS: &[&str] = &["enabled", "minutes"];
@@ -721,6 +725,7 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
     s.copilot_as_right_ctrl = boolean(&top, "copilot_as_right_ctrl", "copilot_as_right_ctrl", s.copilot_as_right_ctrl, &mut warn);
     s.follow_activation = boolean(&top, "follow_activation", "follow_activation", s.follow_activation, &mut warn);
     s.fastest = boolean(&top, "fastest", "fastest", s.fastest, &mut warn);
+    s.first_run_seen = top.contains_key("first_run_seen").then(|| boolean(&top, "first_run_seen", "first_run_seen", false, &mut warn));
 
     if let Some(t) = section(&top, "shortcuts", &mut warn) {
         unknown_keys(t, "shortcuts.", SHORTCUT_KEYS, &mut warn);
@@ -1275,6 +1280,7 @@ impl Settings {
             ("copilot_as_right_ctrl", self.copilot_as_right_ctrl.to_string()),
             ("follow_activation", self.follow_activation.to_string()),
             ("fastest", self.fastest.to_string()),
+            ("first_run_seen", self.first_run_seen.map_or(String::new(), |b| b.to_string())),
             ("shortcuts.previous", list(&self.previous)),
             ("shortcuts.next", list(&self.next)),
             ("shortcuts.send_previous", list(&self.send_previous)),
@@ -1371,6 +1377,31 @@ mod tests {
         assert_eq!((s.fastest, s.indicator_style, s.hold_ms), (false, Style::Card, 900));
         assert_eq!(warn.len(), 2, "{warn:?}");
         assert!(warn[1].starts_with("indicator.style: \"pill\" is not one of \"card\", \"dots\""), "{warn:?}");
+    }
+
+    // A fresh file says false and an upgrader's lacks the key: both must see the first run once.
+    #[test]
+    fn first_run_seen_tells_fresh_from_upgrade() {
+        assert_eq!(parse(DEFAULT_FILE).0.first_run_seen, Some(false));
+        assert_eq!(parse("workspaces = 3\n").0.first_run_seen, None);
+        assert_eq!(parse("first_run_seen = true\n").0.first_run_seen, Some(true));
+        // A typo shows the first run again rather than never.
+        let (s, warn) = parse("first_run_seen = \"yes\"\n");
+        assert_eq!((s.first_run_seen, warn.len()), (Some(false), 1));
+    }
+
+    // Every upgrade writes first_run_seen into a 0.3.0 file that never had it. The key must
+    // land in the root table (above [shortcuts], or TOML would read it as a shortcut), the
+    // comment over [shortcuts] must stay with its header, and the new key has no comment.
+    #[test]
+    fn first_run_seen_lands_above_the_first_table() {
+        let old = "# des-k settings.\n\nworkspaces = 4\nfastest = false\n\n# Your keys.\n[shortcuts]\nfinder = [\"Win+F\"]\n";
+        let new = edit_text(old, &Edit::Value("first_run_seen", true.into())).unwrap();
+        let (key, header, comment) = (new.find("first_run_seen = true").unwrap(), new.find("[shortcuts]").unwrap(), new.find("# Your keys.").unwrap());
+        assert!(key < comment && comment < header, "{new}");
+        assert_eq!(new.lines().find(|l| l.starts_with("first_run_seen")), Some("first_run_seen = true"));
+        assert_eq!(parse(&new).0.first_run_seen, Some(true));
+        assert_eq!(parse(&new).0.finder, Settings::default().finder);
     }
 
     // The overview's fade time is yours to shorten (0 is instant) but never past a second; a
@@ -1864,6 +1895,6 @@ do = "previous"
         let mut unique = names.clone();
         unique.sort();
         unique.dedup();
-        assert_eq!((names.len(), unique.len()), (31, 31));
+        assert_eq!((names.len(), unique.len()), (32, 32));
     }
 }
