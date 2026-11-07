@@ -1,10 +1,11 @@
 // Tray icon near the clock: shows des-k is running, opens des-k's own menu (tray_menu.rs, spec
 // 0017) with Shortcut hints, Settings, Open log, Check for updates (spec 0015) and Quit, and
-// runs what you pick there. Warns once when hiding windows stopped working. Lives on the main
+// runs what you pick there, an update install too (spec 0018). Warns once when hiding windows stopped working. Lives on the main
 // thread (its messages come through main's loop), adds itself again whenever explorer
 // restarts, and has des-k hide its windows again then.
 use crate::tray_menu::{self, Check, Id, Menu, Quit};
-use crate::update::{self, Answer};
+use crate::install::{self, InstallFail, Msg, Outcome, Phase};
+use crate::update::{self, Answer, Version};
 use std::cell::{Cell, RefCell};
 use std::path::Path;
 use windows::Win32::{
@@ -40,10 +41,11 @@ thread_local! {
     static ICON: Cell<Option<HICON>> = const { Cell::new(None) };
     static TASKBAR_CREATED: Cell<u32> = const { Cell::new(0) };
     static BROKEN: Cell<bool> = const { Cell::new(false) }; // warned that hiding does not work
-    /// What a click on the current balloon opens: only a "newer" balloon has one.
-    static BALLOON_URL: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// What a click on the current balloon does, if anything.
+    static BALLOON: RefCell<Option<Click>> = const { RefCell::new(None) };
     /// An update answer while the broken warning shows (spec 0015 AC-9, spec 0017 AC-TRY-7):
-    /// the menu's update item says it instead of a balloon, until the next check.
+    /// the menu's update item says it instead of a balloon, until the next check. A newer
+    /// release is always kept, so the item offers it after the balloon is gone (spec 0018 AC-1).
     static ANSWER: Cell<Option<Answer>> = const { Cell::new(None) };
     /// The icon's last mouse or key event (mouse moves aside), and the last one that opened
     /// or closed the menu with its time (AC-TRY-8).
@@ -65,11 +67,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                         let at = POINT { x: (wp.0 & 0xFFFF) as i16 as i32, y: (wp.0 >> 16 & 0xFFFF) as i16 as i32 };
                         clicked(hwnd, event, at);
                     }
-                    NIN_BALLOONUSERCLICK => {
-                        if let Some(url) = BALLOON_URL.take() {
-                            open(Path::new(&url));
-                        }
-                    }
+                    NIN_BALLOONUSERCLICK => match BALLOON.take() {
+                        Some(Click::Open(what)) => open(Path::new(&what)),
+                        Some(Click::Install(v)) => install::start(hwnd, v),
+                        None => {}
+                    },
                     _ => {}
                 }
                 if event != WM_MOUSEMOVE {
@@ -79,6 +81,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             update::WM_UPDATE => {
                 answered(update::unpack(wp, lp).unwrap_or(Answer::Failed(update::Fail::Crashed)));
+                LRESULT(0)
+            }
+            install::WM_INSTALL => {
+                match install::unpack(wp, lp) {
+                    Some((m, v)) => install_said(m, v),
+                    None => eprintln!("tray: an install message it cannot read ({:#x}, {:#x})", wp.0, lp.0),
+                }
                 LRESULT(0)
             }
             // Explorer restarted (or the taskbar changed scale): the old icon is gone, and the
@@ -217,13 +226,21 @@ pub fn screens_changed(lines: &[String]) {
     balloon("Screens changed", &lines.join("\n"), false, None);
 }
 
-/// A balloon from the icon; a click on it opens `url`, if any. Sets the tooltip too, so the
-/// broken one stays (BROKEN is set before its balloon).
-fn balloon(title: &str, text: &str, warn: bool, url: Option<String>) {
-    BALLOON_URL.replace(url);
+/// What a balloon click does: open a page or file through explorer, or install a release.
+#[derive(Clone, Debug)]
+enum Click {
+    Open(String),
+    Install(Version),
+}
+
+/// A balloon from the icon, and what a click on it does. Sets the tooltip too, so the broken
+/// one stays (BROKEN is set before its balloon).
+fn balloon(title: &str, text: &str, warn: bool, click: Option<Click>) {
+    BALLOON.replace(click);
     let Some(h) = WND.get() else { return };
     let mut nid = data(h);
-    nid.uFlags = NIF_TIP | NIF_INFO;
+    // Without NIF_SHOWTIP, version 4 hides the tooltip from this balloon on.
+    nid.uFlags = NIF_TIP | NIF_INFO | NIF_SHOWTIP;
     nid.dwInfoFlags = if warn { NIIF_WARNING } else { NIIF_INFO };
     copy(&mut nid.szTip, if BROKEN.get() { BROKEN_TIP } else { TIP });
     copy(&mut nid.szInfoTitle, title);
@@ -245,15 +262,51 @@ fn version() -> String {
 /// (spec 0015 AC-9, spec 0017 AC-TRY-7).
 fn answered(a: Answer) {
     let ours = version();
-    if BROKEN.get() {
+    if BROKEN.get() || matches!(a, Answer::Newer(_)) {
         ANSWER.set(Some(a));
+    }
+    if BROKEN.get() {
         return;
     }
     match a {
-        Answer::Newer(v) => balloon("des-k update", &format!("des-k {v} is out (you have {ours}). Click here to open its page."), false, Some(update::page(v))),
+        Answer::Newer(v) if install::can_install() => balloon("des-k update", &format!("des-k {v} is out (you have {ours}). Click here to install it."), false, Some(Click::Install(v))),
+        Answer::Newer(v) => balloon("des-k update", &format!("des-k {v} is out (you have {ours}). Click here to open its page."), false, Some(Click::Open(update::page(v)))),
         Answer::Newest(_) => balloon("des-k is up to date", &format!("You have the newest des-k ({ours})."), false, None),
         Answer::Failed(f) => balloon("Could not check for updates", &f.words(), true, None),
     }
+}
+
+/// `setup.log` when the setup wrote one, else the release's page (spec 0018 AC-8).
+fn log_or_page(v: Version) -> Click {
+    Click::Open(install::setup_log().map_or_else(|| update::page(v), |p| p.to_string_lossy().into_owned()))
+}
+
+/// The install worker's word (spec 0018). Started only changes the item, which reads the
+/// phase. A failure says why, never over the broken warning (AC-9): the log has it, and the
+/// item offers the install again.
+fn install_said(m: Msg, v: Version) {
+    let Msg::Failed(f) = m else { return };
+    if BROKEN.get() {
+        return println!("tray: no balloon over the hiding warning: the install of {v} failed ({f:?})");
+    }
+    match f {
+        InstallFail::SetupStopped => balloon("des-k was not updated", &format!("The update to {v} did not install. Click here to open the setup's log."), true, Some(log_or_page(v))),
+        InstallFail::Slow => balloon("des-k was not updated", "The setup is taking unusually long. des-k carries on.", true, Some(log_or_page(v))),
+        f => balloon(&format!("Could not install des-k {v}"), &format!("{} Click here to open its page.", f.reason()), true, Some(Click::Open(update::page(v)))),
+    }
+}
+
+/// At start: what the last install did, once (spec 0018 AC-7, AC-8, AC-9).
+pub fn installed(o: Outcome) {
+    let (title, text, warn, click) = match o {
+        Outcome::Nothing => return,
+        Outcome::Updated(v) => ("des-k updated", format!("You now have des-k {v}."), false, None),
+        Outcome::NotUpdated(v) => ("des-k was not updated", format!("The update to {v} did not install. Click here to open the setup's log."), true, Some(log_or_page(v))),
+    };
+    if BROKEN.get() {
+        return println!("tray: no balloon over the hiding warning: {title}: {text}");
+    }
+    balloon(title, &text, warn, click);
 }
 
 /// Four rounded squares in one blend, purple at the bottom left to red at the top right.
@@ -301,12 +354,15 @@ pub fn draw_icon() -> Option<HICON> {
 /// What the menu shows now (spec 0017 AC-TRY-2 to AC-TRY-7).
 fn menu() -> Menu {
     let ours = update::ours();
-    let check = match ANSWER.get() {
+    let check = match (install::phase(), ANSWER.get()) {
+        (Phase::Downloading(v), _) => Check::Downloading(v),
+        (Phase::Installing(v), _) => Check::Installing(v),
         _ if update::running() => Check::Busy,
-        Some(Answer::Newer(v)) => Check::Newer(v),
-        Some(Answer::Newest(v)) => Check::Newest(ours.unwrap_or(v)),
-        Some(Answer::Failed(f)) => Check::Failed(f),
-        None => Check::Ready,
+        (_, Some(Answer::Newer(v))) if install::can_install() => Check::Install(v),
+        (_, Some(Answer::Newer(v))) => Check::Newer(v),
+        (_, Some(Answer::Newest(v))) => Check::Newest(ours.unwrap_or(v)),
+        (_, Some(Answer::Failed(f))) => Check::Failed(f),
+        (_, None) => Check::Ready,
     };
     // With Windows' gestures off, quitting leaves the touchpad with none: say for how long.
     let st = crate::setup::state();
@@ -339,6 +395,7 @@ pub fn act(id: Id) {
         Id::Settings => crate::settings_page::open(None),
         Id::Log => open(&log_path()),
         Id::Update => match ANSWER.get() {
+            Some(Answer::Newer(v)) if install::can_install() => install::start(hwnd, v),
             Some(Answer::Newer(v)) => open(Path::new(&update::page(v))),
             // A check you start answers anew: the old answer goes.
             _ => {

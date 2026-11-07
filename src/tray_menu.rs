@@ -61,6 +61,10 @@ pub(crate) enum Check {
     Newer(Version),
     Newest(Version), // the one you have
     Failed(Fail),
+    /// The installed admin copy installs it itself (spec 0018 AC-1, AC-3, AC-6).
+    Install(Version),
+    Downloading(Version),
+    Installing(Version),
 }
 
 /// What Quit does to the touchpad, from setup::state() (spec 0015 AC-1).
@@ -124,6 +128,17 @@ impl Menu {
             }
             Check::Newest(v) => update.line = format!("You have the newest ({v})."),
             Check::Failed(f) => update.line = failed_line(f),
+            Check::Install(v) => {
+                update = Item { icon: "\u{E896}", label: format!("Install {v}"), line: "Downloads and installs it".into(), new: true, ..update };
+            }
+            Check::Downloading(v) => {
+                update.label = format!("Downloading des-k {v}…");
+                update.on = false;
+            }
+            Check::Installing(v) => {
+                update.label = format!("Installing des-k {v}…");
+                update.on = false;
+            }
         }
         let quit = match self.quit {
             Quit::Plain => "Every hidden window comes back.",
@@ -785,6 +800,14 @@ mod tests {
         m.check = Check::Newer(Version(0, 4, 0));
         let up = &m.items()[3];
         assert_eq!((up.label.as_str(), up.line.as_str(), up.new, up.on), ("Update to 0.4.0", "Opens its page on github.com", true, true));
+        // Spec 0018: the installed admin copy installs it, and the item can't start a second one.
+        m.check = Check::Install(Version(0, 4, 2));
+        let up = &m.items()[3];
+        assert_eq!((up.label.as_str(), up.line.as_str(), up.new, up.on), ("Install 0.4.2", "Downloads and installs it", true, true));
+        m.check = Check::Downloading(Version(0, 4, 2));
+        assert_eq!((m.items()[3].label.as_str(), m.items()[3].on), ("Downloading des-k 0.4.2…", false));
+        m.check = Check::Installing(Version(0, 4, 2));
+        assert_eq!((m.items()[3].label.as_str(), m.items()[3].on), ("Installing des-k 0.4.2…", false));
         m.check = Check::Failed(Fail::NoConnection);
         assert_eq!(m.items()[3].line, "Couldn't check: no connection to GitHub.");
         m.check = Check::Failed(Fail::Timeout);

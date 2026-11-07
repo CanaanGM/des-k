@@ -2,7 +2,7 @@
 
 **Date**: 2026-11-03
 **Status**: In Progress
-**Amended by**: [0017](../0017-look-b-screens/0017-tray-menu.md): the tray menu, and AC-9 (AC-TRY-7).
+**Amended by**: [0017](../0017-look-b-screens/0017-tray-menu.md): the tray menu, and AC-9 (AC-TRY-7). [0018](../0018-install-updates-from-tray/index.md): AC-7, for the installed admin copy, which now downloads, verifies and runs the release's setup when you click.
 
 ## Summary
 

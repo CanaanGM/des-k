@@ -15,14 +15,15 @@ use windows::core::{HSTRING, PCWSTR, w};
 /// and lParam from `pack`. Its own id: main's loop matches thread messages by id alone.
 pub const WM_UPDATE: u32 = WM_APP + 13;
 
-const HOST: PCWSTR = w!("github.com");
+pub(crate) const HOST: PCWSTR = w!("github.com");
 const LATEST: PCWSTR = w!("/CanaanGM/des-k/releases/latest");
 const RELEASES: &str = "https://github.com/CanaanGM/des-k/releases";
 const TAG: &str = "https://github.com/CanaanGM/des-k/releases/tag/";
-const TIMEOUT_MS: i32 = 10_000;
+pub(crate) const TIMEOUT_MS: i32 = 10_000;
 
-/// A check is in flight: set by `check`, cleared by the worker's guard on every exit (AC-6).
-static RUNNING: AtomicBool = AtomicBool::new(false);
+/// A check or an install (spec 0018) is in flight: set by `check` or `install::start`, cleared
+/// by that worker's guard on every exit (AC-6).
+pub(crate) static RUNNING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Version(pub u16, pub u16, pub u16);
@@ -58,7 +59,12 @@ pub enum Answer {
 impl Fail {
     /// The balloon's words; the details went to the log from the worker.
     pub fn words(self) -> String {
-        let what = match self {
+        self.reason() + " des-k carries on as before."
+    }
+
+    /// What went wrong, one sentence (the install's balloon reuses it, spec 0018).
+    pub fn reason(self) -> String {
+        match self {
             Fail::NoConnection => "No connection to GitHub.".to_string(),
             Fail::Timeout => "GitHub did not answer in time.".to_string(),
             Fail::Certificate => "The secure connection to GitHub failed.".to_string(),
@@ -69,12 +75,11 @@ impl Fail {
             Fail::BadTag => "The newest release has an unexpected name (the log has it).".to_string(),
             Fail::OurVersion => "This des-k's own version could not be read.".to_string(),
             Fail::Crashed => "The check stopped with an error (the log has it).".to_string(),
-        };
-        what + " des-k carries on as before."
+        }
     }
 
     /// The code `pack` carries, and the number beside it (the status for `Status`).
-    fn code(self) -> (usize, u16) {
+    pub(crate) fn code(self) -> (usize, u16) {
         match self {
             Fail::NoConnection => (0, 0),
             Fail::Timeout => (1, 0),
@@ -89,7 +94,7 @@ impl Fail {
         }
     }
 
-    fn from_code(code: usize, n: u16) -> Option<Fail> {
+    pub(crate) fn from_code(code: usize, n: u16) -> Option<Fail> {
         Some(match code {
             0 => Fail::NoConnection,
             1 => Fail::Timeout,
@@ -241,10 +246,10 @@ fn run() -> Answer {
 }
 
 /// A WinHTTP handle closed on drop, so every path closes all three.
-struct Handle(*mut core::ffi::c_void);
+pub(crate) struct Handle(pub(crate) *mut core::ffi::c_void);
 
 impl Handle {
-    fn new(h: *mut core::ffi::c_void, what: &str) -> Result<Handle, Fail> {
+    pub(crate) fn new(h: *mut core::ffi::c_void, what: &str) -> Result<Handle, Fail> {
         if h.is_null() { Err(fail(windows::core::Error::from_thread(), what)) } else { Ok(Handle(h)) }
     }
 }
@@ -256,7 +261,7 @@ impl Drop for Handle {
 }
 
 /// A WinHTTP error into a `Fail`, its code into the log.
-fn fail(e: windows::core::Error, what: &str) -> Fail {
+pub(crate) fn fail(e: windows::core::Error, what: &str) -> Fail {
     eprintln!("update check: {what} failed: {e}");
     let code = e.code().0 as u32 & 0xFFFF;
     match code {
