@@ -161,11 +161,11 @@ fn pad_for(dev: HANDLE) -> Result<Pad, String> {
         let (xmm, ymm) = match (mm_per_unit(x), mm_per_unit(y)) {
             (Some(a), Some(b)) => (a, b),
             _ => {
-                println!("touchpad {vid:04x}:{pid:04x}: no usable size in its description, assuming 100 × 60 mm");
+                info!("touchpad {vid:04x}:{pid:04x}: no usable size in its description, assuming 100 × 60 mm");
                 (100.0 / w, 60.0 / h)
             }
         };
-        println!("touchpad {vid:04x}:{pid:04x}, {:.0} × {:.0} mm, {} finger slots", w * xmm, h * ymm, fingers.len());
+        info!("touchpad {vid:04x}:{pid:04x}, {:.0} × {:.0} mm, {} finger slots", w * xmm, h * ymm, fingers.len());
         Ok(Pad {
             pre,
             fingers,
@@ -179,7 +179,7 @@ fn pad_for(dev: HANDLE) -> Result<Pad, String> {
 
 /// Reads and logs a touchpad the first time it is seen.
 fn add(pads: &mut HashMap<isize, Option<Pad>>, dev: HANDLE) {
-    pads.entry(dev.0 as isize).or_insert_with(|| pad_for(dev).map_err(|e| eprintln!("{e}")).ok());
+    pads.entry(dev.0 as isize).or_insert_with(|| pad_for(dev).map_err(|e| warn!("{e}")).ok());
 }
 
 /// Every precision touchpad there now.
@@ -211,7 +211,7 @@ pub fn present() -> bool {
 fn add_all() {
     let list = touchpads();
     if list.is_empty() {
-        println!("no precision touchpad found: no touchpad gestures");
+        info!("no precision touchpad found: no touchpad gestures");
     }
     PADS.with_borrow_mut(|pads| {
         for d in list {
@@ -321,13 +321,13 @@ impl Session {
 fn post(fingers: usize, motion: Motion, rule: Option<usize>) {
     match rule.and_then(|i| settings::get().gestures.get(i)) {
         Some(g) => {
-            println!("gesture {g} → {}", g.action);
+            info!("gesture {g} → {}", g.action);
             unsafe {
                 let w = crate::gestures::pack(g.fingers, g.motion, g.times);
                 let _ = PostThreadMessageW(MAIN_THREAD.load(Ordering::Relaxed), WM_GESTURE, WPARAM(w), LPARAM(0));
             }
         }
-        None => println!("gesture {fingers} {} → no rule", motion.word()),
+        None => info!("gesture {fingers} {} → no rule", motion.word()),
     }
 }
 
@@ -336,7 +336,7 @@ fn post(fingers: usize, motion: Motion, rule: Option<usize>) {
 fn recognized(hwnd: HWND, fingers: usize, motion: Motion) {
     // Read now, before any twice wait: while Windows acts on gestures too, each would do two things.
     if let Err(why) = crate::setup::windows_off() {
-        return println!("gesture {fingers} {} → skipped, Windows' {why}", motion.word());
+        return info!("gesture {fingers} {} → skipped, Windows' {why}", motion.word());
     }
     let (once, twice) = settings::rules_for(fingers, motion);
     if let Some(p) = PENDING.take() {
@@ -433,7 +433,7 @@ unsafe extern "system" fn wnd(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESUL
 pub fn spawn(main_thread: u32) {
     MAIN_THREAD.store(main_thread, Ordering::Relaxed);
     if !settings::get().touchpad_enabled {
-        println!("touchpad gestures off ([touchpad] enabled = false)");
+        info!("touchpad gestures off ([touchpad] enabled = false)");
         return;
     }
     start();
@@ -455,7 +455,7 @@ pub fn start() {
     }
     std::thread::spawn(|| unsafe {
         let Ok(module) = GetModuleHandleW(None) else {
-            eprintln!("touchpad: no module handle, no gestures");
+            error!("touchpad: no module handle, no gestures");
             return;
         };
         let wc = WNDCLASSW { lpfnWndProc: Some(wnd), hInstance: module.into(), lpszClassName: CLASS, ..Default::default() };
@@ -463,7 +463,7 @@ pub fn start() {
         let hwnd = match CreateWindowExW(Default::default(), CLASS, w!(""), Default::default(), 0, 0, 0, 0, Some(HWND_MESSAGE), None, Some(module.into()), None) {
             Ok(h) => h,
             Err(e) => {
-                eprintln!("touchpad: no window, no gestures: {e}");
+                error!("touchpad: no window, no gestures: {e}");
                 return;
             }
         };
@@ -472,7 +472,7 @@ pub fn start() {
         // INPUTSINK: reports arrive whatever window has focus. DEVNOTIFY: touchpads coming and going.
         let rid = RAWINPUTDEVICE { usUsagePage: 0x0D, usUsage: 0x05, dwFlags: RIDEV_INPUTSINK | RIDEV_DEVNOTIFY, hwndTarget: hwnd };
         if let Err(e) = RegisterRawInputDevices(&[rid], size_of::<RAWINPUTDEVICE>() as u32) {
-            eprintln!("touchpad: raw input not registered, no gestures: {e}");
+            error!("touchpad: raw input not registered, no gestures: {e}");
             return;
         }
         let mut msg = MSG::default();

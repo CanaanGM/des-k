@@ -326,7 +326,7 @@ pub(crate) fn just_lost() -> bool {
 /// Opens the menu by the icon: at `at` (where the click was), clear of `icon`, the icon's
 /// rectangle; a keyboard open starts from the icon and puts focus on the first item.
 pub(crate) fn open(menu: Menu, at: POINT, icon: Option<RECT>, keyboard: bool) {
-    let Some(popup) = window() else { return eprintln!("tray menu: window not created") };
+    let Some(popup) = window() else { return warn!("tray menu: window not created") };
     ui::gdiplus();
     let anchor = match (keyboard, icon) {
         (true, Some(r)) => POINT { x: (r.left + r.right) / 2, y: r.top },
@@ -368,7 +368,7 @@ pub(crate) fn open(menu: Menu, at: POINT, icon: Option<RECT>, keyboard: bool) {
         let _ = ShowWindow(popup, SW_SHOW);
         let _ = SetForegroundWindow(popup);
         if GetForegroundWindow() != popup {
-            eprintln!("tray menu: Windows refused focus, so it closes when you click elsewhere only");
+            warn!("tray menu: Windows refused focus, so it closes when you click elsewhere only");
         }
     }
     TREE.with(|t| uia::raise(popup, t, &[], UIA_MenuOpenedEventId, WHO));

@@ -461,7 +461,7 @@ pub(crate) fn variable() -> bool {
     VARIABLE.get().unwrap_or_else(|| {
         let has = has_face(w!("Segoe UI Variable Text"));
         if !has {
-            eprintln!("fonts: Segoe UI Variable is not installed, des-k uses Segoe UI");
+            warn!("fonts: Segoe UI Variable is not installed, des-k uses Segoe UI");
         }
         VARIABLE.set(Some(has));
         has
@@ -473,7 +473,7 @@ fn fluent() -> bool {
     FLUENT.get().unwrap_or_else(|| {
         let has = has_face(w!("Segoe Fluent Icons"));
         if !has {
-            eprintln!("fonts: Segoe Fluent Icons is not installed, des-k uses Segoe MDL2 Assets");
+            warn!("fonts: Segoe Fluent Icons is not installed, des-k uses Segoe MDL2 Assets");
         }
         FLUENT.set(Some(has));
         has
@@ -530,7 +530,7 @@ pub(crate) fn gdiplus() -> bool {
     let status = unsafe { gp::GdiplusStartup(&mut token, &input, std::ptr::null_mut()) };
     let ok = status.0 == 0;
     if !ok {
-        eprintln!("welcome: GDI+ did not start (status {}), so the screen draws its text only", status.0);
+        warn!("welcome: GDI+ did not start (status {}), so the screen draws its text only", status.0);
     }
     GDIPLUS.set(Some(ok));
     ok
@@ -999,7 +999,7 @@ pub(crate) fn get<T: 'static, R>(key: &'static LocalKey<RefCell<Option<T>>>, who
     key.with(|cell| match cell.try_borrow() {
         Ok(w) => w.as_ref().map(f),
         Err(_) => {
-            eprintln!("{who}: skipped, the window's state is already borrowed (a message came back in)");
+            warn!("{who}: skipped, the window's state is already borrowed (a message came back in)");
             None
         }
     })
@@ -1010,7 +1010,7 @@ pub(crate) fn set<T: 'static, R>(key: &'static LocalKey<RefCell<Option<T>>>, who
     key.with(|cell| match cell.try_borrow_mut() {
         Ok(mut w) => w.as_mut().map(f),
         Err(_) => {
-            eprintln!("{who}: skipped, the window's state is already borrowed (a message came back in)");
+            warn!("{who}: skipped, the window's state is already borrowed (a message came back in)");
             None
         }
     })

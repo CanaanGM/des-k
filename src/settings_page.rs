@@ -3440,7 +3440,7 @@ pub fn open(section: Option<Section>) {
         // Made on the screen it opens on, so it starts at that screen's dpi.
         let h = match CreateWindowExW(WINDOW_EX_STYLE(0), CLASS, w!("des-k settings"), STYLE, work.left, work.top, 100, 100, None, None, Some(inst.into()), None) {
             Ok(h) => h,
-            Err(e) => return eprintln!("settings page: no window: {e}"),
+            Err(e) => return warn!("settings page: no window: {e}"),
         };
         if let Some(icon) = crate::tray::draw_icon() {
             SendMessageW(h, WM_SETICON, Some(WPARAM(ICON_SMALL as usize)), Some(LPARAM(icon.0 as isize)));

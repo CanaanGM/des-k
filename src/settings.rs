@@ -443,7 +443,7 @@ pub fn load() {
             PARSE_ERROR.set(text.parse::<Table>().err().map(|e| not_toml(&e.to_string(), e.message())));
             let (settings, warnings) = parse(&text);
             for w in &warnings {
-                eprintln!("settings: {w}");
+                warn!("settings: {w}");
             }
             (settings, warnings.into_iter().map(Problem::new).collect())
         }
@@ -451,19 +451,19 @@ pub fn load() {
             // create_new: never overwrite a file that appeared meanwhile.
             let written = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).and_then(|mut f| f.write_all(DEFAULT_FILE.as_bytes()));
             match written {
-                Ok(()) => println!("settings: wrote defaults to {}", path.display()),
-                Err(e) => eprintln!("settings: cannot write {} ({e}), using all defaults", path.display()),
+                Ok(()) => info!("settings: wrote defaults to {}", path.file_name().unwrap_or_default().display()),
+                Err(e) => error!("settings: cannot write {} ({e}), using all defaults", path.file_name().unwrap_or_default().display()),
             }
             SEEN.set(modified(&path));
             (Settings::default(), Vec::new())
         }
         Err(e) => {
             PARSE_ERROR.set(Some(format!("cannot read {} ({e})", path.display())));
-            eprintln!("settings: cannot read {} ({e}), using all defaults", path.display());
+            warn!("settings: cannot read {} ({e}), using all defaults", path.file_name().unwrap_or_default().display());
             (Settings::default(), Vec::new())
         }
     };
-    println!("settings: {}: {settings}", path.display());
+    info!("settings: {}: {settings}", path.file_name().unwrap_or_default().display());
     store(settings, problems);
 }
 
@@ -494,7 +494,7 @@ pub fn reload(source: Source) -> Result<Vec<Change>, String> {
     let (settings, warnings) = match text.and_then(|t| reparse(&t)) {
         Ok(got) => got,
         Err(why) => {
-            eprintln!("settings: {why}, keeping the settings in effect");
+            warn!("settings: {why}, keeping the settings in effect");
             PARSE_ERROR.set(Some(why.clone()));
             crate::settings_page::refresh();
             return Err(why);
@@ -505,7 +505,7 @@ pub fn reload(source: Source) -> Result<Vec<Change>, String> {
     // Only new problems are logged, so one bad value is not logged again on every save.
     let before = problems();
     for w in warnings.iter().filter(|w| !before.iter().any(|p| &p.message == *w)) {
-        eprintln!("settings: {w}");
+        warn!("settings: {w}");
     }
     let problems: Vec<Problem> = warnings.into_iter().map(Problem::new).collect();
     let changes = diff(old, &settings, source);
@@ -537,7 +537,7 @@ fn diff(old: &Settings, new: &Settings, source: Source) -> Vec<Change> {
     let mut changes = Vec::new();
     for ((key, was), (_, now)) in old.fields().into_iter().zip(new.fields()) {
         if was != now {
-            println!("settings: {key} {was} -> {now} ({from})");
+            info!("settings: {key} {was} -> {now} ({from})");
             changes.push(Change { key, was, now });
         }
     }
@@ -560,7 +560,7 @@ fn apply(old: &Settings, changes: &[Change]) -> Vec<String> {
     if new.workspaces != old.workspaces {
         moves = crate::ws::resize(new.workspaces);
         for line in &moves {
-            println!("settings: workspaces {} -> {}: {line}", old.workspaces, new.workspaces);
+            info!("settings: workspaces {} -> {}: {line}", old.workspaces, new.workspaces);
         }
     }
     if has("touchpad.enabled") && new.touchpad_enabled {
@@ -604,7 +604,7 @@ pub fn write(edit: Edit) -> Result<(), String> {
     let tmp = path.with_extension("toml.tmp");
     if let Err(e) = crate::ws::write_new(&tmp, &new).and_then(|()| std::fs::rename(&tmp, &path)) {
         let why = format!("cannot save {} ({e})", path.display());
-        eprintln!("settings: {why}");
+        warn!("settings: {why}");
         return Err(why);
     }
     reload(Source::Page).map(|_| ())

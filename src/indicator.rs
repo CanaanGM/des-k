@@ -387,7 +387,7 @@ fn window() -> Option<HWND> {
     let h = ui::popup(CLASS, Some(wndproc), WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT, true)?;
     // An admin des-k would drop `des-k --quit` from a normal terminal otherwise (spec 0008).
     if let Err(e) = unsafe { ChangeWindowMessageFilterEx(h, WM_CLOSE, MSGFLT_ALLOW, None) } {
-        eprintln!("indicator: WM_CLOSE not let in from normal programs: {e}");
+        warn!("indicator: WM_CLOSE not let in from normal programs: {e}");
     }
     WND.set(Some(h));
     Some(h)
@@ -429,7 +429,7 @@ pub fn show(mon: HMONITOR, card: Card) {
     let text = spoken(&card, style);
     let stored = SHOWN.with(|s| s.try_borrow_mut().map(|mut s| *s = Some(Shown { card, style, scale, theme })).is_ok());
     if !stored {
-        return eprintln!("indicator: skipped, a message came back in while the card was painted");
+        return warn!("indicator: skipped, a message came back in while the card was painted");
     }
     let _ = SPOKEN.with(|s| s.try_borrow_mut().map(|mut s| *s = text.clone()));
     unsafe {

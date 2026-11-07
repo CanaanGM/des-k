@@ -218,7 +218,7 @@ pub fn sums_line(text: &str, name: &str) -> Result<[u8; 32], InstallFail> {
             continue;
         }
         if found.is_some() {
-            eprintln!("install: SHA256SUMS.txt names {name} twice");
+            warn!("install: SHA256SUMS.txt names {name} twice");
             return Err(InstallFail::NoLine);
         }
         let mut hash = [0u8; 32];
@@ -228,7 +228,7 @@ pub fn sums_line(text: &str, name: &str) -> Result<[u8; 32], InstallFail> {
         found = Some(hash);
     }
     found.ok_or_else(|| {
-        eprintln!("install: SHA256SUMS.txt has no line for {name}");
+        warn!("install: SHA256SUMS.txt has no line for {name}");
         InstallFail::NoLine
     })
 }
@@ -244,7 +244,7 @@ fn nt(s: NTSTATUS, what: &str) -> Result<(), InstallFail> {
     if s.is_ok() {
         Ok(())
     } else {
-        eprintln!("install: {what} failed: NTSTATUS {:#010x}", s.0);
+        warn!("install: {what} failed: NTSTATUS {:#010x}", s.0);
         Err(InstallFail::Crashed)
     }
 }
@@ -284,7 +284,7 @@ fn sha256(bytes: &[u8]) -> Result<[u8; 32], InstallFail> {
 /// you can set that).
 fn program_files() -> Option<PathBuf> {
     unsafe {
-        let p = SHGetKnownFolderPath(&FOLDERID_ProgramFiles, KF_FLAG_DEFAULT, None).inspect_err(|e| eprintln!("install: Program Files not found: {e}")).ok()?;
+        let p = SHGetKnownFolderPath(&FOLDERID_ProgramFiles, KF_FLAG_DEFAULT, None).inspect_err(|e| warn!("install: Program Files not found: {e}")).ok()?;
         let path = PathBuf::from(OsString::from_wide(p.as_wide()));
         CoTaskMemFree(Some(p.0 as *const _));
         Some(path)
@@ -304,18 +304,20 @@ pub fn setup_log() -> Option<PathBuf> {
 pub fn can_install() -> bool {
     static CAN: OnceLock<bool> = OnceLock::new();
     *CAN.get_or_init(|| {
-        let admin = crate::elevated().inspect_err(|e| eprintln!("install: cannot tell whether des-k runs as admin: {e}")).unwrap_or(false);
-        let (Some(pf), Ok(exe)) = (program_files(), std::env::current_exe()) else {
-            eprintln!("install: cannot tell where des-k runs from, so updates open their page");
-            return false;
-        };
-        let installed = pf.join(r"des-k\des-k.exe");
-        let same = exe.to_string_lossy().to_lowercase() == installed.to_string_lossy().to_lowercase();
+        let admin = crate::elevated().inspect_err(|e| warn!("install: cannot tell whether des-k runs as admin: {e}")).unwrap_or(false);
+        let same = installed();
         if !(admin && same) {
-            println!("install: this des-k (admin {admin}, {}) is not the installed one, so updates open their page", exe.display());
+            info!("install: this des-k (admin {admin}, installed copy {same}) is not the installed one, so updates open their page");
         }
         admin && same
     })
+}
+
+/// Running as `<Program Files>\des-k\des-k.exe`; false when either path can't be read.
+/// Logs nothing: the log's header calls it before the log is open.
+pub fn installed() -> bool {
+    let (Some(pf), Ok(exe)) = (program_files(), std::env::current_exe()) else { return false };
+    exe.to_string_lossy().to_lowercase() == pf.join(r"des-k\des-k.exe").to_string_lossy().to_lowercase()
 }
 
 /// `<System32>\schtasks.exe`, never `%SystemRoot%` from the environment.
@@ -323,7 +325,7 @@ fn schtasks_exe() -> Option<PathBuf> {
     let mut buf = [0u16; 260];
     let n = unsafe { GetSystemDirectoryW(Some(&mut buf)) } as usize;
     if n == 0 || n >= buf.len() {
-        eprintln!("install: System32 not found: {}", windows::core::Error::from_thread());
+        warn!("install: System32 not found: {}", windows::core::Error::from_thread());
         return None;
     }
     Some(PathBuf::from(OsString::from_wide(&buf[..n])).join("schtasks.exe"))
@@ -336,11 +338,11 @@ fn schtasks(args: &[&std::ffi::OsStr]) -> bool {
         Ok(o) if o.status.success() => true,
         Ok(o) => {
             let say = String::from_utf8_lossy(&o.stderr);
-            eprintln!("install: schtasks {:?} failed ({}): {}", args, o.status, say.trim());
+            warn!("install: schtasks {:?} failed ({}): {}", args, o.status, say.trim());
             false
         }
         Err(e) => {
-            eprintln!("install: schtasks did not run: {e}");
+            warn!("install: schtasks did not run: {e}");
             false
         }
     }
@@ -351,10 +353,10 @@ fn schtasks(args: &[&std::ffi::OsStr]) -> bool {
 fn log_task_state() {
     let Some(exe) = schtasks_exe() else { return };
     let Ok(o) = std::process::Command::new(exe).args(["/query", "/tn", TASK, "/v", "/fo", "list"]).creation_flags(CREATE_NO_WINDOW).output() else {
-        return eprintln!("install: the task's state not read");
+        return warn!("install: the task's state not read");
     };
     for line in String::from_utf8_lossy(&o.stdout).lines().filter(|l| l.starts_with("Status") || l.starts_with("Last R")) {
-        eprintln!("install: task {TASK:?} {}", line.split_whitespace().collect::<Vec<_>>().join(" "));
+        warn!("install: task {TASK:?} {}", line.split_whitespace().collect::<Vec<_>>().join(" "));
     }
 }
 
@@ -422,15 +424,15 @@ fn prepare(dir: &Path) -> Result<(), InstallFail> {
     if let Err(e) = std::fs::create_dir(dir)
         && e.kind() != std::io::ErrorKind::AlreadyExists
     {
-        eprintln!("install: {} not created: {e}", dir.display());
+        warn!("install: {} not created: {e}", dir.display());
         return Err(InstallFail::Folder);
     }
     if !is_plain_dir(dir) {
-        eprintln!("install: {} is a link or not a folder, refused", dir.display());
+        warn!("install: {} is a link or not a folder, refused", dir.display());
         return Err(InstallFail::Folder);
     }
     clear(dir).map_err(|why| {
-        eprintln!("install: the last update's leftovers not cleared: {why}");
+        warn!("install: the last update's leftovers not cleared: {why}");
         InstallFail::Folder
     })
 }
@@ -440,7 +442,7 @@ fn user_sid() -> Option<String> {
     unsafe {
         let mut token = HANDLE::default();
         if let Err(e) = OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) {
-            eprintln!("install: own token not opened: {e}");
+            warn!("install: own token not opened: {e}");
             return None;
         }
         let mut len = 0;
@@ -449,13 +451,13 @@ fn user_sid() -> Option<String> {
         let r = GetTokenInformation(token, TokenUser, Some(buf.as_mut_ptr().cast()), len, &mut len);
         let _ = CloseHandle(token);
         if let Err(e) = r {
-            eprintln!("install: own account not read: {e}");
+            warn!("install: own account not read: {e}");
             return None;
         }
         let user = &*(buf.as_ptr() as *const TOKEN_USER);
         let mut s = PWSTR::null();
         if let Err(e) = ConvertSidToStringSidW(user.User.Sid, &mut s) {
-            eprintln!("install: own account not turned into a SID string: {e}");
+            warn!("install: own account not turned into a SID string: {e}");
             return None;
         }
         let sid = String::from_utf16_lossy(s.as_wide());
@@ -516,15 +518,15 @@ fn rule(setup: Option<Version>, ours: Version) -> Outcome {
 /// One check or install at a time (AC-3).
 pub fn start(tray: HWND, v: Version) {
     if CLEANING.load(Ordering::SeqCst) {
-        eprintln!("install: the last update's files are still being cleared, this click is ignored");
+        warn!("install: the last update's files are still being cleared, this click is ignored");
         return;
     }
     if update::RUNNING.swap(true, Ordering::SeqCst) {
-        eprintln!("install: a check or an install is already running, this click is ignored");
+        warn!("install: a check or an install is already running, this click is ignored");
         return;
     }
     set_phase(Phase::Downloading(v));
-    println!("install: started, des-k {v}");
+    info!("install: started, des-k {v}");
     let hwnd = tray.0 as isize; // an HWND is not Send
     let spawned = std::thread::Builder::new().name("install".into()).spawn(move || {
         let mut guard = Guard { hwnd, v, dir: None, done: false };
@@ -532,7 +534,7 @@ pub fn start(tray: HWND, v: Version) {
         guard.fail(f);
     });
     if let Err(e) = spawned {
-        eprintln!("install: thread not started: {e}");
+        warn!("install: thread not started: {e}");
         Guard { hwnd, v, dir: None, done: false }.fail(InstallFail::Crashed);
     }
 }
@@ -550,17 +552,17 @@ impl Guard {
     fn post(&self, m: Msg) {
         let (wp, lp) = pack(m, self.v);
         if let Err(e) = unsafe { PostMessageW(Some(HWND(self.hwnd as *mut _)), WM_INSTALL, wp, lp) } {
-            eprintln!("install: {m:?} not passed to the tray: {e}");
+            warn!("install: {m:?} not passed to the tray: {e}");
         }
     }
 
     fn fail(&mut self, f: InstallFail) {
         self.done = true;
-        eprintln!("install of des-k {} failed: {f:?}", self.v);
+        warn!("install of des-k {} failed: {f:?}", self.v);
         if let Some(dir) = &self.dir
             && let Err(why) = clear(dir)
         {
-            eprintln!("install: cleanup after the failure incomplete, the next start tries again: {why}");
+            warn!("install: cleanup after the failure incomplete, the next start tries again: {why}");
         }
         set_phase(Phase::Idle);
         update::RUNNING.store(false, Ordering::SeqCst);
@@ -599,7 +601,7 @@ fn download(path: &str, cap: u64, mut each: impl FnMut(&[u8]) -> Result<(), Inst
         let mut len = size_of::<u32>() as u32;
         WinHttpQueryHeaders(request.0, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, PCWSTR::null(), Some((&raw mut status).cast()), &mut len, std::ptr::null_mut())
             .map_err(|e| net(e, "install: reading the status"))?;
-        println!("install: {path} answered HTTP {status}");
+        info!("install: {path} answered HTTP {status}");
         match status {
             200 => {}
             404 => return Err(InstallFail::Missing),
@@ -610,7 +612,7 @@ fn download(path: &str, cap: u64, mut each: impl FnMut(&[u8]) -> Result<(), Inst
         let mut len = size_of::<u64>() as u32;
         let known = WinHttpQueryHeaders(request.0, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER64, PCWSTR::null(), Some((&raw mut size).cast()), &mut len, std::ptr::null_mut()).is_ok();
         if known && size > cap {
-            eprintln!("install: {path} is {size} bytes, more than the {cap} allowed");
+            warn!("install: {path} is {size} bytes, more than the {cap} allowed");
             return Err(InstallFail::TooBig);
         }
 
@@ -630,7 +632,7 @@ fn download(path: &str, cap: u64, mut each: impl FnMut(&[u8]) -> Result<(), Inst
             }
             total += read as u64;
             if total > cap {
-                eprintln!("install: {path} is past the {cap} bytes allowed, stopped");
+                warn!("install: {path} is past the {cap} bytes allowed, stopped");
                 return Err(InstallFail::TooBig);
             }
             each(&buf[..read as usize])?;
@@ -646,7 +648,7 @@ fn running(exe: &Path) -> bool {
     let Some(name) = exe.file_name().map(|n| n.to_string_lossy().to_lowercase()) else { return false };
     let want = exe.to_string_lossy().to_lowercase();
     let Ok(snap) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }) else {
-        eprintln!("install: the process list not read");
+        warn!("install: the process list not read");
         return false;
     };
     let mut e = PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
@@ -676,16 +678,16 @@ fn steps(g: &mut Guard) -> Result<Infallible, InstallFail> {
         sums.extend_from_slice(b);
         Ok(())
     })?;
-    println!("install: SHA256SUMS.txt downloaded, {n} bytes");
+    info!("install: SHA256SUMS.txt downloaded, {n} bytes");
     let text = std::str::from_utf8(&sums).map_err(|_| {
-        eprintln!("install: SHA256SUMS.txt is not UTF-8");
+        warn!("install: SHA256SUMS.txt is not UTF-8");
         InstallFail::NoLine
     })?;
     let want = sums_line(text, &name)?;
 
     let part = dir.join(format!("{name}.part"));
     let folder = |e: std::io::Error| {
-        eprintln!("install: writing in {} failed: {e}", dir.display());
+        warn!("install: writing in {} failed: {e}", dir.display());
         InstallFail::Folder
     };
     let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&part).map_err(folder)?;
@@ -698,10 +700,10 @@ fn steps(g: &mut Guard) -> Result<Infallible, InstallFail> {
     drop(file);
     let got = sha.finish()?;
     if got != want {
-        eprintln!("install: the setup's SHA-256 {} is not the checksum file's {}", hex(&got), hex(&want));
+        warn!("install: the setup's SHA-256 {} is not the checksum file's {}", hex(&got), hex(&want));
         return Err(InstallFail::Mismatch);
     }
-    println!("install: setup downloaded, {n} bytes, its SHA-256 matches ({})", hex(&got));
+    info!("install: setup downloaded, {n} bytes, its SHA-256 matches ({})", hex(&got));
     let exe = dir.join(&name);
     std::fs::rename(&part, &exe).map_err(folder)?;
 
@@ -715,28 +717,28 @@ fn steps(g: &mut Guard) -> Result<Infallible, InstallFail> {
     if !schtasks(&["/run".as_ref(), "/tn".as_ref(), TASK.as_ref()]) {
         return Err(InstallFail::Task);
     }
-    println!("install: task {TASK:?} registered and started, waiting for the setup");
+    info!("install: task {TASK:?} registered and started, waiting for the setup");
 
     let t0 = Instant::now();
     while !running(&exe) {
         if t0.elapsed() > START_WAIT {
-            eprintln!("install: the setup did not start within {} s", START_WAIT.as_secs());
+            warn!("install: the setup did not start within {} s", START_WAIT.as_secs());
             log_task_state();
             return Err(InstallFail::Task);
         }
         std::thread::sleep(POLL);
     }
-    println!("install: the setup runs; it stops des-k, installs, and starts des-k again");
+    info!("install: the setup runs; it stops des-k, installs, and starts des-k again");
     g.post(Msg::Started);
     let t1 = Instant::now();
     loop {
         std::thread::sleep(POLL);
         if !running(&exe) {
-            eprintln!("install: the setup ended and this des-k still runs, so it did not install (setup.log says why)");
+            warn!("install: the setup ended and this des-k still runs, so it did not install (setup.log says why)");
             return Err(InstallFail::SetupStopped);
         }
         if t1.elapsed() > SLOW {
-            eprintln!("install: the setup still runs after {} min, given up on", SLOW.as_secs() / 60);
+            warn!("install: the setup still runs after {} min, given up on", SLOW.as_secs() / 60);
             return Err(InstallFail::Slow);
         }
     }
@@ -753,17 +755,17 @@ pub fn outcome() -> Outcome {
     let entries = match std::fs::read_dir(&dir) {
         Ok(e) => e,
         Err(e) => {
-            eprintln!("install: {} not read: {e}", dir.display());
+            warn!("install: {} not read: {e}", dir.display());
             return Outcome::Nothing;
         }
     };
     let Some((v, path)) = entries.flatten().find_map(|e| setup_version(&e.file_name().to_string_lossy()).map(|v| (v, e.path()))) else { return Outcome::Nothing };
     let o = rule(Some(v), ours);
-    println!("install: found the setup for {v}, this des-k is {ours}: {o:?}");
+    info!("install: found the setup for {v}, this des-k is {ours}: {o:?}");
     let mut done = path.clone().into_os_string();
     done.push(".done");
     if let Err(e) = std::fs::rename(&path, &done) {
-        eprintln!("install: {} not renamed, so its balloon may show again: {e}", path.display());
+        warn!("install: {} not renamed, so its balloon may show again: {e}", path.display());
     }
     o
 }
@@ -779,12 +781,12 @@ pub fn cleanup() {
         if let Some(dir) = update_dir().filter(|d| is_plain_dir(d)) {
             sweep(&dir);
         } else if !drop_task() {
-            eprintln!("install: the {TASK:?} task not deleted, the next start tries again");
+            warn!("install: the {TASK:?} task not deleted, the next start tries again");
         }
         CLEANING.store(false, Ordering::SeqCst);
     });
     if let Err(e) = spawned {
-        eprintln!("install: cleanup thread not started: {e}");
+        warn!("install: cleanup thread not started: {e}");
         CLEANING.store(false, Ordering::SeqCst);
     }
 }
@@ -803,23 +805,24 @@ fn sweep(dir: &Path) {
             break;
         }
         if t0.elapsed() > Duration::from_secs(120) {
-            return eprintln!("install: the setup still holds its files after 2 min, the next start tries again");
+            return warn!("install: the setup still holds its files after 2 min, the next start tries again");
         }
         std::thread::sleep(Duration::from_secs(1));
     }
     let xml = dir.join(XML);
     let had = xml.exists() || task_exists();
     if let Err(e) = remove(&xml) {
-        eprintln!("install: {} not deleted: {e}", xml.display());
+        warn!("install: {} not deleted: {e}", xml.display());
     }
     if !drop_task() {
-        eprintln!("install: the {TASK:?} task not deleted, the next start tries again");
+        warn!("install: the {TASK:?} task not deleted, the next start tries again");
     } else if had {
-        println!("install: the last update's files and task are deleted");
+        info!("install: the last update's files and task are deleted");
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_macros)] // live_release prints what it checked (spec 0019 exception)
 mod tests {
     use super::*;
 

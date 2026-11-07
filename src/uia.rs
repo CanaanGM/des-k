@@ -74,7 +74,7 @@ pub(crate) fn notify(h: HWND, text: &str, who: &str, queue: bool) {
     let how = if queue { NotificationProcessing_All } else { NotificationProcessing_MostRecent };
     let shown = unsafe { UiaRaiseNotificationEvent(&p, NotificationKind_Other, how, &BSTR::from(text), &BSTR::from(who)) };
     if let Err(e) = shown {
-        eprintln!("narrator: {who}'s words were not sent ({e})");
+        warn!("narrator: {who}'s words were not sent ({e})");
     }
 }
 
@@ -425,7 +425,7 @@ pub(crate) fn raise(h: HWND, tree: &Tree, path: &[usize], event: UIA_EVENT_ID, w
     }
     let raised = make(h, tree, path.to_vec()).cast::<IRawElementProviderSimple>().and_then(|p| unsafe { UiaRaiseAutomationEvent(&p, event) });
     if let Err(e) = raised {
-        eprintln!("narrator: {who}'s event {} was not sent ({e})", event.0);
+        warn!("narrator: {who}'s event {} was not sent ({e})", event.0);
     }
 }
 
@@ -454,6 +454,6 @@ pub(crate) fn name_control(h: HWND, name: &str) {
             .and_then(|s| s.SetHwndPropStr(h, OBJID_CLIENT.0 as u32, CHILDID_SELF, PROPID_ACC_NAME, &HSTRING::from(name)))
     };
     if let Err(e) = named {
-        eprintln!("narrator: could not name the text box \"{name}\" ({e})");
+        warn!("narrator: could not name the text box \"{name}\" ({e})");
     }
 }

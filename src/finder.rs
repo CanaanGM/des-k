@@ -513,7 +513,7 @@ fn package_name(pid: u32) -> Option<String> {
         Ok(n) if !n.is_empty() => Some(n.to_string()),
         Ok(_) => None,
         Err(e) => {
-            eprintln!("finder: no name for the package {full}: {e}");
+            warn!("finder: no name for the package {full}: {e}");
             None
         }
     }
@@ -605,7 +605,7 @@ pub fn toggle() {
 }
 
 fn open() {
-    let Some((popup, edit)) = window() else { return eprintln!("finder: window not created") };
+    let Some((popup, edit)) = window() else { return warn!("finder: window not created") };
     ui::gdiplus();
     let (mon, device) = ws::under_mouse();
     let came_from = unsafe { GetForegroundWindow() };
@@ -633,10 +633,10 @@ fn open() {
         let _ = SetFocus(Some(edit));
         if GetForegroundWindow() != popup {
             close(false);
-            return eprintln!("finder: Windows refused focus");
+            return warn!("finder: Windows refused focus");
         }
     }
-    println!("finder: opened on {device}, {n} windows");
+    info!("finder: opened on {device}, {n} windows");
 }
 
 /// Hide the finder and drop the session. `give_back` focuses the window you came from
@@ -716,9 +716,9 @@ enum Act {
 /// Act on the selected row. Every action asks `ws` where the window is now: restore may
 /// have moved it since the snapshot.
 fn act(how: Act) {
-    let Some((h, title, screen)) = with(|s| {
+    let Some((h, screen)) = with(|s| {
         let &(i, _) = s.shown.get(s.selected)?;
-        Some((s.rows[i].hwnd, s.rows[i].title.clone(), s.screen.clone()))
+        Some((s.rows[i].hwnd, s.screen.clone()))
     })
     .flatten() else {
         return;
@@ -726,7 +726,7 @@ fn act(how: Act) {
     let done = match how {
         Act::Go => ws::go_to(h),
         Act::Bring => ws::bring(h, &screen),
-        Act::Close => return close_window(h, &title),
+        Act::Close => return close_window(h),
     };
     match done {
         // Focus has moved to the window already, which closed the finder; this is the backstop.
@@ -738,21 +738,21 @@ fn act(how: Act) {
             }
         }
         Err(Miss::Gone) => {
-            println!("finder: \"{title}\" is gone");
+            info!("finder: {} is gone", ws::who(h));
             drop_row(h, Some(Note::Gone));
         }
         Err(Miss::CantMove) => set_note(Note::CantMove),
         Err(Miss::Unplugged) => {
-            println!("finder: \"{title}\" waits for its unplugged screen to fold");
+            info!("finder: {} waits for its unplugged screen to fold", ws::who(h));
             set_note(Note::Unplugged);
         }
     }
 }
 
 /// Ctrl+W: ask it to close as its X button would, then watch for it to go.
-fn close_window(h: HWND, title: &str) {
+fn close_window(h: HWND) {
     if !unsafe { IsWindow(Some(h)) }.as_bool() {
-        println!("finder: \"{title}\" is gone");
+        info!("finder: {} is gone", ws::who(h));
         return drop_row(h, Some(Note::Gone));
     }
     match unsafe { PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0)) } {
@@ -768,10 +768,10 @@ fn close_window(h: HWND, title: &str) {
             refresh();
         }
         Err(e) if e.code() == ERROR_ACCESS_DENIED.to_hresult() => {
-            eprintln!("finder: can't close \"{title}\", it runs as admin");
+            warn!("finder: can't close {}, it runs as admin", ws::who(h));
             set_note(Note::CantClose);
         }
-        Err(e) => eprintln!("finder: can't close \"{title}\": {e}"),
+        Err(e) => warn!("finder: can't close {}: {e}", ws::who(h)),
     }
 }
 
@@ -782,14 +782,14 @@ fn closing_tick() {
             .closing
             .iter()
             .filter(|&&h| unsafe { !IsWindow(Some(h)).as_bool() || !IsWindowVisible(h).as_bool() })
-            .map(|&h| (h, s.rows.iter().find(|r| r.hwnd == h).map_or_else(String::new, |r| r.title.clone())))
+            .map(|&h| (h, ws::who(h)))
             .collect();
         s.closing.retain(|h| !gone.iter().any(|(g, _)| g == h));
         (gone, s.closing.is_empty())
     });
     let Some((gone, none_left)) = gone else { return };
-    for (h, title) in gone {
-        println!("finder: closed \"{title}\"");
+    for (h, app) in gone {
+        info!("finder: closed {app}");
         drop_row(h, None);
     }
     if none_left && let Some(popup) = WND.get() {

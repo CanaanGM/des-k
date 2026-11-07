@@ -412,9 +412,9 @@ unsafe extern "system" fn watch(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 match install() {
                     Ok(new) => {
                         HOOK.set(Some(new));
-                        eprintln!("keyboard hook: Windows had removed it (it answered too slowly once), installed again");
+                        warn!("keyboard hook: Windows had removed it (it answered too slowly once), installed again");
                     }
-                    Err(e) => eprintln!("keyboard hook: Windows had removed it and it could not be installed again ({e}), trying again in {} s", WATCH_MS / 1000),
+                    Err(e) => error!("keyboard hook: Windows had removed it and it could not be installed again ({e}), trying again in {} s", WATCH_MS / 1000),
                 }
             }
             return LRESULT(0);
@@ -433,13 +433,13 @@ fn start_watch() {
         RegisterClassW(&wc);
         let hwnd = match CreateWindowExW(Default::default(), WATCH_CLASS, w!(""), Default::default(), 0, 0, 0, 0, Some(HWND_MESSAGE), None, Some(module.into()), None) {
             Ok(h) => h,
-            Err(e) => return eprintln!("keyboard hook: no watch window, a hook Windows removes stays gone: {e}"),
+            Err(e) => return warn!("keyboard hook: no watch window, a hook Windows removes stays gone: {e}"),
         };
         WATCH.set(Some(hwnd));
         raw(!ours(GetForegroundWindow()));
         // Out of context, so it comes through this thread's message loop.
         if SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, None, Some(on_foreground), 0, 0, WINEVENT_OUTOFCONTEXT).is_invalid() {
-            eprintln!("keyboard hook: no foreground hook, so Win+Tab over des-k's own windows goes to Windows");
+            warn!("keyboard hook: no foreground hook, so Win+Tab over des-k's own windows goes to Windows");
         }
         SetTimer(Some(hwnd), WATCH_TIMER, WATCH_MS, None);
     }
@@ -465,8 +465,8 @@ fn raw(on: bool) {
     };
     match unsafe { RegisterRawInputDevices(&[rid], size_of::<RAWINPUTDEVICE>() as u32) } {
         Ok(()) => RAW_ON.set(on),
-        Err(e) if on => eprintln!("keyboard hook: no raw input, a hook Windows removes stays gone: {e}"),
-        Err(e) => eprintln!("keyboard hook: raw input stays on, so des-k's own windows let Win+Tab through: {e}"),
+        Err(e) if on => warn!("keyboard hook: no raw input, a hook Windows removes stays gone: {e}"),
+        Err(e) => warn!("keyboard hook: raw input stays on, so des-k's own windows let Win+Tab through: {e}"),
     }
 }
 

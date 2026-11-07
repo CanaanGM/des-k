@@ -13,6 +13,8 @@
 // console and log to %LOCALAPPDATA%\des-k\des-k.log.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[macro_use]
+mod log; // first: its info!, warn! and error! macros reach only the modules after it
 mod cloak;
 mod finder;
 mod gestures;
@@ -35,13 +37,12 @@ mod wallpaper;
 mod welcome;
 mod ws;
 
-use std::os::windows::io::IntoRawHandle;
 use windows::Win32::{
     Foundation::{CloseHandle, HANDLE, HWND, LPARAM, WPARAM},
     Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation},
     System::{
         Com::{COINIT_MULTITHREADED, CoInitializeEx},
-        Console::{CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT, GetConsoleWindow, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE, SetConsoleCtrlHandler, SetStdHandle},
+        Console::{CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT, SetConsoleCtrlHandler},
         Threading::{GetCurrentProcess, GetCurrentThreadId, OpenProcessToken},
     },
     UI::{
@@ -74,31 +75,8 @@ unsafe extern "system" fn on_console_close(event: u32) -> BOOL {
     if !matches!(event, CTRL_LOGOFF_EVENT | CTRL_SHUTDOWN_EVENT) {
         setup::write_back();
     }
+    log::flush();
     std::process::exit(0);
-}
-
-/// No console (release build started at login): send println!/eprintln! to a log file.
-/// Rust's stdio looks the std handle up on every write, so swapping it here is enough.
-/// `append`: add to the log (a `--quit` with nothing running) instead of starting a new one.
-fn log_to_file_without_console(append: bool) {
-    if !unsafe { GetConsoleWindow() }.is_invalid() {
-        return;
-    }
-    let log = ws::data_dir().join("des-k.log");
-    let file = if append {
-        ws::append_to(&log)
-    } else {
-        // The last run's log survives one restart: after a crash it still says why.
-        let _ = std::fs::rename(&log, ws::data_dir().join("des-k.old.log"));
-        ws::create_fresh(&log)
-    };
-    if let Ok(f) = file {
-        let h = HANDLE(f.into_raw_handle());
-        unsafe {
-            let _ = SetStdHandle(STD_OUTPUT_HANDLE, h);
-            let _ = SetStdHandle(STD_ERROR_HANDLE, h);
-        }
-    }
 }
 
 /// Whether des-k's own token is elevated. Without it, Windows (UIPI) keeps every key away
@@ -123,9 +101,9 @@ fn start_task() {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let schtasks = std::env::var("SystemRoot").map_or("schtasks.exe".into(), |r| format!(r"{r}\System32\schtasks.exe"));
     match std::process::Command::new(schtasks).args(["/run", "/tn", "des-k"]).creation_flags(CREATE_NO_WINDOW).status() {
-        Ok(s) if s.success() => println!("des-k task started"),
-        Ok(s) => eprintln!("des-k task did not start ({s}): install des-k first, with its setup or install.ps1"),
-        Err(e) => eprintln!("schtasks did not run: {e}"),
+        Ok(s) if s.success() => info!("des-k task started"),
+        Ok(s) => warn!("des-k task did not start ({s}): install des-k first, with its setup or install.ps1"),
+        Err(e) => warn!("schtasks did not run: {e}"),
     }
 }
 
@@ -133,7 +111,7 @@ fn main() -> windows::core::Result<()> {
     let running = unsafe { FindWindowW(indicator::CLASS, None) }.ok();
     if std::env::args().nth(1).as_deref() == Some("--start") {
         match running {
-            Some(_) => println!("des-k is already running"),
+            Some(_) => info!("des-k is already running"),
             None => start_task(),
         }
         return Ok(());
@@ -144,25 +122,25 @@ fn main() -> windows::core::Result<()> {
             None => {
                 // Stopped by a crash or a kill: still show what it hid and give Windows its
                 // gestures back, as a quit would (the uninstaller relies on this).
-                log_to_file_without_console(true);
-                println!("des-k --quit: des-k is not running");
+                log::open(true);
                 unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok()? };
                 ws::rescue();
                 setup::write_back();
+                log::flush();
             }
         }
         return Ok(());
     }
     if running.is_some() {
         // Two keyboard hooks would switch twice per key press.
-        println!("des-k is already running");
+        info!("des-k is already running");
         return Ok(());
     }
-    log_to_file_without_console(false); // only now: a second copy must not truncate the running one's log
+    log::open(false); // only now: a second copy must not truncate the running one's log
     match elevated() {
-        Ok(true) => println!("des-k runs as admin: its keys work whatever window has focus"),
-        Ok(false) => println!("des-k runs without admin: its keys stop while an admin window (Task Manager, an admin terminal) has focus"),
-        Err(e) => eprintln!("cannot tell whether des-k runs as admin: {e}"),
+        Ok(true) => info!("des-k runs as admin: its keys work whatever window has focus"),
+        Ok(false) => info!("des-k runs without admin: its keys stop while an admin window (Task Manager, an admin terminal) has focus"),
+        Err(e) => warn!("cannot tell whether des-k runs as admin: {e}"),
     }
 
     // Real pixels on scaled monitors, so the indicator is sharp and correctly placed.
@@ -178,16 +156,16 @@ fn main() -> windows::core::Result<()> {
         SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, None, Some(on_foreground), 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS)
     };
     if hook.is_invalid() {
-        eprintln!("foreground hook not installed: no follow, and the finder only counts its own picks as recent");
+        warn!("foreground hook not installed: no follow, and the finder only counts its own picks as recent");
     }
 
-    let default_panic = std::panic::take_hook();
     // Any thread: a des-k missing its keyboard hook or touchpad reader must not run on, so it
     // always ends here, after showing every window.
     std::panic::set_hook(Box::new(move |info| {
-        default_panic(info);
+        log::panic(info);
         ws::restore_after_panic();
         setup::write_back();
+        log::flush();
         std::process::exit(101);
     }));
     unsafe { let _ = SetConsoleCtrlHandler(Some(on_console_close), true); }
@@ -204,10 +182,10 @@ fn main() -> windows::core::Result<()> {
     if settings::get().first_run_seen != Some(true) {
         welcome::show();
         if let Err(why) = settings::write(settings::Edit::Value("first_run_seen", true.into())) {
-            eprintln!("first run: could not write first_run_seen = true, so it opens again at the next start ({why})");
+            error!("first run: could not write first_run_seen = true, so it opens again at the next start ({why})");
         }
     }
-    println!("des-k running: the shortcuts switch the monitor under the mouse ({} workspaces each).", settings::get().workspaces);
+    info!("des-k running: the shortcuts switch the monitor under the mouse ({} workspaces each).", settings::get().workspaces);
 
     // Only now, with every exit path in place, may restore hide anything. The first tick
     // runs at once, so windows already open are matched like later ones (spec 0003).
@@ -222,7 +200,7 @@ fn main() -> windows::core::Result<()> {
     // Hand edits to settings.toml apply live (spec 0012 AC-5). Never killed: dies with the process.
     let watch_timer = unsafe { SetTimer(None, 0, 1000, None) };
     if watch_timer == 0 {
-        eprintln!("settings: no file watch, hand edits apply at the next start");
+        warn!("settings: no file watch, hand edits apply at the next start");
     }
 
     let mut msg = MSG::default();
@@ -319,6 +297,7 @@ fn main() -> windows::core::Result<()> {
     ws::restore_all();
     setup::write_back(); // Quit and --quit
     tray::remove();
-    println!("des-k stopped, all windows shown");
+    info!("des-k stopped, all windows shown");
+    log::flush();
     Ok(())
 }

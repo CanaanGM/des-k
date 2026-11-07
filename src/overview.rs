@@ -786,10 +786,10 @@ fn source_rect(full: RECT, shown: RECT, src: SIZE) -> RECT {
 /// A live preview of `src` as if it filled `full`, drawn only inside `shown` (a mini cut at
 /// its tile's edge; the same rect in the spread). None when Windows draws nothing for it.
 fn thumb(host: HWND, src: HWND, full: RECT, shown: RECT) -> Option<Thumb> {
-    let t = Thumb(unsafe { DwmRegisterThumbnail(host, src) }.inspect_err(|e| eprintln!("overview: no preview for \"{}\": {e}", ws::title(src))).ok()?);
-    let size = unsafe { DwmQueryThumbnailSourceSize(t.0) }.inspect_err(|e| eprintln!("overview: no preview size for \"{}\": {e}", ws::title(src))).ok()?;
+    let t = Thumb(unsafe { DwmRegisterThumbnail(host, src) }.inspect_err(|e| warn!("overview: no preview for {}: {e}", ws::who(src))).ok()?);
+    let size = unsafe { DwmQueryThumbnailSourceSize(t.0) }.inspect_err(|e| warn!("overview: no preview size for {}: {e}", ws::who(src))).ok()?;
     if size.cx <= 0 || size.cy <= 0 {
-        eprintln!("overview: Windows draws nothing for \"{}\", showing a card", ws::title(src));
+        warn!("overview: Windows draws nothing for {}, showing a card", ws::who(src));
         return None;
     }
     let mut p = DWM_THUMBNAIL_PROPERTIES {
@@ -803,7 +803,7 @@ fn thumb(host: HWND, src: HWND, full: RECT, shown: RECT) -> Option<Thumb> {
         p.dwFlags |= DWM_TNP_RECTSOURCE;
         p.rcSource = source_rect(full, shown, size);
     }
-    unsafe { DwmUpdateThumbnailProperties(t.0, &p) }.inspect_err(|e| eprintln!("overview: preview for \"{}\" not placed: {e}", ws::title(src))).ok()?;
+    unsafe { DwmUpdateThumbnailProperties(t.0, &p) }.inspect_err(|e| warn!("overview: preview for {} not placed: {e}", ws::who(src))).ok()?;
     Some(t)
 }
 
@@ -917,14 +917,14 @@ fn open() {
     let mut screens = Vec::new();
     for (device, rect) in order {
         let Some(popup) = popup(rect, style != Animation::Off) else {
-            eprintln!("overview: popup for {device} not created");
+            warn!("overview: popup for {device} not created");
             continue;
         };
         let (mut dpi, mut dy) = (96u32, 96u32);
         unsafe { let _ = GetDpiForMonitor(MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST), MDT_EFFECTIVE_DPI, &mut dpi, &mut dy); }
         let scale = dpi as f32 / 96.0;
         let close_btn = close_button(popup, scale).unwrap_or_else(|| {
-            eprintln!("overview: close button for {device} not created");
+            warn!("overview: close button for {device} not created");
             HWND::default()
         });
         let mut sc = Screen { device, popup, rect, scale, shown: 0, tiles: Vec::new(), slots: Vec::new(), cell_w: 0, labels: Labels::Hover, face: Face::Card, close_btn, note: None, painted: false, tree: Tree::default() };
@@ -933,7 +933,7 @@ fn open() {
     }
     let start = screens.iter().position(|s| s.device == mouse).unwrap_or(0);
     let Some(sc) = screens.get(start) else {
-        return eprintln!("overview: no screen to open on");
+        return warn!("overview: no screen to open on");
     };
     let focus = sc.popup;
     // The window you came from when it is in this spread, else the first one there.
@@ -966,10 +966,10 @@ fn open() {
         let _ = SetForegroundWindow(focus);
         if GetForegroundWindow() != focus {
             close(false);
-            return eprintln!("overview: Windows refused focus");
+            return warn!("overview: Windows refused focus");
         }
     }
-    println!("overview: opened on {} screen(s), {windows} window(s) shown", popups.len());
+    info!("overview: opened on {} screen(s), {windows} window(s) shown", popups.len());
 }
 
 /// The log line every open writes (spec 0017 AC-8), easy to find when it is over the limit.
@@ -991,7 +991,7 @@ fn first_paint(popup: HWND) {
         Some(speed_line(s.screens.len(), unsafe { GetTickCount() }.wrapping_sub(s.asked)))
     });
     if let Some(l) = line {
-        println!("{l}");
+        info!("{l}");
     }
 }
 
@@ -1227,7 +1227,7 @@ fn go(hwnd: HWND) {
             close(false);
         }
         Err(Miss::Gone | Miss::CantMove | Miss::Unplugged) => {
-            println!("overview: a window is gone");
+            info!("overview: a window is gone");
             rebuild();
         }
     }
@@ -1278,17 +1278,17 @@ fn refresh() {
 /// X, middle click, Ctrl+W: ask the window to close as its own X button would, take it out of
 /// the layout at once, then watch for it to go. The overview stays open.
 fn close_window(popup: HWND, h: HWND) {
-    let title = ws::title(h);
+    let app = ws::who(h);
     if !unsafe { IsWindow(Some(h)) }.as_bool() {
-        println!("overview: \"{title}\" is gone");
+        info!("overview: {app} is gone");
         return drop_gone(&[h]);
     }
     match unsafe { PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0)) } {
         Ok(()) => {
-            println!("overview: asked \"{title}\" to close");
+            info!("overview: asked {app} to close");
             SESSION.with_borrow_mut(|s| {
                 if let Some(s) = s {
-                    s.closing.push((h, title, Instant::now(), popup));
+                    s.closing.push((h, app, Instant::now(), popup));
                 }
             });
             // Some apps (Store ones like Settings) shrink what they draw while closing, and
@@ -1297,7 +1297,7 @@ fn close_window(popup: HWND, h: HWND) {
             unsafe { SetTimer(Some(popup), CLOSING_TIMER, CLOSING_POLL_MS, None) };
         }
         Err(e) => {
-            eprintln!("overview: can't close \"{title}\": {e}");
+            warn!("overview: can't close {app}: {e}");
             note(popup, close_note(&e));
         }
     }
@@ -1316,11 +1316,11 @@ fn closing_tick(popup: HWND) {
     }) else {
         return;
     };
-    for (_, title, ..) in &gone {
-        println!("overview: closed \"{title}\"");
+    for (_, app, ..) in &gone {
+        info!("overview: closed {app}");
     }
-    for (_, title, ..) in &back {
-        println!("overview: \"{title}\" is still open, showing it again");
+    for (_, app, ..) in &back {
+        info!("overview: {app} is still open, showing it again");
     }
     if let Some(&(h, _, _, asked_on)) = back.last() {
         rebuild();
@@ -1481,7 +1481,7 @@ fn drag_move() -> bool {
             return true;
         }
         let Some(g) = ghost(hwnd, scale) else {
-            eprintln!("overview: drag preview for \"{}\" not created", ws::title(hwnd));
+            warn!("overview: drag preview for {} not created", ws::who(hwnd));
             return true;
         };
         // The X would sit on a window that is now moving.
@@ -1598,7 +1598,7 @@ fn drop_at(d: Drag) {
             rebuild();
         }
         Err(Miss::Gone) => {
-            println!("overview: a window is gone");
+            info!("overview: a window is gone");
             rebuild();
         }
         Err(Miss::CantMove | Miss::Unplugged) => note(popup, Note::CantMove),

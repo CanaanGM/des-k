@@ -941,7 +941,7 @@ fn open() {
         // Made on the screen it opens on, so it starts at that screen's dpi.
         let h = match CreateWindowExW(WINDOW_EX_STYLE(0), CLASS, &HSTRING::from(TITLE), STYLE, work.left, work.top, 100, 100, owner, None, Some(inst.into()), None) {
             Ok(h) => h,
-            Err(e) => return eprintln!("hints: no window: {e}"),
+            Err(e) => return warn!("hints: no window: {e}"),
         };
         if let Some(icon) = crate::tray::draw_icon() {
             SendMessageW(h, WM_SETICON, Some(WPARAM(ICON_SMALL as usize)), Some(LPARAM(icon.0 as isize)));
@@ -963,7 +963,7 @@ fn open() {
         let _ = ShowWindow(h, SW_SHOW);
         let _ = SetForegroundWindow(h);
     }
-    println!("hints: opened");
+    info!("hints: opened");
 }
 
 /// Esc (with nothing to cancel), the title bar's X, or its key.

@@ -19,7 +19,7 @@ fn unpack(w: usize) -> Option<(u8, Motion, u8)> {
 pub fn run(gesture: usize) {
     let Some((fingers, motion, times)) = unpack(gesture) else { return };
     let Some(action) = settings::get().rule(fingers, motion, times) else {
-        return println!("gesture {fingers} {}: its rule went with a settings change", motion.word());
+        return info!("gesture {fingers} {}: its rule went with a settings change", motion.word());
     };
     // The last input was the touchpad's, so Windows would refuse the focus change an action
     // makes; des-k's own harmless key makes des-k the source of it (spec 0011 check step).

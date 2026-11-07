@@ -39,6 +39,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 19 | Return windows to their screens | Slice 10 | in-progress |
 | 20 | Look B screens | Slice 11 | in-progress |
 | 21 | Install updates from the tray | Slice 12 | in-progress |
+| 22 | Logs you can read and share | Slice 13 | in-progress |
 
 ## Already built
 
@@ -300,6 +301,18 @@ spec [0018](../specs/0018-install-updates-from-tray/index.md) · code in `src/in
   - [x] Start up outcome, cleanup, and every failure path with its balloon (AC-5, AC-7 to AC-11)
   - [x] `des-k.iss` restart after a failed install and uninstall cleanup; Cargo features and docs (AC-8, AC-10)
   - [ ] Tried on your machine: 0.0.1 to the newest release, not installed copy, offline, failed and killed setup (all ACs)
+
+## Slice 13: Sharing
+
+### 22. Logs you can read and share · in-progress · from spec 0019
+Every log line carries the local time with its UTC offset and a level, each log opens with the des-k version and Windows build, windows are named by exe instead of title, repeats collapse, and the log rolls over at 5 MB, so a friend's log answers what went wrong without leaking private titles.
+**Done when:** a release run's `des-k.log` starts with the header, every line is stamped `YYYY-MM-DD HH:MM:SS.mmm +HH:MM LEVEL`, the finder closing a window logs its exe name, and `cargo clippy --all-targets -- -D warnings` fails on a new `println!`.
+spec [0019](../specs/0019-logging-timestamps-levels.md) · code in `src/log.rs`, `clippy.toml`, every file that logs
+- [x] Design it (spec): `/architect proper logging with timestamps and levels`
+- [ ] Build it: `/develop logs you can read and share`
+  - [x] `src/log.rs`: the macros, stamp, header, repeat collapse, 5 MB roll, panic line, with unit tests
+  - [x] Every `println!`/`eprintln!` moved over, `ERROR` lines raised, titles swapped for `ws::who`
+  - [ ] `clippy.toml` lint on, tests allowed to print; tried on your machine
 
 ## Deferred
 Out of scope for the current build pass, kept so the plan stays honest.

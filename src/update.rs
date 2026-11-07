@@ -183,17 +183,17 @@ pub fn running() -> bool {
 /// From the tray's menu, main thread. One check at a time (AC-6).
 pub fn check(tray: HWND) {
     if RUNNING.swap(true, Ordering::SeqCst) {
-        eprintln!("update check: one is already running, this click is ignored");
+        warn!("update check: one is already running, this click is ignored");
         return;
     }
-    println!("update check: asking GitHub for the newest des-k");
+    info!("update check: asking GitHub for the newest des-k");
     let hwnd = tray.0 as isize; // an HWND is not Send
     let spawned = std::thread::Builder::new().name("update".into()).spawn(move || {
         let mut guard = Guard { hwnd, posted: false };
         guard.post(run());
     });
     if let Err(e) = spawned {
-        eprintln!("update check: thread not started: {e}");
+        warn!("update check: thread not started: {e}");
         Guard { hwnd, posted: false }.post(Answer::Failed(Fail::Crashed));
     }
 }
@@ -210,7 +210,7 @@ impl Guard {
         RUNNING.store(false, Ordering::SeqCst);
         let (wp, lp) = pack(a);
         if let Err(e) = unsafe { PostMessageW(Some(HWND(self.hwnd as *mut _)), WM_UPDATE, wp, lp) } {
-            eprintln!("update check: answer not passed to the tray: {e}");
+            warn!("update check: answer not passed to the tray: {e}");
         }
     }
 }
@@ -226,20 +226,20 @@ impl Drop for Guard {
 /// The worker: logs every step's detail (AC-8), touches nothing but the log and its message.
 fn run() -> Answer {
     let Some(ours) = ours() else {
-        eprintln!("update check: this des-k's version {:?} is not X.Y.Z", env!("CARGO_PKG_VERSION"));
+        warn!("update check: this des-k's version {:?} is not X.Y.Z", env!("CARGO_PKG_VERSION"));
         return Answer::Failed(Fail::OurVersion);
     };
     let got = fetch().and_then(|(status, loc)| {
-        println!("update check: GitHub answered HTTP {status}, Location {loc:?}");
+        info!("update check: GitHub answered HTTP {status}, Location {loc:?}");
         redirect(status, loc.as_deref())
     });
     match got {
         Ok(newest) => {
-            println!("update check: the newest des-k is {newest}, you have {ours}");
+            info!("update check: the newest des-k is {newest}, you have {ours}");
             answer(newest, ours)
         }
         Err(f) => {
-            eprintln!("update check failed: {f:?}");
+            warn!("update check failed: {f:?}");
             Answer::Failed(f)
         }
     }
@@ -262,7 +262,7 @@ impl Drop for Handle {
 
 /// A WinHTTP error into a `Fail`, its code into the log.
 pub(crate) fn fail(e: windows::core::Error, what: &str) -> Fail {
-    eprintln!("update check: {what} failed: {e}");
+    warn!("update check: {what} failed: {e}");
     let code = e.code().0 as u32 & 0xFFFF;
     match code {
         ERROR_WINHTTP_TIMEOUT => Fail::Timeout,
@@ -320,6 +320,7 @@ fn fetch() -> Result<(u16, Option<String>), Fail> {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_macros)] // live_release prints what it checked (spec 0019 exception)
 mod tests {
     use super::*;
 
