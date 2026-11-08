@@ -6,6 +6,7 @@ Windows already has virtual desktops, but switching one switches *every* screen 
 des-k gives each screen its own set of workspaces instead: you switch the screen under your
 mouse, and the other screens stay exactly where they are. Like on macOS or GNOME.
 
+des-k is not a tiling window manager like [komorebi](https://github.com/LGUG2Z/komorebi).
 Windows stay floating, just as they normally are. des-k never tiles or rearranges them; it only
 hides and shows them.
 
