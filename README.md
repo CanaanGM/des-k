@@ -58,9 +58,12 @@ Everything works on **the screen under your mouse**.
 | `Win+Tab` | **Overview**: see every workspace of every screen at once |
 | `Win+Ctrl+U` | **Pin** the focused window: it stays on every workspace of its screen; again to unpin |
 
-Each switch shows a small row of dots for a moment, so you can see which workspace you're on.
-After a pin, every dot lights up: the window is on all of them. Sending a pinned window to a
-workspace unpins it.
+Each switch shows a small card for a moment, so you can see which workspace you're on: its number
+in its own color, the screen's name when you have two or more, and a bar per workspace. (Prefer a
+plain row of dots? Pick the Dots style in Settings, Indicator.) After a pin, every bar lights up:
+the window is on all of them. Sending a pinned window to a workspace unpins it.
+
+Forgot a shortcut? Tray → **Shortcut hints** lists every shortcut and gesture as you have them set.
 
 Note: des-k takes over `Win+Tab` (Windows' Task View) and `Win+1` … `9` (Windows' "open the
 Nth taskbar app"). You can change any shortcut in the settings.
@@ -131,14 +134,29 @@ says when each change takes effect, and saves each click to
 Tab moves between the side list and the settings, Up and Down go row to row, and Left and Right
 change a value. Things you can change:
 
-- How many workspaces each screen has (2 to 9, default 4)
+- How many workspaces each screen has (2 to 9, default 4), and whether des-k follows a hidden
+  window to its workspace when it comes to the front
 - Every shortcut, or turn one off
-- The dots indicator: on or off, and how long it stays
+- The indicator: on or off, card or dots, how long it stays, and where it shows (see below)
+- des-k's colors: your accent and a color per workspace (see below)
 - Whether the Copilot key acts as `Right Ctrl`
 - The overview's window titles (`"hover"`, `"always"` or `"none"`), whether it updates live,
   and how it opens (`"off"` or `"fade"`)
+- **Skip animations** (Motion): every des-k fade and move happens at once
 - What each three and four finger gesture does, how far a swipe travels before it counts, or
   touchpad reading off altogether
+
+**Colors.** des-k's accent follows your Windows accent color and changes with it. Choose **My
+own** to type a color instead (like `2E8B57`); des-k mixes two neighbor shades from it for its
+headers and badges. Each workspace can have its own color too, shown on the indicator, the
+finder, the overview and the tray menu. **Reset** puts des-k's color back. With Windows' high
+contrast on, des-k uses Windows' colors and ignores yours.
+
+**Where the indicator shows.** Under Indicator, click one of the 9 spots on the little screen
+picture (corners, edges or center), set how far it stays from the edges, or choose **Custom**
+and drag it anywhere. With two or more screens, pick one in the Screen list to give it its own
+place; **Same as all screens** undoes that, and **Show it there** shows the real indicator on
+that screen.
 
 Workspaces shows a picture of each screen with its windows. Hover × on the last workspace to
 see which windows would move before you remove it; they go to the workspace before it, never
@@ -170,7 +188,8 @@ des-k keeps the settings it had and the page turns read only until you fix it.
   note on the screen and a tray balloon say what moved. **Settings** lists the screens des-k is
   waiting for, with **Forget** for one you will not plug in again. des-k knows a screen by the
   monitor's own model and serial, so another port or dock is still the same screen.
-- The tray icon menu has **Settings**, **Open log**, **Check for updates** and **Quit**.
+- The tray icon menu has **Shortcut hints**, **Settings**, **Open log**, **Check for updates**
+  and **Quit**.
 - **Check for updates** asks GitHub which des-k release is newest and answers in a balloon. If a
   newer one is out, click the balloon (or **Install X.Y.Z** in the menu): des-k downloads that
   release's setup, checks it against the release's `SHA256SUMS.txt`, and runs it silently. des-k
@@ -178,7 +197,9 @@ des-k keeps the settings it had and the page turns read only until you fix it.
   a balloon says why and des-k carries on. Only the installed des-k does this; a copy you run
   yourself opens the release page instead. des-k checks and installs only when you click.
 - des-k keeps the title, app, class, place and size of each window it tracks, and the model and
-  serial of each screen, in `state.txt`, and its log names the windows it moves, all in `%LOCALAPPDATA%\des-k` on this PC only. None of it leaves your PC.
+  serial of each screen, in `state.txt`, all in `%LOCALAPPDATA%\des-k` on this PC only. The log
+  names windows by their app (`chrome.exe`), never by their title, so it is safe to share. None
+  of it leaves your PC.
   The only thing des-k sends out is the update check you click: a request to github.com that
   carries your address and des-k's version, nothing else.
 
@@ -210,8 +231,17 @@ Your settings and log stay in `%LOCALAPPDATA%\des-k`; delete that folder too if 
   (**des-k**), which starts it as admin through its logon task.
 - **Everything is weird**: Quit from the tray. Every window comes back. Then start des-k again
   from the Start menu.
-- The log (tray → **Open log**) says what des-k did and why. The run before lives on in
-  `des-k.old.log` beside it, so after a crash it still says what happened.
+- The log (tray → **Open log**) says what des-k did and why. Each line has the time and a level:
+  `INFO` is something done as intended, `WARN` a hiccup des-k carried on from, `ERROR` something
+  you may notice (a window still hidden, shortcuts not working). The first line names the des-k
+  version and Windows build. The run before lives on in `des-k.old.log` beside it, so after a
+  crash it still says what happened. When the log reaches 5 MB, it starts fresh and the old part
+  moves to `des-k.old.log`.
+- **Windows Defender says des-k is a trojan** (for example `Trojan:Win32/Bearfoos.A!ml`): the
+  `!ml` means a guess by Defender's machine learning, which often flags new unsigned programs.
+  des-k is open source and every release lists its SHA-256 in `SHA256SUMS.txt`. Update
+  Defender's definitions, then restore des-k from Windows Security, Protection history (or
+  install it again).
 
 des-k uses an undocumented part of Windows to hide windows. It works on Windows 11 25H2, but a
 big Windows update could change that. If it does, the tray shows a warning and switching hides
