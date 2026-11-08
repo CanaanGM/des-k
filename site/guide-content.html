@@ -4,7 +4,7 @@ headline: Every screen gets its <em>own</em> desktops
 lede: des-k lets each monitor switch its own workspaces. The other screens stay where they are. This page shows how to install it, use it and remove it.
 pills: Runs on <b>Windows 11</b> | Built with <b>Rust</b> | Windows stay <b>floating</b>
 status: reviewed
-updated: 2026-11-04
+updated: 2026-11-08
 related: <a href="https://github.com/CanaanGM/des-k">The code on GitHub</a> | <a href="https://github.com/CanaanGM/des-k#readme">The README</a>
 link: https://canaangm.github.io/des-k/
 footnote: des-k is free software by CanaanGM, under the <a href="https://github.com/CanaanGM/des-k/blob/main/LICENSE">GNU GPL 3.0 or later</a>. Copyright (C) 2026 CanaanGM.
@@ -120,7 +120,8 @@ cd des-k</code></pre></li>
       <tr><td><code>Win+Ctrl+U</code></td><td>Pin the window in front: it stays on every workspace of its screen. Press again to unpin.</td></tr>
     </tbody>
   </table></div>
-  <p>After each switch, a small row of dots shows for a moment. It tells you which workspace you are on. After a pin, every dot lights up, because the window is on all of them. Sending a pinned window to a workspace unpins it.</p>
+  <p>After each switch, a small card shows for a moment. It tells you which workspace you are on: its number in its own color, the screen's name when you have two or more, and a bar per workspace. If you like a plain row of dots better, pick the Dots style in Settings, Indicator. After a pin, every bar lights up, because the window is on all of them. Sending a pinned window to a workspace unpins it.</p>
+  <p>Forgot a shortcut? Tray → <strong>Shortcut hints</strong> lists every shortcut and gesture as you have them set.</p>
   <div class="callout watch"><strong>des-k takes two Windows shortcuts.</strong> <code>Win+Tab</code> no longer opens Task View. <code>Win+1</code> … <code>9</code> no longer open taskbar apps. You can change this in the <a href="#settings">settings</a>.</div>
 </section>
 
@@ -208,9 +209,16 @@ cd des-k</code></pre></li>
       <tr><td><code>follow_activation</code></td><td>true</td><td>true, false</td><td>Switch to a hidden window's workspace when it comes to the front</td></tr>
       <tr><td><code>copilot_as_right_ctrl</code></td><td>true</td><td>true, false</td><td>The Copilot key works as <code>Right Ctrl</code></td></tr>
       <tr><td><code>[shortcuts]</code></td><td>see <a href="#shortcuts">Shortcuts</a></td><td>lists like <code>["Win+F"]</code></td><td>Every shortcut. An empty list turns one off.</td></tr>
-      <tr><td><code>[indicator] enabled</code></td><td>true</td><td>true, false</td><td>The row of dots after a switch</td></tr>
-      <tr><td><code>[indicator] hold_ms</code></td><td>550</td><td>0 to 5000</td><td>How long the dots stay, in milliseconds</td></tr>
-      <tr><td><code>[indicator] fade_ms</code></td><td>200</td><td>0 to 2000</td><td>How long the dots take to fade</td></tr>
+      <tr><td><code>fastest</code></td><td>false</td><td>true, false</td><td>Skip animations: every des-k fade and move happens at once</td></tr>
+      <tr><td><code>[indicator] enabled</code></td><td>true</td><td>true, false</td><td>The indicator after a switch</td></tr>
+      <tr><td><code>[indicator] style</code></td><td>"card"</td><td>"card", "dots"</td><td>A card with the workspace number, or a plain row of dots</td></tr>
+      <tr><td><code>[indicator] spot</code></td><td>"center"</td><td>"top-left", "top", "top-right", "left", "center", "right", "bottom-left", "bottom", "bottom-right", "custom"</td><td>Where the indicator shows</td></tr>
+      <tr><td><code>[indicator] gap</code></td><td>24</td><td>0 to 400</td><td>Its distance from the screen's edges, in pixels at 100% scale</td></tr>
+      <tr><td><code>[indicator] x</code>, <code>y</code></td><td>50</td><td>0 to 100</td><td>With <code>"custom"</code>: where its center sits, in percent of the screen</td></tr>
+      <tr><td><code>[indicator] hold_ms</code></td><td>550</td><td>0 to 5000</td><td>How long it stays, in milliseconds</td></tr>
+      <tr><td><code>[indicator] fade_ms</code></td><td>200</td><td>0 to 2000</td><td>How long it takes to fade</td></tr>
+      <tr><td><code>[colors] accent</code></td><td>"windows"</td><td>"windows", <code>"#RRGGBB"</code></td><td>des-k's accent: your Windows accent color, or your own</td></tr>
+      <tr><td><code>[colors] ws1</code> … <code>ws9</code></td><td>des-k's colors</td><td><code>"#RRGGBB"</code></td><td>Your own color for a workspace</td></tr>
       <tr><td><code>[restore] enabled</code></td><td>true</td><td>true, false</td><td>After a restart, put reopened windows back on their workspaces</td></tr>
       <tr><td><code>[restore] minutes</code></td><td>3</td><td>1 to 30</td><td>How long after sign in to do that</td></tr>
       <tr><td><code>[overview] animation</code></td><td>"off"</td><td>"off", "fade"</td><td>How the overview opens and closes: at once, or with a quick fade</td></tr>
@@ -219,6 +227,10 @@ cd des-k</code></pre></li>
     </tbody>
   </table></div>
   <p>des-k checks the file once a second and uses a change at once. Only the <code>[restore]</code> settings wait for the next start.</p>
+  <h3>Your colors</h3>
+  <p>des-k's accent follows your Windows accent color and changes with it. In Settings, Colors, choose <strong>My own</strong> to type a color instead, like <code>2E8B57</code>. des-k mixes two neighbor shades from it for its headers and badges. Each workspace can have its own color too. You see it on the indicator, the finder, the overview and the tray menu. <strong>Reset</strong> puts des-k's color back. With Windows' high contrast on, des-k uses Windows' colors and ignores yours.</p>
+  <h3>Where the indicator shows</h3>
+  <p>In Settings, Indicator, click one of the 9 spots on the little screen picture: a corner, an edge or the center. Distance sets how far it stays from the edges. Or choose <strong>Custom</strong> and drag it anywhere. With two or more screens, pick one in the Screen list to give it its own place. <strong>Same as all screens</strong> undoes that, and <strong>Show it there</strong> shows the real indicator on that screen.</p>
   <div class="callout tip"><strong>A typo cannot break des-k.</strong> A bad value only sets that one setting back to its default. The log says which one.</div>
 </section>
 
@@ -231,9 +243,9 @@ cd des-k</code></pre></li>
     <li>When you unplug a screen or close the laptop lid, its windows move to the main display after 10 seconds (30 seconds just after a wake from sleep). Hidden windows keep their workspace number there. The windows you were looking at stay in view.</li>
     <li>When you plug that screen in again, its windows go back after 2 seconds: same workspace, same place, same size. This also works after a sleep, a reboot or a power cut. A window you moved to another screen yourself stays where you put it. A note on the screen and a tray balloon say what moved.</li>
     <li>des-k knows a screen by the monitor's own model and serial number, so another port or another dock is still the same screen. <strong>Settings</strong> lists the screens des-k waits for. <strong>Forget</strong> stops the wait for a screen you will not plug in again.</li>
-    <li>The tray icon menu has <strong>Settings</strong>, <strong>Open log</strong>, <strong>Check for updates</strong> and <strong>Quit</strong>.</li>
+    <li>The tray icon menu has <strong>Shortcut hints</strong>, <strong>Settings</strong>, <strong>Open log</strong>, <strong>Check for updates</strong> and <strong>Quit</strong>.</li>
     <li><strong>Check for updates</strong> asks GitHub which des-k release is newest and answers in a balloon. If a newer one is out, click the balloon (or <strong>Install X.Y.Z</strong> in the menu): des-k downloads that release's setup, checks it against the release's checksum file, and runs it silently. des-k stops, updates and comes back with your layout, then says "des-k updated". If anything fails, a balloon says why and des-k carries on. Only the installed des-k does this; a copy you run yourself opens the release page instead. des-k checks and installs only when you click.</li>
-    <li>des-k keeps the title, app, class, place and size of each window it tracks, and the model and serial number of each screen, in <code>state.txt</code>, and its log names the windows it moves. Both stay in <code>%LOCALAPPDATA%\des-k</code> on this PC. None of it leaves your PC. The only thing des-k sends out is the update check you click: a request to github.com with your address and des-k's version.</li>
+    <li>des-k keeps the title, app, class, place and size of each window it tracks, and the model and serial number of each screen, in <code>state.txt</code>, in <code>%LOCALAPPDATA%\des-k</code> on this PC. The log names windows by their app (<code>chrome.exe</code>), never by their title, so it is safe to share. None of it leaves your PC. The only thing des-k sends out is the update check you click: a request to github.com with your address and des-k's version.</li>
   </ul>
 </section>
 
@@ -279,7 +291,8 @@ Remove-Item -Recurse "$env:ProgramFiles\des-k"</code></pre></li>
       <tr><td>The shortcuts do nothing</td><td>Check the des-k icon is in the tray. If it is not, open <strong>des-k</strong> from the Start menu.</td></tr>
       <tr><td><code>install.ps1</code> says scripts are blocked</td><td>Use the full command with <code>-ExecutionPolicy Bypass</code>, as in the install steps.</td></tr>
       <tr><td>Everything looks wrong</td><td>Click <strong>Quit</strong> in the tray. Every window comes back. Then open <strong>des-k</strong> from the Start menu.</td></tr>
-      <tr><td>You want to know why something happened</td><td>Tray → <strong>Open log</strong>. The log says what des-k did and why.</td></tr>
+      <tr><td>You want to know why something happened</td><td>Tray → <strong>Open log</strong>. The log says what des-k did and why. Each line has the time and a level: <code>INFO</code> is something done as intended, <code>WARN</code> a hiccup des-k carried on from, <code>ERROR</code> something you may notice. The first line names the des-k version and Windows build. At 5 MB the log starts fresh, and the old part moves to <code>des-k.old.log</code>, where the run before also lives.</td></tr>
+      <tr><td>Windows Defender says des-k is a trojan (like <code>Trojan:Win32/Bearfoos.A!ml</code>)</td><td>The <code>!ml</code> means a guess by Defender's machine learning, which often flags new unsigned programs. des-k is open source, and every release lists its SHA-256 in <code>SHA256SUMS.txt</code>. Update Defender's definitions, then restore des-k from Windows Security, Protection history, or install it again.</td></tr>
     </tbody>
   </table></div>
   <div class="callout watch"><strong>des-k uses a hidden part of Windows</strong> to hide windows. It works on Windows 11 25H2, but a big Windows update could change that. If it does, the tray shows a warning. Tray → <strong>Check for updates</strong> tells you when a fix is out.</div>
