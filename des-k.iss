@@ -3,6 +3,8 @@
 ;   iscc /DAppVersion=0.2.0 des-k.iss        -> target\setup\des-k-v0.2.0-setup.exe
 ; It does what install.ps1's admin half does (spec 0008): hard stop des-k, copy it to Program
 ; Files, register the logon task that starts it as admin, start it, and say so if it is not running.
+; "Install for me only" does the same without admin: %LOCALAPPDATA%\Programs\des-k, and the task
+; starts des-k without admin, so its keys stop while an admin window has focus.
 #ifndef AppVersion
   #error Pass the version: iscc /DAppVersion=x.y.z des-k.iss
 #endif
@@ -15,7 +17,10 @@ AppPublisherURL=https://canaangm.github.io/des-k/
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
-; The README, AGENTS.md and the task all expect C:\Program Files\des-k.
+; Offers "Install for me only" for accounts that may not have admin. A silent run (the tray's
+; update) shows no dialog and keeps the mode of the copy already installed.
+PrivilegesRequiredOverridesAllowed=dialog
+; The README, AGENTS.md and the task expect C:\Program Files\des-k (for me only: {userpf}\des-k).
 DefaultDirName={autopf}\des-k
 ; Same AppId as when it was named pdesk, so Setup would reuse C:\Program Files\pdesk otherwise.
 UsePreviousAppDir=no
@@ -46,7 +51,7 @@ Type: filesandordirs; Name: "{autopf}\pdesk"
 ; Starts des-k again after a Quit or a crash, through its task so it runs as admin
 ; (des-k --start); a plain des-k.exe here would start a normal copy. Same entry as install.ps1's.
 [Icons]
-Name: "{userprograms}\des-k"; Filename: "{app}\des-k.exe"; Parameters: "--start"; Comment: "Start des-k as admin, through its logon task"
+Name: "{userprograms}\des-k"; Filename: "{app}\des-k.exe"; Parameters: "--start"; Comment: "Start des-k through its logon task"
 
 ; The update folder des-k fills when it installs from the tray (spec 0018); Setup never made it.
 [UninstallDelete]
@@ -104,7 +109,8 @@ begin
   if not ExecAsOriginalUser(ExpandConstant('{cmd}'), '/c whoami | findstr /i /x /c:"' + User + '" >nul',
     '', SW_HIDE, ewWaitUntilTerminated, Code) or (Code <> 0) then begin
     SuppressibleMsgBox('The admin prompt was answered by a different account (' + User + '). '
-      + 'Install des-k while signed in to the account that will use it, and that account must be an admin. Nothing changed.',
+      + 'Install des-k while signed in to the account that will use it, and that account must be an admin. Nothing changed. '
+      + 'Without admin, run Setup again and choose Install for me only.',
       mbError, MB_OK, IDOK);
     exit;
   end;
@@ -127,12 +133,18 @@ begin
 end;
 
 // Same task install.ps1 registers. Plain ASCII with no <?xml?> line: schtasks rejects UTF-8.
+// For me only: LeastPrivilege, never Highest, since anything running as you can replace an exe
+// under {userpf}. A non-admin token registered such a task for itself (tried 2026-11-08 with an
+// admin's filtered token, not yet with a real standard account).
 function TaskXml: String;
+var
+  Level: String;
 begin
+  if IsAdminInstallMode then Level := 'HighestAvailable' else Level := 'LeastPrivilege';
   Result :=
     '<Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">'
     + '<Principals><Principal id="Author"><UserId>' + User + '</UserId>'
-    + '<LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals>'
+    + '<LogonType>InteractiveToken</LogonType><RunLevel>' + Level + '</RunLevel></Principal></Principals>'
     // Task Scheduler's defaults stop it on battery, end it after 72 hours, and run it below
     // normal priority: all wrong for a tool that must answer keys at once.
     + '<Settings><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>'

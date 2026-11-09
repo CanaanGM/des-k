@@ -19,6 +19,11 @@ hides and shows them.
    **More info**, then **Run anyway**.
 3. Say **Yes** to the admin prompt. A des-k icon shows up in the tray.
 
+No admin rights (a work laptop, say)? Choose **Install for me only** when Setup asks. des-k
+goes to `%LOCALAPPDATA%\Programs\des-k` and starts at sign in as before, but without admin its
+shortcuts stop while an admin window has focus, it can't move or close admin windows, and the
+tray's **Install X.Y.Z** opens the release page instead (run the newer setup yourself).
+
 To update, run the newer setup the same way. Your workspaces are kept.
 
 The release also has a zip with the same `des-k.exe` and `install.ps1`, if you'd rather use a

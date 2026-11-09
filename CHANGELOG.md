@@ -6,6 +6,8 @@ What changed in each release, newest first. Downloads are on
 ## Unreleased
 
 - The README says how des-k differs from a tiling window manager.
+- Setup offers **Install for me only** for accounts without admin. That copy runs without admin,
+  so its shortcuts stop while an admin window has focus.
 
 ## 0.6.1 (2026-11-07)
 
