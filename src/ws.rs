@@ -708,16 +708,16 @@ pub(crate) fn under_mouse() -> (HMONITOR, String) {
     (mon, device_name(mon))
 }
 
-/// Switch the workspace of the monitor under the mouse by `dir` (-1 / +1). Clamps, no wrap.
+/// Switch the workspace of the monitor under the mouse by `dir` (-1 / +1), wrapping like a send.
 pub fn switch(dir: isize) {
     let (mon, dev) = under_mouse();
     let count = settings::get().workspaces;
     let mut s = state();
     let name = id_of(&mut s, &dev);
     let active = mon_mut(&mut s, &name).active;
-    let target = (active as isize + dir).clamp(0, count as isize - 1) as usize;
+    let target = (active as isize + dir).rem_euclid(count as isize) as usize;
     if target == active {
-        indicator::show(mon, card(&s, &name, active, count)); // at the edge: still show where we are
+        indicator::show(mon, card(&s, &name, active, count)); // nowhere to go: still show where we are
         return;
     }
     switch_to(&mut s, mon, &name, target, None, None);
