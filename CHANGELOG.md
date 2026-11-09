@@ -3,6 +3,11 @@
 What changed in each release, newest first. Downloads are on
 [Releases](https://github.com/CanaanGM/des-k/releases).
 
+## Unreleased
+
+- A shorter README; the full details live in the [guide](https://canaangm.github.io/des-k/),
+  which now covers **Install for me only** and updating from the tray.
+
 ## 0.7.0 (2026-11-09)
 
 - The README says how des-k differs from a tiling window manager.
