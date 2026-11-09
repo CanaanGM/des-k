@@ -1,0 +1,49 @@
+name: Bug report
+description: des-k did something wrong, or a window got lost
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Lost a window? Tray → **Quit** shows every hidden window. If des-k is already gone, run
+        `& "$env:ProgramFiles\des-k\des-k.exe" --quit`.
+        A security problem? Report it privately instead: see SECURITY.md.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what des-k did instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: des-k version and Windows build
+      description: The log's first line, for example `des-k 0.6.1 started: Windows 25H2 build 26200.7019, admin yes, installed copy`.
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How it runs
+      options:
+        - Setup exe, for all users (admin)
+        - Setup exe, for me only
+        - install.ps1
+        - cargo run or a build of my own
+    validations:
+      required: true
+  - type: textarea
+    id: screens
+    attributes:
+      label: Your screens
+      description: How many, which is the main one, laptop lid open or closed, any dock.
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: |
+        Tray → **Open log**, or `%LOCALAPPDATA%\des-k\des-k.log` (and `des-k.old.log` after a
+        crash). Drag the file here or paste the lines around the problem. It names windows by
+        their app, never their title, so it is safe to share.
+      render: text

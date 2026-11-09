@@ -1,2 +1,5 @@
 # cargo's build output
 target/
+
+# ferris-windows (skills-lock.json) has no license, so it stays local
+.claude/skills/ferris-windows/

@@ -3,6 +3,9 @@ name = "des-k"
 version = "0.6.1"
 edition = "2024"
 license = "GPL-3.0-or-later"
+description = "Per monitor virtual desktops for Windows 11: each screen switches its own workspaces"
+repository = "https://github.com/CanaanGM/des-k"
+homepage = "https://canaangm.github.io/des-k/"
 
 [build-dependencies]
 embed-resource = "3" # the icon in res/des-k.rc (build.rs)
