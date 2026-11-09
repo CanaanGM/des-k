@@ -1,6 +1,6 @@
 # Changelog
 
-What changed in each release, newest first. Specs live in `docs/specs/`. Downloads are on
+What changed in each release, newest first. Downloads are on
 [Releases](https://github.com/CanaanGM/des-k/releases).
 
 ## Unreleased
@@ -13,14 +13,13 @@ What changed in each release, newest first. Specs live in `docs/specs/`. Downloa
 
 ## 0.6.0 (2026-11-07)
 
-- Pick your own accent and workspace colors, and where the indicator shows (spec 0020).
-- Log lines carry a time and a level, never a window title, so a log is safe to share
-  (spec 0019).
+- Pick your own accent and workspace colors, and where the indicator shows.
+- Log lines carry a time and a level, never a window title, so a log is safe to share.
 
 ## 0.5.0 (2026-11-07)
 
 - Install updates from the tray: the setup is downloaded, checked against `SHA256SUMS.txt` and
-  run silently (spec 0018).
+  run silently.
 
 ## 0.4.1 (2026-11-07)
 
@@ -29,27 +28,27 @@ What changed in each release, newest first. Specs live in `docs/specs/`. Downloa
 ## 0.4.0 (2026-11-07)
 
 - New look for the indicator, finder, overview, tray menu, settings page and first run
-  (spec 0017).
-- Windows go back to their screen when it is plugged in again (spec 0016).
-- Check for updates from the tray (spec 0015).
+ .
+- Windows go back to their screen when it is plugged in again.
+- Check for updates from the tray.
 - Shortcut hints; des-k's own windows are never hidden by a switch.
 - An icon for the exe and the setup.
 
 ## 0.3.0 (2026-11-03)
 
-- Pin a window so it stays on every workspace (spec 0014).
+- Pin a window so it stays on every workspace.
 
 ## 0.2.1 (2026-11-03)
 
 - Renamed from pdesk to des-k; your data folder moves over by itself.
-- A setup exe with an uninstaller (spec 0013).
+- A setup exe with an uninstaller.
 - Touchpad setup moved to the settings page; the welcome screen and settings page fit small
   screens.
 
 ## 0.2.0 (2026-11-02)
 
-- Touchpad gestures (spec 0011).
-- A settings page with a shortcut recorder; settings apply live (spec 0012).
+- Touchpad gestures.
+- A settings page with a shortcut recorder; settings apply live.
 - A welcome screen on first run.
 - Overview: a fade, and closed windows leave at once.
 - Licensed under the GPL 3.0 or later.

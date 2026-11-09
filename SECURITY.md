@@ -35,5 +35,5 @@ A report that breaks one of these is exactly what we want to hear about.
 
 A touchpad gesture's key combo in `settings.toml` is typed by the admin des-k, so it reaches
 admin windows, and any program running as you can edit that file. Such a program can already
-type into your own windows; this is noted in spec 0011. The **Install for me only** copy runs
+type into your own windows. The **Install for me only** copy runs
 without admin on purpose, since its exe sits in a folder you can write to.

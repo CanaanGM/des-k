@@ -1,5 +1,9 @@
 # cargo's build output
 target/
 
-# ferris-windows (skills-lock.json) has no license, so it stays local
-.claude/skills/ferris-windows/
+# AI tooling and design notes stay local
+.claude/
+AGENTS.md
+CLAUDE.md
+skills-lock.json
+docs/

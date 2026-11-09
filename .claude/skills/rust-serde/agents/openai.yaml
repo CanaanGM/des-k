@@ -1,3 +1,0 @@
-interface:
-  display_name: "Rust Serde"
-  short_description: "Serde as the validating boundary between wire formats and domain types"

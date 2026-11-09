@@ -7,4 +7,4 @@
 <!-- Most of des-k is checked by hand: what you tried, on which Windows build and screens. -->
 
 - [ ] `cargo clippy --all-targets -- -D warnings` and `cargo test` pass
-- [ ] Follows the rules in AGENTS.md (logging, threads, only showing windows des-k hid)
+- [ ] Follows the rules in CONTRIBUTING.md (logging, threads, only showing windows des-k hid)

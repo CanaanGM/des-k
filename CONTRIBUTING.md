@@ -36,9 +36,18 @@ cargo test render -- --ignored   # draws each window's states to PNGs under targ
 
 ## How the code is built
 
-[AGENTS.md](AGENTS.md) holds the rules every change follows (threads, which windows des-k may
-show, logging, what may touch the network). Bigger features start as a spec in `docs/specs/`
-before any code; open an issue and we'll write it together.
+Every change keeps these rules:
+
+- des-k only ever shows again the windows it hid itself. Every exit path (Quit, `--quit`, a
+  panic, Ctrl+C) shows them all.
+- The keyboard hook and touchpad threads do no slow work: they post a message, and the main
+  thread changes windows.
+- Raw COM vtable calls live only in `src/cloak.rs`.
+- Log only with `info!`, `warn!` and `error!`; name a window by its exe, never its title.
+- No network outside the update check you click in the tray, and nothing in
+  `%LOCALAPPDATA%\des-k` may name a program to run.
+
+For a bigger feature, open an issue first so we can agree on the design before any code.
 
 ## Pull requests
 

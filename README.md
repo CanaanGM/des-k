@@ -256,5 +256,3 @@ des-k is free software: you can redistribute it and/or modify it under the terms
 General Public License as published by the Free Software Foundation, either version 3 of the
 License, or (at your option) any later version. It comes with no warranty. See
 [LICENSE](LICENSE) for the full text.
-
-The third party agent skills in `.claude/skills/` keep their own authors' licenses.
