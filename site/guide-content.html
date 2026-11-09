@@ -4,7 +4,7 @@ headline: Every screen gets its <em>own</em> desktops
 lede: des-k lets each monitor switch its own workspaces. The other screens stay where they are. This page shows how to install it, use it and remove it.
 pills: Runs on <b>Windows 11</b> | Built with <b>Rust</b> | Windows stay <b>floating</b>
 status: reviewed
-updated: 2026-11-08
+updated: 2026-11-09
 related: <a href="https://github.com/CanaanGM/des-k">The code on GitHub</a> | <a href="https://github.com/CanaanGM/des-k#readme">The README</a>
 link: https://canaangm.github.io/des-k/
 footnote: des-k is free software by CanaanGM, under the <a href="https://github.com/CanaanGM/des-k/blob/main/LICENSE">GNU GPL 3.0 or later</a>. Copyright (C) 2026 CanaanGM.
@@ -66,7 +66,8 @@ footnote: des-k is free software by CanaanGM, under the <a href="https://github.
     <li>des-k is not signed yet, so Windows may say "Windows protected your PC". Click <strong>More info</strong>, then <strong>Run anyway</strong>.</li>
     <li>Say <strong>Yes</strong> to the UAC prompt. When the des-k icon shows in the tray, des-k is running.</li>
   </ol>
-  <p>To update, run the newer setup the same way. Your workspaces are kept.</p>
+  <p>To update, click <strong>Check for updates</strong> in the tray menu, then <strong>Install X.Y.Z</strong>. Or run the newer setup the same way. Your workspaces are kept.</p>
+  <p><strong>No admin rights</strong> (a work laptop, say)? Choose <strong>Install for me only</strong> when Setup asks. des-k goes to <code>%LOCALAPPDATA%\Programs\des-k</code> and still starts when you sign in. But without admin, its shortcuts stop while an admin window is in front, it cannot move or close admin windows, and <strong>Install X.Y.Z</strong> opens the release page instead, so you run the newer setup yourself.</p>
   <p>The release also has a zip with the same <code>des-k.exe</code> and <code>install.ps1</code>, if you would rather use a script. Unzip it, open a terminal in that folder and run:</p>
   <pre data-lang="powershell"><code>powershell -ExecutionPolicy Bypass -File install.ps1</code></pre>
   <h3>Or build it yourself</h3>
