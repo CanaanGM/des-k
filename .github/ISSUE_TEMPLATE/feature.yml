@@ -1,0 +1,20 @@
+name: Feature idea
+description: Something des-k could do
+labels: [idea]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        des-k keeps windows floating and only hides and shows them. It will never tile or
+        rearrange windows; for that, try [komorebi](https://github.com/LGUG2Z/komorebi).
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you're trying to do
+      description: The situation and what gets in the way today. A problem helps more than a solution.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you'd like

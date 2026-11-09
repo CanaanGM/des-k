@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem
+    url: https://github.com/CanaanGM/des-k/security/advisories/new
+    about: Privately, please; see SECURITY.md.
+  - name: The guide
+    url: https://canaangm.github.io/des-k/
+    about: How to use des-k, with pictures.
