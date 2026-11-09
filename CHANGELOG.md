@@ -6,6 +6,7 @@ What changed in each release, newest first. Downloads are on
 ## Unreleased
 
 - The README says how des-k differs from a tiling window manager.
+- Switching past the last workspace goes to the first, and back, the way sending a window does.
 
 ## 0.6.1 (2026-11-07)
 
