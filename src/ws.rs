@@ -46,6 +46,9 @@ const WAKE_GRACE: Duration = Duration::from_secs(30);
 const BACK_CHECKS: u32 = 2;
 // A window that will not move back is tried once a check this many times, then left (AC-12).
 const RETURN_TRIES: u32 = 10;
+// A dock drops and brings back its screens one by one, and Windows moves windows after each:
+// spots are read and windows return only once the layout held this many checks (spec 0016).
+const SETTLE_CHECKS: u32 = 3;
 
 struct Monitor {
     active: usize,
@@ -180,8 +183,13 @@ struct State {
     away: HashMap<isize, Away>,
     // Each tracked window's screen id and spot, refreshed each check; frozen while that screen is missing.
     spots: HashMap<isize, (String, Spot)>,
-    // Screens with away windows that are plugged in again: checks present in a row, windows returned.
+    // Screens with away windows that are plugged in again: settled checks present, windows returned.
     back: HashMap<String, (u32, usize)>,
+    // Each present screen's id and work area at the last check, and how many checks in a row
+    // that held; whether the last check read spots (claims compare against them).
+    layout: Vec<(String, RECT)>,
+    calm: u32,
+    spots_fresh: bool,
     // Windows kept in view on every workspace of their screen (spec 0014).
     pinned: HashSet<isize>,
     // Each saved window's app by (hwnd, pid), which never changes: a save opens no process twice.
@@ -1835,6 +1843,9 @@ pub fn load() -> bool {
     s.logon = restore::logon();
     s.present = screen_ids();
     s.seen = s.present.iter().map(|p| p.id.clone()).collect();
+    // Screens at start count as settled: a screen that leaves in the first seconds keeps its windows' spots.
+    s.layout = layout_of(&s.present);
+    s.calm = SETTLE_CHECKS;
     log_screens(&s.present);
     let Ok(text) = std::fs::read_to_string(state_file()) else { return false };
     let present = s.seen.clone();
@@ -2281,6 +2292,11 @@ fn check_in(s: &mut State, present: Vec<Screen>, tick: bool) -> Vec<Note> {
     if now != s.seen {
         log_screens(&present);
     }
+    let layout = layout_of(&present);
+    s.calm = count_calm(s.calm, layout == s.layout, tick);
+    s.layout = layout;
+    // While Windows is still moving windows between screens, a spot read now is half a move.
+    let settled = s.calm >= SETTLE_CHECKS;
     s.present = present;
     for p in &s.present {
         if let Some(m) = s.monitors.get_mut(&p.id) {
@@ -2288,7 +2304,8 @@ fn check_in(s: &mut State, present: Vec<Screen>, tick: bool) -> Vec<Note> {
             m.name = p.name.clone();
         }
     }
-    let mut dirty = claims(s, &now);
+    // Claims compare against the last check's spots, so both checks must be settled.
+    let mut dirty = settled && s.spots_fresh && claims(s, &now);
     let before = s.away.len();
     s.away.retain(|&raw, a| {
         let open = unsafe { IsWindow(Some(HWND(raw as *mut _))) }.as_bool() && pid_of(HWND(raw as *mut _)) == a.pid;
@@ -2314,10 +2331,11 @@ fn check_in(s: &mut State, present: Vec<Screen>, tick: bool) -> Vec<Note> {
     s.back.retain(|id, _| now.contains(id) && homes.contains(id));
     for id in homes.into_iter().filter(|id| now.contains(id)) {
         let e = s.back.entry(id.clone()).or_insert((0, 0));
-        if tick {
+        if tick && settled {
             e.0 += 1;
         }
-        if let Some(last) = try_return(e.0) {
+        // Not while another screen is still coming: Windows would move them again after.
+        if settled && let Some(last) = try_return(e.0) {
             dirty |= give_back(s, &id, last, &mut notes);
         }
     }
@@ -2336,14 +2354,18 @@ fn check_in(s: &mut State, present: Vec<Screen>, tick: bool) -> Vec<Note> {
         dirty = true;
     }
 
-    refresh_spots(s, &now);
-    for p in &s.present {
-        if let Some(m) = s.monitors.get_mut(&p.id)
-            && !s.away.values().any(|a| a.home == p.id)
-        {
-            m.area = p.area;
+    // Spots and areas are read together, so a screen that leaves later hands back a matching pair.
+    if settled {
+        refresh_spots(s, &now);
+        for p in &s.present {
+            if let Some(m) = s.monitors.get_mut(&p.id)
+                && !s.away.values().any(|a| a.home == p.id)
+            {
+                m.area = p.area;
+            }
         }
     }
+    s.spots_fresh = settled;
     s.seen = now;
     if dirty {
         save(s);
@@ -2355,6 +2377,17 @@ fn check_in(s: &mut State, present: Vec<Screen>, tick: bool) -> Vec<Note> {
 /// is the last try (spec 0016 AC-5, AC-12).
 fn try_return(n: u32) -> Option<bool> {
     (BACK_CHECKS..BACK_CHECKS + RETURN_TRIES).contains(&n).then_some(n == BACK_CHECKS + RETURN_TRIES - 1)
+}
+
+/// Which screens are in and where their work areas sit: the layout that must hold to settle.
+fn layout_of(present: &[Screen]) -> Vec<(String, RECT)> {
+    present.iter().map(|p| (p.id.clone(), p.area)).collect()
+}
+
+/// Checks in a row the layout held: any change starts again, and only 1 s checks count, so a
+/// burst of display changes never settles it early.
+fn count_calm(calm: u32, same: bool, tick: bool) -> u32 {
+    if !same { 0 } else if tick { calm.saturating_add(1) } else { calm }
 }
 
 /// Whether an away window's change of screen is your move (spec 0016 AC-6). Windows moves
@@ -2549,8 +2582,13 @@ fn give_back(s: &mut State, id: &str, last: bool, notes: &mut Vec<Note>) -> bool
             }
         };
         if let Some(did) = done {
+            let landed = spot_of(h);
+            if did {
+                // Where it should be and where it is: an app that resizes itself on arrival shows here.
+                info!("return: {} to {}, landed at {}", who(h), to.text(), landed.text());
+            }
             s.away.remove(&raw);
-            s.spots.insert(raw, (id.to_string(), spot_of(h)));
+            s.spots.insert(raw, (id.to_string(), landed));
             if a.pinned {
                 s.pinned.insert(raw);
             }
@@ -2814,6 +2852,28 @@ mod tests {
         assert!(!is_claim("L", "A", "A", &all, &all), "Windows put it back on its home");
         assert!(!is_claim("L", "L", "A", &no_a, &no_a), "moved on the screen it is on");
         assert!(!is_claim("B", "L", "A", &all, &no_a.iter().filter(|i| *i != "B").cloned().collect()), "B left too");
+    }
+
+    // A dock drops and brings back its screens one by one, and Windows moves windows after each.
+    // A spot read between two drops is half a move (the portrait screen came back with its
+    // stack squeezed, 2026-11-10), and a return between two arrivals is moved again by Windows.
+    // So nothing settles until the layout held SETTLE_CHECKS one second checks.
+    #[test]
+    fn the_layout_settles_only_after_it_held_three_checks() {
+        let mut calm = count_calm(SETTLE_CHECKS, false, false); // the LG leaves
+        assert!(calm < SETTLE_CHECKS, "spots read now would be half a move");
+        calm = count_calm(calm, true, true);
+        calm = count_calm(calm, false, false); // the portrait screen leaves 0.9 s later
+        assert_eq!(calm, 0, "a second change starts the count again");
+        for _ in 0..10 {
+            calm = count_calm(calm, true, false);
+        }
+        assert!(calm < SETTLE_CHECKS, "display change messages alone never settle it");
+        for _ in 1..SETTLE_CHECKS {
+            calm = count_calm(calm, true, true);
+        }
+        assert!(calm < SETTLE_CHECKS);
+        assert!(count_calm(calm, true, true) >= SETTLE_CHECKS);
     }
 
     // A return is tried BACK_CHECKS checks after the screen is back, then once a check, and
