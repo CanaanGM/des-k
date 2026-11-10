@@ -7,6 +7,8 @@ What changed in each release, newest first. Downloads are on
 
 - A shorter README; the full details live in the [guide](https://canaangm.github.io/des-k/),
   which now covers **Install for me only** and updating from the tray.
+- Unplugging a dock no longer squeezes a screen's windows or leaves one behind: des-k waits for
+  the screens to settle before it notes where windows are, and before it puts them back.
 
 ## 0.7.0 (2026-11-09)
 
