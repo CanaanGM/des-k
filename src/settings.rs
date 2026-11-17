@@ -710,6 +710,26 @@ pub fn write(edit: Edit) -> Result<(), String> {
     reload(Source::Page).map(|_| ())
 }
 
+/// The value at a path of keys as the file holds it now, None when there is no such key: the
+/// color picker's undo writes it back exactly (spec 0021 AC-6).
+pub fn raw_at(keys: &[String]) -> Option<toml_edit::Value> {
+    let text = std::fs::read_to_string(path()).ok()?;
+    raw_in(&text, keys)
+}
+
+fn raw_in(text: &str, keys: &[String]) -> Option<toml_edit::Value> {
+    let doc: toml_edit::DocumentMut = text.parse().ok()?;
+    let (key, tables) = keys.split_last()?;
+    let table = tables.iter().try_fold(doc.as_table() as &dyn toml_edit::TableLike, |t, name| t.get(name)?.as_table_like())?;
+    table.get(key)?.as_value().cloned()
+}
+
+/// For the color picker's tests: a key's value in any text, as `raw_at` reads it.
+#[cfg(test)]
+pub fn raw_for_test(text: &str, keys: &[String]) -> Option<toml_edit::Value> {
+    raw_in(text, keys)
+}
+
 /// Pure, so the tests can run it: the file's text with the edit made and nothing else changed.
 fn edit_text(text: &str, edit: &Edit) -> Result<String, String> {
     let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e: toml_edit::TomlError| not_toml(&e.to_string(), e.message()))?;
