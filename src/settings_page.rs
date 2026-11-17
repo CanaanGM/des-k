@@ -9,6 +9,7 @@
 // draws what settings::get() holds, and every change goes through settings::write.
 use std::cell::RefCell;
 use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
 use windows::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Graphics::{Gdi::*, GdiPlus::DashStyleDash},
@@ -698,7 +699,9 @@ enum Ctl {
     Reset(&'static str),
     Link(Link),
     Tiles, // focus only: the workspace tiles, one stop for every screen
-    LastTile,
+    // A plugged in screen's tile: its row in Pics::screens, its workspace. A click opens the color
+    // picker (spec 0021); pointing at the last one shows its ×.
+    WsTile(usize, usize),
     TileAdd,
     TileRemove,
     Forget(usize), // a screen not plugged in, by its place in View::waiting
@@ -724,6 +727,16 @@ enum Ctl {
     Picture,           // focus only: the place picture is one stop; Left and Right move
     Spot(usize),       // a third of the picture across and down, 0 to 8 in reading order
     ShowThere,         // Show it there: the real indicator on the chosen screen
+    // The color picker (spec 0021): a live tile of the Overview picture (its screen row, its
+    // workspace), a Colors swatch by key, and the open picker's own parts.
+    ShowTile(usize, usize),
+    Swatch(&'static str),
+    Preset(usize),
+    Ring,
+    Square,
+    PickDone,
+    PickCancel,
+    PickCard, // inside the picker, between its parts
 }
 
 impl Ctl {
@@ -742,9 +755,9 @@ impl Ctl {
     fn writes(self) -> bool {
         matches!(
             self,
-            Ctl::Toggle(_) | Ctl::Minus(_) | Ctl::Plus(_) | Ctl::Choice(..) | Ctl::Reset(_) | Ctl::LastTile | Ctl::TileAdd | Ctl::TileRemove | Ctl::Forget(_)
+            Ctl::Toggle(_) | Ctl::Minus(_) | Ctl::Plus(_) | Ctl::Choice(..) | Ctl::Reset(_) | Ctl::WsTile(..) | Ctl::TileAdd | Ctl::TileRemove | Ctl::Forget(_)
                 | Ctl::KeyRow(_) | Ctl::Key(..) | Ctl::KeyX(..) | Ctl::AddKey(_) | Ctl::WinSide(..) | Ctl::Move(_) | Ctl::Picker(_) | Ctl::Item(_) | Ctl::Pad(Pad::ReadOn | Pad::GiveBack)
-                | Ctl::Hex(_) | Ctl::SameAll | Ctl::Picture | Ctl::Spot(_)
+                | Ctl::Hex(_) | Ctl::SameAll | Ctl::Picture | Ctl::Spot(_) | Ctl::ShowTile(..) | Ctl::Swatch(_)
         )
     }
 
@@ -753,7 +766,7 @@ impl Ctl {
         match self {
             Ctl::Minus(k) | Ctl::Plus(k) => Ctl::Stepper(k),
             Ctl::Choice(k, _) => Ctl::Pick(k),
-            Ctl::LastTile | Ctl::TileAdd | Ctl::TileRemove => Ctl::Tiles,
+            Ctl::WsTile(..) | Ctl::TileAdd | Ctl::TileRemove => Ctl::Tiles,
             Ctl::Spot(_) => Ctl::Picture,
             Ctl::Key(k, _) | Ctl::KeyX(k, _) | Ctl::AddKey(k) | Ctl::WinSide(k, _) => Ctl::KeyRow(k),
             c => c,
@@ -936,7 +949,14 @@ pub fn hand_edit(changes: &[settings::Change], _moves: &[String]) {
     }
     let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
     let lines: Vec<String> = changes.iter().map(|c| changed(c.key, &c.was, &c.now)).collect();
-    let _ = set(|w| w.edited = Some((format!("{:02}:{:02}", t.wHour, t.wMinute), lines)));
+    let note = Some((format!("{:02}:{:02}", t.wHour, t.wMinute), lines));
+    // While the color picker is open the page's notes hold still; it shows this one on close
+    // (spec 0021 AC-13). The reload calls this before refresh, so a hand edit that also closes
+    // the picker is held already.
+    let _ = set(|w| match w.pick.as_mut() {
+        Some(p) => p.held_edit = note,
+        None => w.edited = note,
+    });
 }
 
 /// One hand edit line in the page's words: "Indicator stays: 550 → 800 ms", "Open overview:
@@ -999,6 +1019,89 @@ struct Win {
     screen: Option<String>,       // the screen Where it shows changes, by id; None: All screens
     chooser: Option<(Bx, usize)>, // the open screen menu: the chooser it opened from, its focused line
     dragging: Option<(f64, f64)>, // Custom: where a drag on the picture has the card, in percent
+    pick: Option<ColorPick>,      // the open color picker (spec 0021)
+    geo: Geo,                     // where its anchors were last drawn
+    ease: Option<Ease>,           // the page scrolling on its own, for the picker
+    down_at: (i32, i32),          // the last press, in screen pixels, for the picker's guard
+}
+
+/// The color picker while it is open (spec 0021): one key, the color shown, and what it saved.
+struct ColorPick {
+    key: &'static str,      // ACCENT or one of WS_KEYS
+    from: Option<Ctl>,      // the swatch that opened it, for focus on close; None for a tile
+    anchor: Anchor,         // what was clicked
+    before: Option<toml_edit::Value>, // the key's raw value in the file when it opened; None: no key
+    start: u32,             // the color shown when it opened, for the header's start chip and hex
+    file: u32,              // the color the file is known to hold: the start, then each write that worked
+    color: u32,             // the color shown: the source of truth
+    hsv: ui::Hsv,           // where the ring and square sit
+    preview: Option<Theme>, // the page's theme with `color` in place, while the page shows otherwise
+    written: Option<u32>,   // the value of the write in flight only: set before the call, cleared after
+    failed: Option<String>, // Windows' words from the last failed write, while Not saved shows
+    saved: bool,            // a write from this picker worked
+    held_edit: Option<(String, Vec<String>)>, // a hand edit's note that arrived while open
+    placed: Option<Place>,  // the card's window position and the keep set it was placed with
+    scroll0: f32,           // the page's scroll when it opened, for the way back (AC-14)
+    guard: Option<Guard>,   // the opening click: presses close to it are ignored for a moment (AC-15)
+    focus: Stop,
+    last_swatch: usize,     // the swatch Tab comes back to
+    drag: Option<Part>,     // Ring or Square while the mouse is down
+    held: Option<VIRTUAL_KEY>, // the arrow held down: its key up saves
+}
+
+/// What the picker was opened from, found again in `Geo` after every layout.
+#[derive(Clone, PartialEq, Debug)]
+enum Anchor {
+    Tile(String, usize), // a Workspaces tile: its screen's device and its workspace
+    Show(String, usize), // an Overview picture tile
+    Swatch(&'static str),
+}
+
+/// The picker's keyboard stops, in Tab order (AC-9).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Stop {
+    Swatches(usize),
+    Ring,
+    Square,
+    Done,
+    Cancel,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Part {
+    Ring,
+    Square,
+}
+
+/// The opening click: where its button went down, in screen pixels, and when presses near it
+/// count again.
+#[derive(Clone, Copy, Debug)]
+struct Guard {
+    at: (i32, i32),
+    until: Instant,
+}
+
+/// The page scrolling to `to` on its own (AC-14): to make room for the picker (`opening`: the
+/// card shows when it ends) or back to where it was.
+#[derive(Clone, Copy, Debug)]
+struct Ease {
+    from: f32,
+    to: f32,
+    start: Instant,
+    ms: u32,
+    opening: bool,
+}
+
+/// Where the picker's anchors and what it keeps clear were drawn, in window dip.
+#[derive(Clone, Default, Debug)]
+struct Geo {
+    rows: Vec<(String, Bx)>,             // each plugged in screen's tile row, by device
+    tiles: Vec<(String, usize, Bx)>,     // each of their tiles
+    band: Option<Bx>,                    // the Overview picture
+    groups: Vec<(String, Bx)>,           // a screen's four tiles in it
+    shows: Vec<(String, usize, Bx)>,     // its live tiles
+    swatches: Vec<(&'static str, Bx)>,
+    legend: Option<Bx>,                  // the Colors sample's legend, kept clear for Your accent
 }
 
 /// A hex box being typed in: its digits, the caret and the other end of the selection, and
@@ -1033,6 +1136,7 @@ struct Out {
     fixed: f32,
     tops: Vec<(Option<Section>, f32)>,
     said: Vec<(Ctl, Node)>, // what Narrator reads for each stop, in page order
+    geo: Geo,
 }
 
 /// A piece of a caption: words, words in the text color (a reason), or a link.
@@ -1076,11 +1180,12 @@ impl Ctx<'_, '_> {
     /// height before its contents.
     fn measured(&mut self, f: impl FnOnce(&mut Self) -> f32) -> f32 {
         let draw = std::mem::replace(&mut self.c.draw, false);
-        let (hits, tops, said) = (self.out.hits.len(), self.out.tops.len(), self.out.said.len());
+        let (hits, tops, said, geo) = (self.out.hits.len(), self.out.tops.len(), self.out.said.len(), self.out.geo.clone());
         let h = f(self);
         self.out.hits.truncate(hits);
         self.out.tops.truncate(tops);
         self.out.said.truncate(said);
+        self.out.geo = geo;
         self.c.draw = draw;
         h
     }
@@ -1100,6 +1205,17 @@ impl Ctx<'_, '_> {
 
     fn hovered(&self, ctl: Ctl) -> bool {
         self.w.hover == Some(ctl)
+    }
+
+    /// A click on a tile or swatch opens the color picker: not in high contrast or read only.
+    fn picks(&self) -> bool {
+        !self.c.t.hc && !self.ro
+    }
+
+    /// The pointer is on the last workspace's tile, on any screen: its × shows.
+    /// The hover cue on a tile or swatch that opens the picker: an inset 1.5 dip edge in `ink`.
+    fn cue(&self, (x, y, w, h): Bx, ink: u32) {
+        self.c.stroke_rr((x + 0.75, y + 0.75, w - 1.5, h - 1.5), 3.25, 1.5, ui::alpha(ink, 0.6));
     }
 
     /// The focus ring: 2 dip in the text color, 2 dip out (AC-SET-9).
@@ -1507,7 +1623,15 @@ impl Ctx<'_, '_> {
             self.chip(X0 + self.c.width(name, F::Title) + 12.0, y + 2.0, "\u{E777}", "Applies from des-k's next start");
         }
         let line = sec.map_or("Lines in settings.toml that des-k skips. Fix them in the file; each note goes once its line is fixed.", Section::line);
-        let h = 30.0 + self.c.para(X0, y + 30.0, self.cw, 20.0, &[(line, F::Body, b.tx2)]);
+        // The color picker's way in, said only when a click works (spec 0021 AC-1, AC-2).
+        let live = self.picks() && !self.w.pics.screens.is_empty();
+        let more = match sec {
+            Some(Section::Workspaces) if live => " Click a tile to change its color.",
+            Some(Section::Overview) if live => " Click a workspace in the picture to change its color.",
+            _ => "",
+        };
+        let line = format!("{line}{more}");
+        let h = 30.0 + self.c.para(X0, y + 30.0, self.cw, 20.0, &[(&line, F::Body, b.tx2)]);
         h + 12.0
     }
 
@@ -1575,14 +1699,15 @@ impl Ctx<'_, '_> {
         let mut h = self.screens_art(y);
         let w = self.w;
         let n = self.s.workspaces;
-        let removing = !self.ro && n > 2 && (self.hovered(Ctl::TileRemove) || self.hovered(Ctl::LastTile) || self.focused(Ctl::Tiles));
+        // Pointing at the last tile only offers the picker; the removal preview waits for the ×.
+        let removing = !self.ro && n > 2 && (self.hovered(Ctl::TileRemove) || self.focused(Ctl::Tiles));
         let resetting = !self.ro && n > DEFAULTS.workspaces && (self.hovered(Ctl::Reset("workspaces")) || self.focused(Ctl::Reset("workspaces")));
         let gone: Vec<usize> = if removing { vec![n - 1] } else if resetting { (DEFAULTS.workspaces..n).collect() } else { vec![] };
         for (i, sc) in w.pics.screens.clone().iter().enumerate() {
             if i > 0 || h > 0.0 {
                 self.sep(y + h);
             }
-            h += self.screen_row(y + h, sc, &gone);
+            h += self.screen_row(y + h, i, sc, &gone);
         }
         for (i, away) in w.pics.view.waiting.clone().iter().enumerate() {
             self.sep(y + h);
@@ -1645,7 +1770,7 @@ impl Ctx<'_, '_> {
     }
 
     /// One present screen: its name and size, and its workspaces as tiles (AC-SET-3).
-    fn screen_row(&mut self, y: f32, sc: &crate::ws::ScreenInfo, gone: &[usize]) -> f32 {
+    fn screen_row(&mut self, y: f32, row: usize, sc: &crate::ws::ScreenInfo, gone: &[usize]) -> f32 {
         let n = self.s.workspaces;
         let name = self.name_of(sc);
         let a = self.active_on(&sc.device);
@@ -1654,20 +1779,23 @@ impl Ctx<'_, '_> {
         let counts: Vec<usize> = (0..n).map(|ws| self.w.pics.view.windows.iter().filter(|(d, k, _)| *d == sc.device && *k == ws).count()).collect();
         let add = n < 9;
         let tw = self.tiles_w(n, add);
-        let mut h = self.row(y, &name, &cap, (tw, 34.0), |c, x, y| c.tiles(x, y, &counts, Some(a), gone, add), None);
+        let mut h = self.row(y, &name, &cap, (tw, 34.0), |c, x, y| c.tiles(x, y, &counts, Some((a, row)), gone, add), None);
         h = h.max(60.0);
         h
     }
 
     /// The tiles: a workspace each in its color, with up to three window marks; the one in
-    /// view ringed; × on the last one while you point at it, + after them.
+    /// view ringed; × on the last one while you point at it, + after them. `now`: a plugged in
+    /// screen's workspace in view and its row in Pics::screens; its tiles open the color picker.
     #[allow(clippy::too_many_arguments)]
-    fn tiles(&mut self, x: f32, y: f32, counts: &[usize], now: Option<usize>, gone: &[usize], add: bool) {
+    fn tiles(&mut self, x: f32, y: f32, counts: &[usize], now: Option<(usize, usize)>, gone: &[usize], add: bool) {
         let t = self.c.t;
         let b = t.b;
         let n = counts.len();
         let tw = if n > 6 { 40.0 } else { 48.0 };
         let away = now.is_none();
+        let (now, row) = (now.map(|(a, _)| a), now.map_or(0, |(_, r)| r));
+        let device = self.w.pics.screens.get(row).map(|s| s.device.clone()).unwrap_or_default();
         for (i, &k) in counts.iter().enumerate() {
             let tx = x + i as f32 * (tw + 6.0);
             let bx = (tx, y, tw, 34.0);
@@ -1697,8 +1825,19 @@ impl Ctx<'_, '_> {
             if gone.contains(&i) && !away {
                 self.c.stroke_dash((tx + 1.0, y + 1.0, tw - 2.0, 32.0), 3.0, 2.0, op(b.tx), DashStyleDash);
             }
-            if !away && i + 1 == n && n > 2 && !self.ro {
-                let show = self.hovered(Ctl::LastTile) || self.hovered(Ctl::TileRemove) || self.focused(Ctl::Tiles);
+            if away {
+                continue;
+            }
+            let ctl = Ctl::WsTile(row, i);
+            if self.hovered(ctl) && self.picks() && !cur {
+                self.cue(bx, ink);
+            }
+            // Before the ×'s hit, so a click inside the tile opens the picker and never removes
+            // a workspace (spec 0021 AC-1).
+            self.hit(ctl, bx, 1);
+            self.out.geo.tiles.push((device.clone(), i, bx));
+            if i + 1 == n && n > 2 && !self.ro {
+                let show = self.hovered(ctl) || self.hovered(Ctl::TileRemove) || self.focused(Ctl::Tiles);
                 if show {
                     let (cx, cy) = (tx + tw + 2.0, y - 2.0);
                     let hov = self.hovered(Ctl::TileRemove);
@@ -1708,8 +1847,10 @@ impl Ctx<'_, '_> {
                     self.c.lines(&[(cx + 3.0, cy - 3.0), (cx - 3.0, cy + 3.0)], 1.2, op(fg));
                     self.hit(Ctl::TileRemove, (cx - 10.0, cy - 10.0, 20.0, 20.0), 1);
                 }
-                self.hit(Ctl::LastTile, bx, 1);
             }
+        }
+        if !away {
+            self.out.geo.rows.push((device, (x, y, self.tiles_w(n, add), 34.0)));
         }
         if !away && add {
             let ax = x + n as f32 * (tw + 6.0);
@@ -2600,12 +2741,15 @@ impl Ctx<'_, '_> {
             (b.acc_a, "Headers and bands", "the accent turned 30° one way"),
             (b.acc_b, "Badges and marks", "the accent turned 30° the other way"),
         ];
+        let mut lw: f32 = 0.0;
         for (i, (col, name, line)) in legend.iter().enumerate() {
             let ly = wy + 16.0 + i as f32 * 44.0;
             self.c.fill_rr((lx, ly + 6.0, 28.0, 20.0), 4.0, op(*col));
             self.c.text(lx + 38.0, ly, 22.0, name, F::Bold, b.tx);
             self.c.text(lx + 38.0, ly + 21.0, 16.0, line, F::Small, b.tx2);
+            lw = lw.max(38.0 + self.c.width(name, F::Bold).max(self.c.width(line, F::Small)));
         }
+        self.out.geo.legend = Some((lx, wy + 16.0, lw, body));
         let ry = wy + 16.0 + body + 12.0;
         self.c.rule(wx + 16.0, ry, ww - 32.0, op(b.line));
         self.c.para(wx + 16.0, ry + 11.0, ww - 32.0, 16.0, &[(foot, F::Small, b.tx2)]);
@@ -2680,15 +2824,21 @@ impl Ctx<'_, '_> {
             _ => None,
         });
         let digits = hex.as_ref().map_or_else(|| shown_digits(self.c.t, self.s, key).unwrap_or_default(), |x| x.digits.clone());
+        // The color picker's preview shows here too, live (spec 0021 AC-5).
+        let digits = match &self.w.pick {
+            Some(p) if p.key == key && p.preview.is_some() => format!("{:06X}", p.color),
+            _ => digits,
+        };
         let swatch = (!hc).then(|| hex_color(&digits).unwrap_or(wi.map_or(b.acc, |i| b.ws[i])));
         let warn = hex.as_ref().is_some_and(|x| x.line.is_some());
         let sel = hex.as_ref().map(|x| (x.caret, x.anchor));
         let spoken = if hc { String::new() } else { format!("#{digits}") };
         let help: String = cap.iter().map(|p| match p { P::T(s) | P::Why(s) | P::Link(s, _) | P::Mono(s) => s.as_str() }).collect();
+        self.say(Ctl::Swatch(key), UIA_ButtonControlTypeId, &format!("{title} color"), "Opens the color picker.", self.ro || hc, (None, None));
         self.say(Ctl::Hex(key), UIA_EditControlTypeId, &format!("{title} color"), help.trim(), self.ro || hc, (None, Some(spoken)));
         let draw = |c: &mut Self, y: f32| {
             c.row(y, &title, &cap, (164.0, 32.0), |c, x, y| {
-                c.swatch(x, y, wi, swatch);
+                c.swatch(key, x, y, wi, swatch);
                 c.hex_box(key, x + 56.0, y, if hc { "" } else { &digits }, sel, warn, hc);
             }, note.as_ref())
         };
@@ -2703,10 +2853,13 @@ impl Ctx<'_, '_> {
     }
 
     /// A color's swatch: a workspace's is its tile with its number in its ink; None (high
-    /// contrast) draws it greyed and blank.
-    fn swatch(&mut self, x: f32, y: f32, wi: Option<usize>, color: Option<u32>) {
+    /// contrast) draws it greyed and blank. A button: it opens the color picker (spec 0021 AC-3).
+    fn swatch(&mut self, key: &'static str, x: f32, y: f32, wi: Option<usize>, color: Option<u32>) {
         let b = self.c.t.b;
         let bx = (x, y, 48.0, 32.0);
+        let ctl = Ctl::Swatch(key);
+        self.hit(ctl, bx, 1);
+        self.out.geo.swatches.push((key, bx));
         match color {
             None => self.c.boxed(bx, 4.0, b.card, Some(b.tx3)),
             Some(c) => {
@@ -2720,6 +2873,14 @@ impl Ctx<'_, '_> {
             let ink = color.map_or(b.tx3, ui::ink);
             self.c.text(x + 6.0, y + 32.0 - 17.0, 16.0, &(i + 1).to_string(), F::SmallBold, ink);
         }
+        if let Some(c) = color
+            && self.hovered(ctl)
+            && self.picks()
+            && !self.focused(ctl)
+        {
+            self.cue(bx, ui::ink(c));
+        }
+        self.ring(bx, 4.0, ctl);
     }
 
     /// The hex box (spec 0020): a fixed grey #, then up to six digits in Cascadia Mono. Focus
@@ -2780,13 +2941,28 @@ impl Ctx<'_, '_> {
         let white = ui::LIGHT.b.card;
         let (chip, chip_fg) = (ui::DARK.b.bg, ui::DARK.b.tx);
         let samples = ["Mail", "Code", "Notes"];
+        self.out.geo.band = Some((x0, y0, w2, h2));
         for (r, sc) in screens.iter().enumerate() {
             let ry = y0 + 8.0 + r as f32 * (th + 22.0);
             let name = self.name_of(sc);
             self.c.text(x0 + 16.0, ry, 14.0, &name, F::Small, if t.hc { b.card } else { white });
             let a = self.active_on(&sc.device);
+            self.out.geo.groups.push((sc.device.clone(), (x0 + 16.0, ry + 16.0, 4.0 * tw + 3.0 * gap, th)));
             for i in 0..4 {
                 let (x, yy) = (x0 + 16.0 + i as f32 * (tw + gap), ry + 16.0);
+                // Past your count: an empty slot, as a screen not plugged in is drawn (spec 0021 AC-2).
+                if i >= self.s.workspaces {
+                    if t.hc {
+                        self.c.boxed((x, yy, tw, th), 4.0, b.bez, Some(b.card));
+                    } else {
+                        self.c.fill_rr((x, yy, tw, th), 4.0, ui::alpha(white, 0.06));
+                        self.c.stroke_rr((x + 0.5, yy + 0.5, tw - 1.0, th - 1.0), 3.5, 1.0, ui::alpha(white, 0.22));
+                    }
+                    continue;
+                }
+                let ctl = Ctl::ShowTile(r, i);
+                self.hit(ctl, (x, yy, tw, th), 1);
+                self.out.geo.shows.push((sc.device.clone(), i, (x, yy, tw, th)));
                 let fill = if t.hc { if i == a { b.hi } else { b.card } } else { b.ws[i] };
                 self.c.fill_rr((x, yy, tw, th), 4.0, op(fill));
                 if i == a {
@@ -2802,6 +2978,9 @@ impl Ctx<'_, '_> {
                         let sw = self.c.width(sample, F::Small);
                         self.c.text(wx + 17.0 - sw / 2.0, wy + 23.0, 16.0, sample, F::Small, chip_fg);
                     }
+                }
+                if self.hovered(ctl) && self.picks() && i != a {
+                    self.cue((x, yy, tw, th), 0x14141A);
                 }
             }
         }
@@ -3307,6 +3486,174 @@ impl Ctx<'_, '_> {
             self.hit(ctl, (x, y, w, 28.0), 3);
         }
     }
+
+    /// The open color picker, over everything (spec 0021 AC-4, sizes from the approved design):
+    /// the header, the 12 presets, the wheel, the status line, Done and Cancel. Hidden while
+    /// the page eases to make room for it.
+    fn pick_card(&mut self) {
+        let Some(p) = self.w.pick.as_ref() else { return };
+        let Some(at) = p.placed else { return };
+        if self.w.ease.is_some_and(|e| e.opening) {
+            return;
+        }
+        let t = self.c.t;
+        let b = t.b;
+        let (x, y, kb) = (at.x, at.y, self.w.kb);
+        let wi = ws_index(p.key);
+        // The page's popup, as its menus are: edge, shadow, card.
+        if !t.hc {
+            self.c.fill_rr((x, y + 4.0, PICK_W, PICK_H), 8.0, ui::alpha(0, if t.dark { 0.30 } else { 0.08 }));
+        }
+        self.c.fill_rr((x - 1.0, y - 1.0, PICK_W + 2.0, PICK_H + 2.0), 9.0, op(if t.hc { b.tx } else { mix(b.bg, b.tx, 0.10) }));
+        self.c.fill_rr((x, y, PICK_W, PICK_H), 8.0, op(b.card));
+        // Header: the chip (start and now once they differ), the title, the hex.
+        let changed = p.color != p.start;
+        let pale = if t.hc { op(b.tx) } else if t.dark { op(mix(b.bg, b.tx, 0.10)) } else { ui::alpha(0, 0.10) };
+        let (hx, hy) = (x + 16.0, y + 12.0);
+        let chip_w = match wi {
+            None => 22.0,
+            Some(_) if changed => 40.0,
+            Some(_) => 28.0,
+        };
+        if wi.is_none() {
+            self.c.circle(hx + 11.0, hy + 14.0, 11.0, Some(op(p.color)), None);
+            self.c.circle(hx + 11.0, hy + 14.0, 10.5, None, Some((pale, 1.0)));
+        } else {
+            self.c.fill_rr((hx, hy + 3.0, chip_w, 22.0), 4.0, op(if changed { p.start } else { p.color }));
+            if changed {
+                self.c.fill_rr((hx + 20.0, hy + 3.0, 20.0, 22.0), 4.0, op(p.color));
+                self.c.fill_rr((hx + 20.0, hy + 3.0, 4.0, 22.0), 0.0, op(p.color));
+                self.c.fill_rr((hx + 20.0, hy + 3.0, 1.0, 22.0), 0.0, op(b.card));
+            }
+            // Above the fill, so a pale color still has an outline.
+            self.c.stroke_rr((hx + 0.5, hy + 3.5, chip_w - 1.0, 21.0), 3.5, 1.0, pale);
+        }
+        let title = wi.map_or("Accent".to_string(), |i| format!("Workspace {}", i + 1));
+        self.c.text(hx + chip_w + 10.0, hy, 28.0, &title, F::Bold, b.tx);
+        let now = format!("#{:06X}", p.color);
+        let right = x + PICK_W - 16.0 - self.c.width(&now, F::Mono);
+        self.c.text(right, hy, 28.0, &now, F::Mono, b.tx);
+        if changed {
+            let was = format!("#{:06X} → ", p.start);
+            self.c.text(right - self.c.width(&was, F::Mono), hy, 28.0, &was, F::Mono, b.tx2);
+        }
+        self.c.text(x + 16.0, y + 44.0, 20.0, "des-k colors", F::SmallBold, b.tx2);
+        self.c.text(x + 172.0, y + 44.0, 20.0, "Any color", F::SmallBold, b.tx2);
+        // The presets, 3 by 4: the one shown checked, a workspace's own color with its number.
+        for (i, &c) in ui::PRESETS.iter().enumerate() {
+            let (sx, sy) = (x + 16.0 + (i % 3) as f32 * 48.0, y + 68.0 + (i / 3) as f32 * 48.0);
+            let bx = (sx, sy, 40.0, 40.0);
+            let ink = ui::ink(c);
+            self.c.fill_rr(bx, 4.0, op(c));
+            if b.ws_edge > 0.0 {
+                self.c.stroke_rr((sx + 0.5, sy + 0.5, 39.0, 39.0), 3.5, 1.0, op(mix(c, 0, b.ws_edge)));
+            }
+            if wi == Some(i) {
+                self.c.text(sx + 5.0, sy + 22.0, 16.0, &(i + 1).to_string(), F::SmallBold, ink);
+            }
+            if self.hovered(Ctl::Preset(i)) {
+                self.cue(bx, ink);
+            }
+            if c == p.color {
+                let (cx, cy) = (sx + 28.0, sy + 12.0);
+                self.c.circle(cx, cy, 9.0, Some(op(b.card)), Some((ui::alpha(0, 0.12), 1.0)));
+                let iw = self.c.width(I_OK, F::IconTiny);
+                self.icon(cx - iw / 2.0, cy - 9.0, 18.0, I_OK, F::IconTiny, b.tx);
+            }
+            if kb && p.focus == Stop::Swatches(i) {
+                self.c.stroke_rr((sx - 3.0, sy - 3.0, 46.0, 46.0), 7.0, 2.0, op(b.tx));
+            }
+            self.hit(Ctl::Preset(i), bx, 3);
+        }
+        // The wheel: the toned ring and the square at the hue, drawn pixel for pixel.
+        let s = self.c.s;
+        let ((cx, cy), sq) = wheel_at(at, s);
+        let (n, ro, ri, _) = wheel_px(s);
+        let half = n as f32 / 2.0 / s;
+        RING.with_borrow_mut(|r| {
+            if r.as_ref().is_none_or(|(k, _)| *k != s.to_bits()) {
+                *r = Some((s.to_bits(), ring_px(s)));
+            }
+            if let Some((_, pic)) = r {
+                self.c.image(cx - half, cy - half, pic);
+            }
+        });
+        let hue = p.hsv.0;
+        SQUARE.with_borrow_mut(|q| {
+            if q.as_ref().is_none_or(|(k, h, _)| *k != s.to_bits() || *h != hue.to_bits()) {
+                *q = Some((s.to_bits(), hue.to_bits(), square_px(s, hue)));
+            }
+            if let Some((_, _, pic)) = q {
+                self.c.image(sq.0, sq.1, pic);
+            }
+        });
+        if !t.dark && !t.hc {
+            let line = ui::alpha(0, 0.10);
+            self.c.circle(cx, cy, ro / s - 0.5, None, Some((line, 1.0)));
+            self.c.circle(cx, cy, ri / s + 0.5, None, Some((line, 1.0)));
+            self.c.stroke_rr((sq.0 + 0.5, sq.1 + 0.5, sq.2 - 1.0, sq.3 - 1.0), 2.5, 1.0, line);
+        }
+        let (h, sat, val) = p.hsv;
+        let (mr, a) = ((ro + ri) / 2.0 / s, h.to_radians());
+        self.mark(cx + a.sin() * mr, cy - a.cos() * mr, 9.0, ui::ring_color(h.round()), kb && p.focus == Stop::Ring);
+        self.mark(sq.0 + sat * sq.2, sq.1 + (1.0 - val) * sq.3, 7.0, p.color, kb && p.focus == Stop::Square);
+        self.hit(Ctl::Square, (sq.0 - 8.0, sq.1 - 8.0, sq.2 + 16.0, sq.3 + 16.0), 3);
+        self.hit(Ctl::Ring, (cx - 106.0, cy - 106.0, 212.0, 212.0), 3);
+        // Footer: the status line, Done, Cancel.
+        let fy = y + 282.0;
+        let cw = (self.c.width("Cancel", F::Body) + 28.0).max(96.0);
+        let dw = (self.c.width("Done", F::Body) + 28.0).max(96.0);
+        let (cancel_x, done_x) = (x + PICK_W - 16.0 - cw, x + PICK_W - 16.0 - cw - 8.0 - dw);
+        let done = (done_x, fy, dw, 32.0);
+        self.c.fill_rr(done, 6.0, op(if self.hovered(Ctl::PickDone) { mix(b.acc, b.card, 0.10) } else { b.acc }));
+        if ui::contrast(b.acc, b.card) < 1.5 {
+            self.c.stroke_rr((done_x + 0.5, fy + 0.5, dw - 1.0, 31.0), 5.5, 1.0, op(b.tx2));
+        }
+        let lw = self.c.width("Done", F::Body);
+        self.c.text(done_x + (dw - lw) / 2.0, fy, 32.0, "Done", F::Body, b.on_acc);
+        let cancel = (cancel_x, fy, cw, 32.0);
+        self.field(cancel, if self.hovered(Ctl::PickCancel) { mix(b.card, b.tx, 0.05) } else { b.card }, None);
+        let lw = self.c.width("Cancel", F::Body);
+        self.c.text(cancel_x + (cw - lw) / 2.0, fy, 32.0, "Cancel", F::Body, b.tx);
+        for (bx, stop) in [(done, Stop::Done), (cancel, Stop::Cancel)] {
+            if kb && p.focus == stop {
+                self.c.stroke_rr((bx.0 - 3.0, bx.1 - 3.0, bx.2 + 6.0, bx.3 + 6.0), 9.0, 2.0, op(b.tx));
+            }
+        }
+        self.hit(Ctl::PickDone, done, 3);
+        self.hit(Ctl::PickCancel, cancel, 3);
+        let (sx, room) = (x + 16.0, done_x - 12.0 - x - 16.0);
+        if p.failed.is_some() {
+            let th = self.c.measuring().para(0.0, 0.0, room - 24.0, 16.0, &[(NOT_SAVED, F::SmallBold, b.tx)]);
+            let top = fy + (32.0 - th) / 2.0;
+            self.icon(sx, top, 16.0, I_WARN, F::IconSmall, b.warn);
+            self.c.para(sx + 24.0, top, room - 24.0, 16.0, &[(NOT_SAVED, F::SmallBold, b.tx)]);
+        } else if let Some(i) = wi
+            && let Some((j, same)) = dup_of(p.color, i, &b.ws, self.s.workspaces)
+        {
+            let line = format!("Workspace {} {}", j + 1, if same { "uses this color too." } else { "has a very close color." });
+            let th = self.c.measuring().para(0.0, 0.0, room - 30.0, 16.0, &[(&line, F::Small, b.tx2)]);
+            let top = fy + (32.0 - th) / 2.0;
+            self.c.fill_rr((sx, top, 22.0, 16.0), 3.0, op(b.ws[j]));
+            if b.ws_edge > 0.0 {
+                self.c.stroke_rr((sx + 0.5, top + 0.5, 21.0, 15.0), 2.5, 1.0, op(mix(b.ws[j], 0, b.ws_edge)));
+            }
+            self.c.text(sx + 4.0, top + 3.0, 13.0, &(j + 1).to_string(), F::TinyBold, b.on_ws[j]);
+            self.c.para(sx + 30.0, top, room - 30.0, 16.0, &[(&line, F::Small, b.tx2)]);
+        }
+        // Last, so every part above wins the click.
+        self.hit(Ctl::PickCard, (x, y, PICK_W, PICK_H), 3);
+    }
+
+    /// A mark on the ring or square: a white disc with a dark halo, filled in the middle.
+    fn mark(&self, x: f32, y: f32, r: f32, fill: u32, focus: bool) {
+        self.c.circle(x, y, r + 1.5, Some(ui::alpha(0, 0.45)), None);
+        self.c.circle(x, y, r, Some(op(0xFFFFFF)), None);
+        self.c.circle(x, y, r - 3.0, Some(op(fill)), None);
+        if focus {
+            self.c.circle(x, y, r + 4.5, None, Some((op(self.c.t.b.tx), 2.0)));
+        }
+    }
 }
 
 /// The screen menu's choices and the chosen one: All screens when the page's screen is gone.
@@ -3453,7 +3800,7 @@ fn escape(prompt: Option<&Prompt>, error: bool, edited: bool) -> Option<Ctl> {
 fn compose(c: &mut Canvas, w: &Win) -> Out {
     let s = settings::get();
     let cw = (w.vw - X0 - PAD_R).min(COL_MAX);
-    let mut x = Ctx { c, w, s, ro: settings::parse_error().is_some(), cw, top0: 0.0, out: Out { hits: vec![], height: 0.0, fixed: 0.0, tops: vec![], said: vec![] } };
+    let mut x = Ctx { c, w, s, ro: settings::parse_error().is_some(), cw, top0: 0.0, out: Out { hits: vec![], height: 0.0, fixed: 0.0, tops: vec![], said: vec![], geo: Geo::default() } };
     let fixed = x.measured(|c| c.banners());
     x.out.fixed = fixed;
     let top0 = fixed - w.scroll;
@@ -3492,6 +3839,7 @@ fn compose(c: &mut Canvas, w: &Win) -> Out {
     }
     x.menu();
     x.screens_menu();
+    x.pick_card();
     // The menu's hits first, then the banners', the side list's, the column's.
     x.out.hits.sort_by_key(|h| std::cmp::Reverse(h.group));
     x.out
@@ -3501,6 +3849,12 @@ fn hwnd() -> Option<HWND> {
     get(|w| w.hwnd)
 }
 
+/// The theme the page paints with: the color picker's preview while it shows a color the
+/// file doesn't hold (spec 0021 AC-5).
+fn painted(w: &Win) -> Theme {
+    w.pick.as_ref().and_then(|p| p.preview).unwrap_or(w.theme)
+}
+
 fn repaint() {
     if let Some(h) = hwnd() {
         unsafe { let _ = InvalidateRect(Some(h), None, false); }
@@ -3508,13 +3862,25 @@ fn repaint() {
 }
 
 /// Lays the page out again for its scroll, keeps the focus on a stop that is still there, and
-/// gives Narrator the stops as painted.
+/// gives Narrator the stops as painted. An open color picker keeps its place while it still
+/// fits, is placed again (never scrolling) when it doesn't, and closes when what you clicked is
+/// gone (spec 0021 AC-14).
 fn layout() {
+    lay();
+    match pick_fit() {
+        Some(Fit::Placed) => lay(),
+        Some(Fit::Gone) => return pick_close(How::Quiet),
+        _ => {}
+    }
+    repaint();
+}
+
+fn lay() {
     for _ in 0..2 {
         let Some(out) = get(|w| unsafe {
             let dc = GetDC(Some(w.hwnd));
             let out = {
-                let mut c = Canvas::new(dc, false, w.scale, w.theme, &w.fonts);
+                let mut c = Canvas::new(dc, false, w.scale, painted(w), &w.fonts);
                 compose(&mut c, w)
             };
             ReleaseDC(Some(w.hwnd), dc);
@@ -3531,6 +3897,7 @@ fn layout() {
             w.fixed = out.fixed;
             w.tops = out.tops;
             w.hits = out.hits;
+            w.geo = out.geo;
             if let Some(f) = w.focus
                 && !w.hits.iter().any(|h| h.ctl.stop() == f)
             {
@@ -3562,12 +3929,15 @@ fn layout() {
             break;
         }
     }
-    repaint();
 }
 
-/// Shows what des-k read back from the file. Called after every reload.
+/// Shows what des-k read back from the file. Called after every reload, so the color picker's
+/// close rules that follow a reload live here (spec 0021 AC-10, AC-12).
 pub fn refresh() {
     if hwnd().is_some() {
+        if get(must_close) == Some(true) {
+            pick_close(How::Quiet);
+        }
         update_pictures(true);
     }
 }
@@ -3626,8 +3996,15 @@ fn follow(l: Link) {
     }
 }
 
+/// The page's own writers change its notes: never while the color picker is open, which takes
+/// every click and key and holds the notes still (spec 0021 AC-13).
+fn assert_no_pick() {
+    debug_assert!(get(|w| w.pick.is_none()) != Some(false), "the page wrote while the color picker was open");
+}
+
 /// Writes one value; a failure shows what stays and why until the next good save.
 fn save(key: &'static str, v: i64) {
+    assert_no_pick();
     let Some(row) = find_row(key) else { return };
     match settings::write(Edit::Value(key, file_value(row, v))) {
         Ok(()) => {
@@ -3638,15 +4015,17 @@ fn save(key: &'static str, v: i64) {
     }
 }
 
-/// Windows' words from a failed write, "cannot save … (os error 32)": the part in brackets.
+/// A failed write's note, with Windows' words.
 fn failed(what: &str, why: String) {
-    let said = why.rsplit_once(" (").map_or(why.clone(), |(_, w)| w.trim_end_matches(')').to_string());
+    assert_no_pick();
+    let said = windows_words(&why);
     let _ = set(|w| w.error = Some((what.to_string(), said)));
     refresh();
 }
 
 /// Writes an edit that is not one row's value; a failure shows like a failed save.
 fn commit(edit: Edit, title: &str) {
+    assert_no_pick();
     match settings::write(edit) {
         Ok(()) => {
             let _ = set(|w| w.error = None);
@@ -3935,9 +4314,9 @@ fn close_menu() {
     layout();
 }
 
-/// The gesture menu or the screen menu: while one is open, only its lines take clicks.
+/// The gesture menu, the screen menu or the color picker: while one is open, only it takes clicks.
 fn menu_open(w: &Win) -> bool {
-    w.menu.is_some() || w.chooser.is_some()
+    w.menu.is_some() || w.chooser.is_some() || w.pick.is_some()
 }
 
 /// A menu line chosen, by click or Enter.
@@ -3990,7 +4369,17 @@ fn act(ctl: Ctl) {
         Ctl::Reset(key) if shortcut(key).is_some() => reset_keys(key),
         Ctl::Reset(key) => save(key, value(&DEFAULTS, key)),
         Ctl::Link(l) => follow(l),
-        Ctl::LastTile => {}
+        Ctl::WsTile(row, i) | Ctl::ShowTile(row, i) => {
+            if let Some(dev) = get(|w| w.pics.screens.get(row).map(|s| s.device.clone())).flatten() {
+                let anchor = if matches!(ctl, Ctl::WsTile(..)) { Anchor::Tile(dev, i) } else { Anchor::Show(dev, i) };
+                pick_open(WS_KEYS[i], anchor, None);
+            }
+        }
+        Ctl::Swatch(key) => pick_open(key, Anchor::Swatch(key), Some(ctl)),
+        Ctl::Preset(i) => pick_preset(i),
+        Ctl::PickDone => pick_close(How::Keep(true)),
+        Ctl::PickCancel => pick_close(How::Undo),
+        Ctl::Ring | Ctl::Square | Ctl::PickCard => {} // the wheel acts on the press
         Ctl::TileAdd => step_key("workspaces", true),
         Ctl::TileRemove => step_key("workspaces", false),
         Ctl::Forget(i) => {
@@ -4297,6 +4686,802 @@ fn clip_set(text: &str) {
     }
 }
 
+// ---- The color picker (spec 0021, drawn to the approved design pass, handoff-4) ----
+
+const PICK_W: f32 = 388.0; // the card, in dip
+const PICK_H: f32 = 326.0;
+const NOT_SAVED: &str = "Not saved: couldn't update the file.";
+const EASE_TIMER: usize = 1;
+const EASE_MS: u32 = 150;
+const MARGIN: f32 = 8.0; // the card's gap from what it sits by, and from the window's and notes' edges
+const OUTSET: f32 = 4.0; // a tile's in view ring and hover edge reach this far outside it
+
+thread_local! {
+    // The open picker's ring at one scale, and its square at one scale and hue: built once,
+    // drawn on every paint, dropped when it closes.
+    static RING: RefCell<Option<(u32, ui::Picture)>> = const { RefCell::new(None) };
+    static SQUARE: RefCell<Option<(u32, u32, ui::Picture)>> = const { RefCell::new(None) };
+}
+
+/// The wheel's bitmap in pixels at scale `s`: its side, the ring's outer and inner radius, and
+/// the square's side. Whole pixels, so the ring's center is a pixel corner at every scale (at
+/// 125% the 90 dip middle line falls on half a pixel).
+fn wheel_px(s: f32) -> (i32, f32, f32, i32) {
+    (2 * (108.0 * s).round() as i32, (100.0 * s).round(), (80.0 * s).round(), 2 * (52.0 * s).round() as i32)
+}
+
+/// The wheel of a card at `at`: its center and the square, in dip, from the same whole pixels
+/// the bitmaps are drawn at. The bitmap is 8 dip larger than the 200 dip wheel on every side,
+/// so the focus circle around the ring's mark is never cut.
+fn wheel_at(at: Place, s: f32) -> ((f32, f32), Bx) {
+    let (n, _, _, side) = wheel_px(s);
+    let (ox, oy) = (((at.x + 164.0) * s).round(), ((at.y + 62.0) * s).round());
+    let (cx, cy) = ((ox + n as f32 / 2.0) / s, (oy + n as f32 / 2.0) / s);
+    let half = side as f32 / 2.0 / s;
+    ((cx, cy), (cx - half, cy - half, 2.0 * half, 2.0 * half))
+}
+
+/// A color at opacity `a`, premultiplied.
+fn premul(c: u32, a: f32) -> u32 {
+    let ch = |shift: u32| ((c >> shift & 0xFF) as f32 * a).round() as u32;
+    ((a * 255.0).round() as u32) << 24 | ch(16) << 16 | ch(8) << 8 | ch(0)
+}
+
+/// The toned ring, hue 0 at the top going clockwise, its edges smoothed; clear inside and out.
+fn ring_px(s: f32) -> ui::Picture {
+    let (n, ro, ri, _) = wheel_px(s);
+    let c = n as f32 / 2.0;
+    let hues: Vec<u32> = (0..360).map(|h| ui::ring_color(h as f32)).collect();
+    let mut px = vec![0u32; (n * n) as usize];
+    for y in 0..n {
+        for x in 0..n {
+            let (dx, dy) = (x as f32 + 0.5 - c, y as f32 + 0.5 - c);
+            let d = dx.hypot(dy);
+            let a = (ro - d + 0.5).min(d - ri + 0.5).clamp(0.0, 1.0);
+            if a > 0.0 {
+                let h = dx.atan2(-dy).to_degrees().rem_euclid(360.0);
+                px[(y * n + x) as usize] = premul(hues[h.round() as usize % 360], a);
+            }
+        }
+    }
+    ui::Picture { w: n, h: n, px }
+}
+
+/// The square at `hue`: saturation 0 to 1 left to right, value 1 to 0 top to bottom, its 3 dip
+/// corners smoothed.
+fn square_px(s: f32, hue: f32) -> ui::Picture {
+    let (_, _, _, n) = wheel_px(s);
+    let (r, side) = (3.0 * s, n as f32);
+    let mut px = vec![0u32; (n * n) as usize];
+    for y in 0..n {
+        for x in 0..n {
+            let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+            let (ox, oy) = ((r - fx).max(0.0).max(fx - (side - r)), (r - fy).max(0.0).max(fy - (side - r)));
+            let a = (r - ox.hypot(oy) + 0.5).clamp(0.0, 1.0);
+            if a > 0.0 {
+                px[(y * n + x) as usize] = premul(ui::rgb_of((hue, fx / side, 1.0 - fy / side)), a);
+            }
+        }
+    }
+    ui::Picture { w: n, h: n, px }
+}
+
+/// Which part of the wheel a point is on, given from the wheel's center in dip (the design's
+/// hit areas): the square plus 8 dip, else the ring's band plus 6 dip either side.
+fn part_at((dx, dy): (f32, f32), half: f32) -> Option<Part> {
+    if dx.abs() <= half + 8.0 && dy.abs() <= half + 8.0 {
+        Some(Part::Square)
+    } else {
+        (74.0..=106.0).contains(&dx.hypot(dy)).then_some(Part::Ring)
+    }
+}
+
+/// AC-8's line: the lowest other workspace in use whose color is `color` (true) or very close to
+/// it (false), each counted with the color it shows.
+fn dup_of(color: u32, me: usize, ws: &[u32; 9], n: usize) -> Option<(usize, bool)> {
+    (0..n.min(9)).filter(|&j| j != me).find_map(|j| match ws[j] {
+        c if c == color => Some((j, true)),
+        c if ui::distance(c, color) < 10.0 => Some((j, false)),
+        _ => None,
+    })
+}
+
+/// The card's window position, and the keep set it was placed with.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Place {
+    x: f32,
+    y: f32,
+    level: usize,
+}
+
+/// What the card is placed in, in window dip: the window's height, the notes over the column,
+/// the card's least and most x, the scroll and its limit.
+#[derive(Clone, Copy, Debug)]
+struct Room {
+    vh: f32,
+    fixed: f32,
+    lo: f32,
+    hi: f32,
+    scroll: f32,
+    smax: f32,
+}
+
+/// One set the card keeps clear (AC-14): the box it sits by, and every box that must stay in
+/// view and uncovered.
+#[derive(Clone, Debug)]
+struct Level {
+    next_to: Bx,
+    keep: Vec<Bx>,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Way {
+    Beside,
+    Below,
+    Above,
+}
+
+fn union(a: Bx, b: Bx) -> Bx {
+    let (l, t) = (a.0.min(b.0), a.1.min(b.1));
+    (l, t, (a.0 + a.2).max(b.0 + b.2) - l, (a.1 + a.3).max(b.1 + b.3) - t)
+}
+
+/// A kept box with its ring and hover edge, the page scrolled `d` further.
+fn grown(r: Bx, d: f32) -> Bx {
+    (r.0 - OUTSET, r.1 - d - OUTSET, r.2 + 2.0 * OUTSET, r.3 + 2.0 * OUTSET)
+}
+
+fn covers(r: Bx, (x, y): (f32, f32), (cw, ch): (f32, f32)) -> bool {
+    r.0 < x + cw && x < r.0 + r.2 && r.1 < y + ch && y < r.1 + r.3
+}
+
+/// Every kept box is in view, 8 dip inside the window's bottom and below the notes.
+fn in_view(room: &Room, keep: &[Bx]) -> bool {
+    keep.iter().all(|r| r.1 >= room.fixed + MARGIN - 0.5 && r.1 + r.3 <= room.vh - MARGIN + 0.5)
+}
+
+/// Where the card fits beside, below or above `level`'s box with the page scrolled `d`
+/// further, or None. `cover`: it may lie over the page's notes, from y 8, as the menus do.
+/// Beside sits level with what you clicked, sliding only as far as the window and the kept
+/// boxes need.
+#[allow(clippy::too_many_arguments)]
+fn spot(room: &Room, level: &Level, anchor: Bx, way: Way, cover: bool, d: f32, card: (f32, f32)) -> Option<(f32, f32)> {
+    let (cw, ch) = card;
+    let keep: Vec<Bx> = level.keep.iter().map(|r| grown(*r, d)).collect();
+    if !in_view(room, &keep) {
+        return None;
+    }
+    let (a, g) = ((anchor.0, anchor.1 - d, anchor.2, anchor.3), (level.next_to.0, level.next_to.1 - d, level.next_to.2, level.next_to.3));
+    let (top, bottom) = (if cover { MARGIN } else { room.fixed + MARGIN }, room.vh - MARGIN - ch);
+    let centered = (a.0 + a.2 / 2.0 - cw / 2.0).min(room.hi).max(room.lo);
+    let (x, ys) = match way {
+        Way::Below => (centered, vec![g.1 + g.3 + MARGIN]),
+        Way::Above => (centered, vec![g.1 - MARGIN - ch]),
+        Way::Beside => {
+            let x = if g.0 - MARGIN - cw >= room.lo {
+                g.0 - MARGIN - cw
+            } else if g.0 + g.2 + MARGIN <= room.hi {
+                g.0 + g.2 + MARGIN
+            } else {
+                return None;
+            };
+            let want = a.1 + a.3 / 2.0 - ch / 2.0;
+            let mut ys: Vec<f32> = std::iter::once(want).chain(keep.iter().flat_map(|r| [r.1 + OUTSET - MARGIN - ch, r.1 + r.3 - OUTSET + MARGIN])).map(|y| y.min(bottom).max(top)).collect();
+            ys.sort_by(|m, n| (m - want).abs().total_cmp(&(n - want).abs()));
+            (x, ys)
+        }
+    };
+    ys.into_iter().find(|&y| y >= top - 0.5 && y <= bottom + 0.5 && !keep.iter().any(|r| covers(*r, (x, y), card))).map(|y| (x, y))
+}
+
+/// Where the card opens (AC-14), each set tried widest first: a place as the page is, else (with
+/// `scroll`) the least scroll that lets one fit, equal scrolls by the order of places; then the
+/// same over the notes; only then the next, narrower set. Tiles and the picture: beside, below,
+/// above; swatches: below, above, beside. Returns the place after the scroll, and the scroll's
+/// change.
+fn place(room: &Room, levels: &[Level], anchor: Bx, beside_first: bool, card: (f32, f32), scroll: bool) -> (Place, f32) {
+    let order = if beside_first { [Way::Beside, Way::Below, Way::Above] } else { [Way::Below, Way::Above, Way::Beside] };
+    let reach = if scroll { room.scroll.max(room.smax - room.scroll).ceil() as i32 } else { 0 };
+    for (level, l) in levels.iter().enumerate() {
+        for cover in [false, true] {
+            for k in 0..=reach {
+                for d in if k == 0 { vec![0.0] } else { vec![k as f32, -(k as f32)] } {
+                    if room.scroll + d < -0.5 || room.scroll + d > room.smax + 0.5 {
+                        continue;
+                    }
+                    for way in order {
+                        if let Some((x, y)) = spot(room, l, anchor, way, cover, d, card) {
+                            return (Place { x, y, level }, d);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Nothing fits even over the notes: below what you clicked, kept in the window.
+    let x = (anchor.0 + anchor.2 / 2.0 - card.0 / 2.0).min(room.hi).max(room.lo);
+    let y = (anchor.1 + anchor.3 + MARGIN).min(room.vh - MARGIN - card.1).max(MARGIN);
+    (Place { x, y, level: levels.len().saturating_sub(1) }, 0.0)
+}
+
+/// The card can stay at `at`: inside the window, clear of its keep set, which is still in view.
+fn kept(room: &Room, levels: &[Level], at: Place, card: (f32, f32)) -> bool {
+    let Some(l) = levels.get(at.level) else { return false };
+    let keep: Vec<Bx> = l.keep.iter().map(|r| grown(*r, 0.0)).collect();
+    in_view(room, &keep)
+        && at.y >= MARGIN - 0.5
+        && at.y <= room.vh - MARGIN - card.1 + 0.5
+        && at.x >= room.lo - 0.5
+        && at.x <= room.hi + 0.5
+        && !keep.iter().any(|r| covers(*r, (at.x, at.y), card))
+}
+
+/// What you clicked and the sets the card keeps clear, widest first (AC-14), from where the
+/// page last drew them; None when what you clicked is gone.
+fn levels_of(anchor: &Anchor, g: &Geo) -> Option<(Bx, Vec<Level>)> {
+    let one = |b: Bx| Level { next_to: b, keep: vec![b] };
+    match anchor {
+        Anchor::Tile(dev, i) => {
+            let tile = g.tiles.iter().find(|(d, j, _)| d == dev && j == i)?.2;
+            let row = g.rows.iter().find(|(d, _)| d == dev).map_or(tile, |r| r.1);
+            // Every plugged in screen's tiles: a screen not plugged in shows grey tiles, nothing to watch.
+            let all = g.rows.iter().map(|r| r.1).reduce(union).unwrap_or(row);
+            Some((tile, vec![one(all), one(row), one(tile)]))
+        }
+        Anchor::Show(dev, i) => {
+            let tile = g.shows.iter().find(|(d, j, _)| d == dev && j == i)?.2;
+            let four = g.groups.iter().find(|(d, _)| d == dev).map_or(tile, |r| r.1);
+            Some((tile, vec![one(g.band.unwrap_or(four)), one(four), one(tile)]))
+        }
+        Anchor::Swatch(k) => {
+            let sw = g.swatches.iter().find(|(x, _)| x == k)?.1;
+            // Your accent first keeps the sample's legend clear too: it names what repaints.
+            match g.legend.filter(|_| *k == ACCENT) {
+                Some(legend) => Some((sw, vec![Level { next_to: sw, keep: vec![sw, legend] }, one(sw)])),
+                None => Some((sw, vec![one(sw)])),
+            }
+        }
+    }
+}
+
+fn room_of(w: &Win) -> Room {
+    let cw = (w.vw - X0 - PAD_R).min(COL_MAX);
+    Room { vh: w.vh, fixed: w.fixed, lo: X0, hi: X0 + cw - PICK_W, scroll: w.scroll, smax: (w.height - (w.vh - w.fixed)).max(0.0) }
+}
+
+enum Fit {
+    Kept,
+    Placed,
+    Gone,
+}
+
+/// After a layout: the open picker keeps its window position while it still fits there; else it
+/// is placed again, scrolling the page only when it first opens; it closes when what you
+/// clicked is gone (see `layout`). Nothing while the page eases.
+fn pick_fit() -> Option<Fit> {
+    let (fit, to) = set(|w| {
+        if w.ease.is_some() {
+            return None;
+        }
+        let p = w.pick.as_ref()?;
+        let Some((anchor, levels)) = levels_of(&p.anchor, &w.geo) else { return Some((Fit::Gone, None)) };
+        let room = room_of(w);
+        if p.placed.is_some_and(|at| kept(&room, &levels, at, (PICK_W, PICK_H))) {
+            return Some((Fit::Kept, None));
+        }
+        let (first, beside) = (p.placed.is_none(), !matches!(p.anchor, Anchor::Swatch(_)));
+        let (at, d) = place(&room, &levels, anchor, beside, (PICK_W, PICK_H), first);
+        w.pick.as_mut()?.placed = Some(at);
+        Some((Fit::Placed, (d != 0.0).then_some(w.scroll + d)))
+    })
+    .flatten()?;
+    if let Some(to) = to {
+        ease_to(to, true);
+    }
+    Some(fit)
+}
+
+/// Scrolls the page to `to`, eased out over 150 ms, or at once with Skip animations (AC-14).
+/// `opening`: the picker's card shows when it ends. The caller lays the page out.
+fn ease_to(to: f32, opening: bool) {
+    let ms = ui::motion_ms(EASE_MS);
+    let h = set(|w| {
+        let to = to.clamp(0.0, (w.height - (w.vh - w.fixed)).max(0.0));
+        if ms == 0 || (to - w.scroll).abs() < 0.5 {
+            w.scroll = to;
+            return None;
+        }
+        w.ease = Some(Ease { from: w.scroll, to, start: Instant::now(), ms, opening });
+        Some(w.hwnd)
+    })
+    .flatten();
+    if let Some(h) = h {
+        unsafe { SetTimer(Some(h), EASE_TIMER, 16, None) };
+    }
+}
+
+/// One frame of the ease: its progress clamped to 0..1 and the scroll to the page's limits.
+fn ease_step() {
+    let done = set(|w| {
+        let Some(e) = w.ease else { return true };
+        let k = (e.start.elapsed().as_secs_f32() * 1000.0 / e.ms as f32).clamp(0.0, 1.0);
+        let max = (w.height - (w.vh - w.fixed)).max(0.0);
+        w.scroll = (e.from + (e.to - e.from) * (1.0 - (1.0 - k).powi(3))).clamp(0.0, max);
+        k >= 1.0
+    });
+    match done {
+        Some(true) => {
+            if let Some(h) = hwnd() {
+                unsafe { let _ = KillTimer(Some(h), EASE_TIMER); }
+            }
+            ease_finish();
+        }
+        Some(false) => {
+            lay();
+            repaint();
+        }
+        None => {}
+    }
+}
+
+/// Ends the ease at once, at its end: any press, key or wheel turn during it, a resize, a close.
+fn ease_finish() {
+    let Some(h) = set(|w| w.ease.take().map(|e| {
+        w.scroll = e.to;
+        w.hwnd
+    }))
+    .flatten() else {
+        return;
+    };
+    unsafe { let _ = KillTimer(Some(h), EASE_TIMER); }
+    layout();
+}
+
+/// The color the file gives `key` now; None: the accent follows Windows.
+fn file_color(s: &Settings, key: &str) -> Option<u32> {
+    match ws_index(key) {
+        Some(i) => Some(s.ws_colors[i].unwrap_or(ui::WS[i])),
+        None => match s.accent {
+            settings::Accent::Rgb(c) => Some(c),
+            settings::Accent::Windows => None,
+        },
+    }
+}
+
+/// A reload brought a value for the picker's key that it did not write: neither what the file
+/// is known to hold nor the write in flight. Windows' accent always counts (AC-12).
+fn outside(now: Option<u32>, file: u32, written: Option<u32>) -> bool {
+    now.is_none_or(|c| c != file && Some(c) != written)
+}
+
+/// The open picker must close, writing nothing (AC-10, AC-12): high contrast or read only came
+/// on, its workspace went, or its key changed outside it.
+fn must_close(w: &Win) -> bool {
+    let Some(p) = &w.pick else { return false };
+    let s = settings::get();
+    w.theme.hc || settings::parse_error().is_some() || ws_index(p.key).is_some_and(|i| i >= s.workspaces) || outside(file_color(s, p.key), p.file, p.written)
+}
+
+/// The page's theme with `color` for `key`, while the page doesn't show that color already.
+fn preview_for(t: Theme, key: &str, color: u32) -> Option<Theme> {
+    let shown = ws_index(key).map_or(t.b.acc, |i| t.b.ws[i]);
+    (!t.hc && shown != color).then(|| {
+        let l = ui::look();
+        ui::theme_preview(l.apps_light, l, ws_index(key), color)
+    })
+}
+
+/// Shows `color` on the card and the page, the ring and square at `hsv`. A pick, a drag or an
+/// arrow ends Not saved, even one that writes nothing (AC-13).
+fn show_color(w: &mut Win, color: u32, hsv: ui::Hsv) {
+    let theme = w.theme;
+    if let Some(p) = w.pick.as_mut() {
+        (p.color, p.hsv, p.failed) = (color, hsv, None);
+        p.preview = preview_for(theme, p.key, color);
+    }
+}
+
+/// Opens the color picker for `key` (AC-1 to AC-3): nothing in high contrast or read only, for
+/// a workspace you don't have, or for the accent while it follows Windows. Opened by a click,
+/// it ignores presses near that click for a moment (AC-15); from the keyboard it doesn't.
+fn pick_open(key: &'static str, anchor: Anchor, from: Option<Ctl>) {
+    ease_finish();
+    let s = settings::get();
+    let Some(color) = file_color(s, key) else { return };
+    if ws_index(key).is_some_and(|i| i >= s.workspaces) || settings::parse_error().is_some() {
+        return;
+    }
+    // What the file holds now, after any hex box save, for Esc and Cancel to put back.
+    let before = settings::raw_at(&path_of(key));
+    let wait = Duration::from_millis(unsafe { GetDoubleClickTime() } as u64);
+    let _ = set(|w| {
+        if w.theme.hc || w.pick.is_some() {
+            return;
+        }
+        let preset = ui::PRESETS.iter().position(|&c| c == color);
+        w.pick = Some(ColorPick {
+            key,
+            from,
+            anchor,
+            before,
+            start: color,
+            file: color,
+            color,
+            hsv: ui::hsv_of(color, (0.0, 0.0, 0.0)),
+            preview: None,
+            written: None,
+            failed: None,
+            saved: false,
+            held_edit: None,
+            placed: None,
+            scroll0: w.scroll,
+            guard: (!w.kb).then(|| Guard { at: w.down_at, until: Instant::now() + wait }),
+            focus: preset.map_or(Stop::Ring, Stop::Swatches),
+            last_swatch: preset.unwrap_or(0),
+            drag: None,
+            held: None,
+        });
+    });
+    layout();
+}
+
+/// Windows' words from a failed write, "cannot save … (os error 32)": the part in brackets.
+fn windows_words(why: &str) -> String {
+    why.rsplit_once(" (").map_or(why.to_string(), |(_, w)| w.trim_end_matches(')').to_string())
+}
+
+/// One picker write, `value` being the color it leaves the key at. `written` is set before the
+/// call: the write reloads before it returns, and the reload must not take it for an outside
+/// edit. A failure shows Not saved and puts the file's color back on the card and the page
+/// (AC-13); the page's own notes wait for the close.
+fn pick_write(edit: Edit, value: u32) -> bool {
+    if set(|w| w.pick.as_mut().map(|p| p.written = Some(value))).flatten().is_none() {
+        return false;
+    }
+    let result = settings::write(edit);
+    let _ = set(|w| {
+        let theme = w.theme;
+        // The reload inside the write may have closed it.
+        let Some(p) = w.pick.as_mut() else { return };
+        p.written = None;
+        match &result {
+            Ok(()) => (p.file, p.saved, p.failed) = (value, true, None),
+            Err(why) => {
+                (p.failed, p.color) = (Some(windows_words(why)), p.file);
+                p.hsv = ui::hsv_of(p.file, p.hsv);
+            }
+        }
+        p.preview = preview_for(theme, p.key, p.color);
+    });
+    result.is_ok()
+}
+
+/// Saves the color shown unless the file holds it already (AC-5): one write per release, key
+/// up, swatch or close, never one per move.
+fn pick_save() {
+    if let Some((key, color)) = get(|w| w.pick.as_ref().filter(|p| p.color != p.file).map(|p| (p.key, p.color))).flatten() {
+        pick_write(color_edit(key, color), color);
+    }
+    layout();
+}
+
+/// What Esc and Cancel write (AC-6): the key exactly as the file had it when the picker opened
+/// (no key then: take it out again), never through `color_edit`, and nothing when the file
+/// holds that already.
+fn undo_edit(key: &str, before: Option<&toml_edit::Value>, now: Option<&toml_edit::Value>) -> Option<Edit> {
+    let bare = |v: &toml_edit::Value| {
+        let mut v = v.clone();
+        v.decor_mut().clear();
+        v.to_string()
+    };
+    if before.map(bare) == now.map(bare) {
+        return None;
+    }
+    Some(match before {
+        Some(v) => Edit::At(path_of(key), v.clone()),
+        None => Edit::Remove(path_of(key)),
+    })
+}
+
+/// How the picker closes (AC-6): keeping (from the card: Done, Enter, Space on Done; or not: a
+/// click outside, a resize, the page losing focus), undoing (Esc, Cancel), or writing nothing
+/// (high contrast, read only, the count, an outside edit, what you clicked gone).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum How {
+    Keep(bool), // true: from the card
+    Undo,
+    Quiet,
+}
+
+/// The page's couldn't save note once the picker closes (AC-13): shown while Not saved still
+/// shows and the close is no undo, gone after a save in it worked, else as it was.
+fn note_after(failed: Option<&String>, saved: bool, how: How, title: String, was: Option<(String, String)>) -> Option<(String, String)> {
+    match failed {
+        Some(why) if how != How::Undo => Some((title, why.clone())),
+        _ if saved => None,
+        _ => was,
+    }
+}
+
+/// Every close goes through here: the write it needs, then the page's notes catch up, the page
+/// eases back (closes from the card only) and focus goes back to the swatch that opened it.
+/// Never call it inside `get` or `set`: it writes, and the write reloads.
+fn pick_close(how: How) {
+    ease_finish();
+    let Some((h, drag, key, color, file, start, before)) = set(|w| {
+        let p = w.pick.as_mut()?;
+        p.held = None;
+        Some((w.hwnd, p.drag.take(), p.key, p.color, p.file, p.start, p.before.clone()))
+    })
+    .flatten() else {
+        return;
+    };
+    if drag.is_some() {
+        unsafe { let _ = ReleaseCapture(); }
+    }
+    let wrote = match how {
+        How::Keep(_) if color != file => pick_write(color_edit(key, color), color),
+        How::Undo => match undo_edit(key, before.as_ref(), settings::raw_at(&path_of(key)).as_ref()) {
+            Some(edit) => pick_write(edit, start),
+            None => true,
+        },
+        _ => true,
+    };
+    if !wrote {
+        return layout(); // stays open with Not saved
+    }
+    let fixed0 = get(|w| w.fixed).unwrap_or(0.0);
+    let Some(p) = set(|w| w.pick.take()).flatten() else { return layout() };
+    RING.set(None);
+    SQUARE.set(None);
+    let _ = set(|w| {
+        w.error = note_after(p.failed.as_ref(), p.saved, how, color_title(p.key), w.error.take());
+        if p.held_edit.is_some() {
+            w.edited = p.held_edit.clone();
+        }
+        if p.from.is_some() {
+            w.focus = p.from; // never reveal(): the way back is the only scroll on close
+        }
+        (w.hover, w.press) = (None, None);
+    });
+    // The notes changed height: the page scrolls by as much, so what was under the pointer stays.
+    lay();
+    let dt = get(|w| w.fixed).unwrap_or(fixed0) - fixed0;
+    if dt != 0.0 {
+        let _ = set(|w| w.scroll += dt);
+        lay();
+    }
+    if matches!(how, How::Keep(true) | How::Undo) {
+        ease_to(p.scroll0 + dt, false);
+    }
+    layout();
+    if let Some(tree) = get(|w| w.tree.clone()) {
+        uia::focus_moved(h, &tree, WHO);
+    }
+}
+
+/// A press the opening click's guard drops (AC-15): inside the double click rectangle around
+/// where that click went down, before the double click time has passed since the picker opened.
+fn guarded(g: Option<Guard>, at: (i32, i32), now: Instant, (cx, cy): (i32, i32)) -> bool {
+    g.is_some_and(|g| now < g.until && (at.0 - g.at.0).abs() * 2 <= cx && (at.1 - g.at.1).abs() * 2 <= cy)
+}
+
+/// A press while the picker is open: dropped near the opening click; outside the card it
+/// closes and keeps, and does nothing else (AC-6); on the ring or square it picks at once and
+/// drags; on a preset or a button it acts when the button comes up, as the page's controls do.
+fn pick_down(h: HWND, lp: LPARAM) {
+    let rect = unsafe { (GetSystemMetrics(SM_CXDOUBLECLK), GetSystemMetrics(SM_CYDOUBLECLK)) };
+    let Some((pt, near, inside)) = get(|w| {
+        let p = w.pick.as_ref()?;
+        let pt = point(lp, w.scale);
+        let inside = p.placed.is_none_or(|at| pt.0 >= at.x && pt.0 < at.x + PICK_W && pt.1 >= at.y && pt.1 < at.y + PICK_H);
+        Some((pt, guarded(p.guard, w.down_at, Instant::now(), rect), inside))
+    })
+    .flatten() else {
+        return;
+    };
+    if near {
+        return;
+    }
+    if !inside {
+        return pick_close(How::Keep(false));
+    }
+    unsafe { let _ = SetCapture(h); }
+    let drag = set(|w| {
+        w.kb = false;
+        let at = w.pick.as_ref()?.placed?;
+        let ((cx, cy), sq) = wheel_at(at, w.scale);
+        let Some(part) = part_at((pt.0 - cx, pt.1 - cy), sq.2 / 2.0) else {
+            w.press = hit_at(w, pt);
+            return None;
+        };
+        let p = w.pick.as_mut()?;
+        p.drag = Some(part);
+        p.focus = if part == Part::Ring { Stop::Ring } else { Stop::Square };
+        Some(part)
+    })
+    .flatten();
+    match drag {
+        Some(part) => pick_move(part, pt),
+        None => layout(),
+    }
+}
+
+/// The ring or square under the mouse: shows that color at once; letting go saves it.
+fn pick_move(part: Part, pt: (f32, f32)) {
+    let _ = set(|w| {
+        let Some((at, (h, s, v))) = w.pick.as_ref().and_then(|p| Some((p.placed?, p.hsv))) else { return };
+        let ((cx, cy), sq) = wheel_at(at, w.scale);
+        let hsv = match part {
+            Part::Ring => ((pt.0 - cx).atan2(-(pt.1 - cy)).to_degrees().rem_euclid(360.0), s, v),
+            Part::Square => (h, ((pt.0 - sq.0) / sq.2).clamp(0.0, 1.0), (1.0 - (pt.1 - sq.1) / sq.3).clamp(0.0, 1.0)),
+        };
+        show_color(w, ui::rgb_of(hsv), hsv);
+    });
+    layout();
+}
+
+/// The mouse let go of the ring or square, or lost the capture: saves what it shows, once.
+/// Letting go calls ReleaseCapture, which comes here first, so the release finds nothing to do.
+fn finish_drag() {
+    if set(|w| w.pick.as_mut().and_then(|p| p.drag.take())).flatten().is_some() {
+        pick_save();
+    }
+}
+
+/// A preset picked by a click or Space: shown and saved at once (AC-5).
+fn pick_preset(i: usize) {
+    let _ = set(|w| {
+        let Some(p) = w.pick.as_mut() else { return };
+        (p.focus, p.last_swatch) = (Stop::Swatches(i), i);
+        let (c, hsv) = (ui::PRESETS[i], ui::hsv_of(ui::PRESETS[i], p.hsv));
+        show_color(w, c, hsv);
+    });
+    pick_save();
+}
+
+/// What an arrow does on a picker stop (AC-9).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Arrow {
+    Swatch(usize),
+    Hsv(ui::Hsv),
+}
+
+/// On the swatches the arrows move and pick, 3 to a row, stopping at the first and last; on
+/// the ring Left and Right turn the hue 1 degree (Shift: 10), wrapping; in the square the
+/// arrows change saturation or value by 1% (Shift: 10%), clamped. None: nothing.
+fn arrow(focus: Stop, vk: VIRTUAL_KEY, shift: bool, (h, s, v): ui::Hsv) -> Option<Arrow> {
+    let step = if shift { 10.0 } else { 1.0 };
+    match focus {
+        Stop::Swatches(i) => {
+            let n = match vk {
+                VK_LEFT => i.checked_sub(1)?,
+                VK_RIGHT => i + 1,
+                VK_UP => i.checked_sub(3)?,
+                VK_DOWN => i + 3,
+                _ => return None,
+            };
+            (n < ui::PRESETS.len()).then_some(Arrow::Swatch(n))
+        }
+        Stop::Ring => match vk {
+            VK_LEFT => Some(Arrow::Hsv(((h.round() - step).rem_euclid(360.0), s, v))),
+            VK_RIGHT => Some(Arrow::Hsv(((h.round() + step).rem_euclid(360.0), s, v))),
+            _ => None,
+        },
+        Stop::Square => {
+            let d = step / 100.0;
+            Some(Arrow::Hsv(match vk {
+                VK_LEFT => (h, (s - d).max(0.0), v),
+                VK_RIGHT => (h, (s + d).min(1.0), v),
+                VK_UP => (h, s, (v + d).min(1.0)),
+                VK_DOWN => (h, s, (v - d).max(0.0)),
+                _ => return None,
+            }))
+        }
+        Stop::Done | Stop::Cancel => None,
+    }
+}
+
+/// Tab and Shift+Tab: five stops, wrapping inside the picker; coming back to the swatches lands
+/// on the one equal to the color shown, else the last one focused.
+fn tab(focus: Stop, back: bool, color: u32, last: usize) -> Stop {
+    const ORDER: [Stop; 5] = [Stop::Swatches(0), Stop::Ring, Stop::Square, Stop::Done, Stop::Cancel];
+    let i = ORDER.iter().position(|s| std::mem::discriminant(s) == std::mem::discriminant(&focus)).unwrap_or(0);
+    match ORDER[(i + if back { 4 } else { 1 }) % 5] {
+        Stop::Swatches(_) => Stop::Swatches(ui::PRESETS.iter().position(|&c| c == color).unwrap_or(last)),
+        s => s,
+    }
+}
+
+/// What a key down does in the picker, apart from moving (AC-9).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum KeyDoes {
+    Close(How),
+    Pick(usize),
+    Move, // Tab or an arrow
+    Nothing,
+}
+
+/// Esc anywhere, and Enter or Space on Cancel, undo; Enter from every other stop keeps and
+/// closes, and never picks; Space on Done keeps, on a swatch picks it. Held Enter, Space and
+/// Esc act once.
+fn key_does(vk: VIRTUAL_KEY, focus: Stop, repeat: bool) -> KeyDoes {
+    match (vk, focus) {
+        (VK_RETURN | VK_SPACE | VK_ESCAPE, _) if repeat => KeyDoes::Nothing,
+        (VK_ESCAPE, _) | (VK_RETURN | VK_SPACE, Stop::Cancel) => KeyDoes::Close(How::Undo),
+        (VK_RETURN, _) | (VK_SPACE, Stop::Done) => KeyDoes::Close(How::Keep(true)),
+        (VK_SPACE, Stop::Swatches(i)) => KeyDoes::Pick(i),
+        (VK_TAB | VK_LEFT | VK_RIGHT | VK_UP | VK_DOWN, _) => KeyDoes::Move,
+        _ => KeyDoes::Nothing,
+    }
+}
+
+/// The picker's keys, taken before the page's, as the open menu's are (AC-9).
+fn pick_key(vk: VIRTUAL_KEY, repeat: bool) {
+    let Some(focus) = set(|w| {
+        w.kb = true;
+        w.pick.as_ref().map(|p| p.focus)
+    })
+    .flatten() else {
+        return;
+    };
+    let shift = unsafe { GetKeyState(VK_SHIFT.0 as i32) } < 0;
+    match key_does(vk, focus, repeat) {
+        KeyDoes::Close(how) => pick_close(how),
+        KeyDoes::Pick(i) => pick_preset(i),
+        KeyDoes::Nothing => repaint(),
+        KeyDoes::Move if vk == VK_TAB => {
+            let _ = set(|w| {
+                if let Some(p) = w.pick.as_mut() {
+                    p.focus = tab(p.focus, shift, p.color, p.last_swatch);
+                    if let Stop::Swatches(i) = p.focus {
+                        p.last_swatch = i;
+                    }
+                }
+            });
+            layout();
+        }
+        KeyDoes::Move => {
+            // An arrow: shown at once; the key up saves.
+            let _ = set(|w| {
+                let Some(p) = w.pick.as_mut() else { return };
+                let (c, hsv) = match arrow(p.focus, vk, shift, p.hsv) {
+                    Some(Arrow::Swatch(n)) => {
+                        (p.focus, p.last_swatch) = (Stop::Swatches(n), n);
+                        (ui::PRESETS[n], ui::hsv_of(ui::PRESETS[n], p.hsv))
+                    }
+                    Some(Arrow::Hsv(hsv)) => (ui::rgb_of(hsv), hsv),
+                    None => return,
+                };
+                p.held = Some(vk);
+                show_color(w, c, hsv);
+            });
+            layout();
+        }
+    }
+}
+
+/// A key up: the held arrow's saves what it showed (AC-9). The key that opened the picker
+/// comes up here too, and does nothing.
+fn pick_key_up(vk: VIRTUAL_KEY) {
+    let up = set(|w| w.pick.as_mut().is_some_and(|p| p.held == Some(vk) && p.held.take().is_some()));
+    if up == Some(true) {
+        pick_save();
+    }
+}
+
+/// The page lost the keyboard during a held arrow: saves what it showed, as its key up would.
+fn pick_lost_keys() {
+    if set(|w| w.pick.as_mut().is_some_and(|p| p.held.take().is_some())) == Some(true) {
+        pick_save();
+    }
+}
+
+/// A click opens the picker over this control (spec 0021 AC-1): the hand shows there.
+fn opens(w: &Win, ctl: Option<Ctl>) -> bool {
+    !w.theme.hc && settings::parse_error().is_none() && w.rec.is_none() && matches!(ctl, Some(Ctl::WsTile(..) | Ctl::ShowTile(..) | Ctl::Swatch(_)))
+}
+
 /// The screen Where it shows changes; None: All screens.
 fn screen_id() -> Option<String> {
     get(|w| {
@@ -4485,7 +5670,8 @@ fn show() {
 /// The keyboard stops in one area, in order, each with its top: the side list, or the rest.
 fn stops(w: &Win, side: bool) -> Vec<(Ctl, f32)> {
     let mut out: Vec<(Ctl, f32)> = vec![];
-    let mut hits: Vec<&Hit> = w.hits.iter().filter(|h| h.ctl.in_side() == side && h.group != 3).collect();
+    // The Overview picture's tiles take clicks only, never the keyboard (spec 0021).
+    let mut hits: Vec<&Hit> = w.hits.iter().filter(|h| h.ctl.in_side() == side && h.group != 3 && !matches!(h.ctl, Ctl::ShowTile(..))).collect();
     // Banners first, then the column, each in page order.
     hits.sort_by_key(|h| if h.group == 2 { 0 } else { 1 });
     for h in hits {
@@ -4635,6 +5821,8 @@ fn on_key(h: HWND, vk: VIRTUAL_KEY) {
         VK_SPACE | VK_RETURN => match focus {
             // A number or a choice changes with Left and Right only, so a stray Space never does.
             Some(Ctl::Stepper(_) | Ctl::Pick(_) | Ctl::Tiles | Ctl::Picture) | None => {}
+            // The color picker: nothing on the page moves once it is open (spec 0021).
+            Some(f @ Ctl::Swatch(_)) => act(f),
             Some(f) => {
                 act(f);
                 reveal();
@@ -4750,6 +5938,10 @@ pub fn open(section: Option<Section>) {
             screen: None,
             chooser: None,
             dragging: None,
+            pick: None,
+            geo: Geo::default(),
+            ease: None,
+            down_at: (0, 0),
         }));
         // Shorter than H when the screen is (1366 × 768 at 125%); WM_SIZE sets vw and vh.
         let (ww, wh) = size(h, W, H);
@@ -4793,8 +5985,9 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                 let _ = GetClientRect(h, &mut r);
                 let _ = get(|w| {
                     buffered(dc, 0, 0, r.right, r.bottom, |mem| {
-                        let mut c = Canvas::new(mem, true, w.scale, w.theme, &w.fonts);
-                        c.boxed((0.0, 0.0, r.right as f32 / w.scale + 1.0, r.bottom as f32 / w.scale + 1.0), 0.0, w.theme.b.bg, None);
+                        let t = painted(w);
+                        let mut c = Canvas::new(mem, true, w.scale, t, &w.fonts);
+                        c.boxed((0.0, 0.0, r.right as f32 / w.scale + 1.0, r.bottom as f32 / w.scale + 1.0), 0.0, t.b.bg, None);
                         compose(&mut c, w);
                     })
                 });
@@ -4802,13 +5995,42 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                 LRESULT(0)
             }
             WM_ERASEBKGND => LRESULT(1),
-            // A held Delete removes one workspace only, not one per repeat.
-            WM_KEYDOWN if wp.0 as u16 == VK_DELETE.0 && lp.0 >> 30 & 1 == 1 => LRESULT(0),
             WM_KEYDOWN => {
-                on_key(h, VIRTUAL_KEY(wp.0 as u16));
+                let (vk, repeat) = (VIRTUAL_KEY(wp.0 as u16), lp.0 >> 30 & 1 == 1);
+                ease_finish();
+                if get(|w| w.pick.is_some()) == Some(true) {
+                    pick_key(vk, repeat);
+                } else if !(vk == VK_DELETE && repeat) {
+                    // A held Delete removes one workspace only, not one per repeat.
+                    on_key(h, vk);
+                }
                 LRESULT(0)
             }
-            // TranslateMessage in main's loop makes these: a hex box takes its digits.
+            WM_KEYUP => {
+                pick_key_up(VIRTUAL_KEY(wp.0 as u16));
+                LRESULT(0)
+            }
+            WM_KILLFOCUS => {
+                pick_lost_keys();
+                LRESULT(0)
+            }
+            WM_TIMER if wp.0 == EASE_TIMER => {
+                ease_step();
+                LRESULT(0)
+            }
+            // The hand over what opens the color picker, the arrow elsewhere; the window's edges
+            // keep their own cursors (spec 0021 AC-1).
+            WM_SETCURSOR if (lp.0 & 0xFFFF) as u32 == HTCLIENT => {
+                let mut pt = POINT::default();
+                let _ = GetCursorPos(&mut pt);
+                let _ = ScreenToClient(h, &mut pt);
+                let hand = get(|w| opens(w, hit_at(w, (pt.x as f32 / w.scale, pt.y as f32 / w.scale)))) == Some(true);
+                let _ = SetCursor(LoadCursorW(None, if hand { IDC_HAND } else { IDC_ARROW }).ok());
+                LRESULT(1)
+            }
+            // TranslateMessage in main's loop makes these: a hex box takes its digits, never
+            // while the color picker has the keys.
+            WM_CHAR if get(|w| w.pick.is_some()) == Some(true) => LRESULT(0),
             WM_CHAR => {
                 if let Some(Some(Ctl::Hex(k))) = get(|w| w.focus)
                     && let Some(c) = char::from_u32(wp.0 as u32).filter(char::is_ascii_hexdigit)
@@ -4822,6 +6044,7 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                 LRESULT(0)
             }
             WM_MOUSEWHEEL => {
+                ease_finish();
                 if get(menu_open) == Some(true) {
                     return LRESULT(0);
                 }
@@ -4830,10 +6053,18 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                 LRESULT(0)
             }
             WM_LBUTTONDOWN => {
+                // Where it went down on screen, for the color picker's opening guard (AC-15).
+                let pos = GetMessagePos();
+                let _ = set(|w| w.down_at = ((pos & 0xFFFF) as i16 as i32, (pos >> 16 & 0xFFFF) as i16 as i32));
+                ease_finish();
                 // A click while recording only cancels it: the note goes, and the page moves
                 // under the mouse, so the click must not land on whatever is there now.
                 if get(|w| w.rec.is_some()) == Some(true) {
                     stop_rec();
+                    return LRESULT(0);
+                }
+                if get(|w| w.pick.is_some()) == Some(true) {
+                    pick_down(h, lp);
                     return LRESULT(0);
                 }
                 // A click outside the open menu closes it, and does nothing else.
@@ -4854,7 +6085,8 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                         }
                         _ => {
                             w.press = hit_at(w, (x, y));
-                            if let Some(p) = w.press.filter(|p| !matches!(p, Ctl::Item(_) | Ctl::ScreenItem(_))) {
+                            // Tiles open the color picker and are no keyboard stop: the focus stays.
+                            if let Some(p) = w.press.filter(|p| !matches!(p, Ctl::Item(_) | Ctl::ScreenItem(_) | Ctl::WsTile(..) | Ctl::ShowTile(..))) {
                                 w.focus = Some(p.stop());
                             }
                             // Custom: a press on the picture puts the card's center there.
@@ -4886,6 +6118,10 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                 LRESULT(0)
             }
             WM_MOUSEMOVE => {
+                if let Some((part, pt)) = get(|w| w.pick.as_ref().and_then(|p| p.drag).map(|d| (d, point(lp, w.scale)))).flatten() {
+                    pick_move(part, pt);
+                    return LRESULT(0);
+                }
                 let drag = get(|w| {
                     let (_, y) = point(lp, w.scale);
                     let view = w.vh - w.fixed;
@@ -4949,19 +6185,25 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                     w.drag = None;
                     w.dragging = None;
                 });
+                finish_drag();
                 LRESULT(0)
             }
             WM_SIZE => {
-                if wp.0 as u32 != SIZE_MINIMIZED
-                    && set(|w| {
+                if wp.0 as u32 != SIZE_MINIMIZED {
+                    ease_finish();
+                    if set(|w| {
                         w.vw = (lp.0 & 0xFFFF) as f32 / w.scale;
                         w.vh = ((lp.0 >> 16) & 0xFFFF) as f32 / w.scale;
                         w.menu = None;
                         w.chooser = None;
                     })
                     .is_some()
-                {
-                    layout();
+                    {
+                        // A resize (a move to a screen of another scale is one) closes the
+                        // color picker and keeps its color; never from inside the set above.
+                        pick_close(How::Keep(false));
+                        layout();
+                    }
                 }
                 LRESULT(0)
             }
@@ -4977,6 +6219,8 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                     if get(|w| w.rec.is_some()) == Some(true) {
                         stop_rec();
                     }
+                    // The color picker closes as the menus do, keeping its color (spec 0021 AC-6).
+                    pick_close(How::Keep(false));
                     if get(menu_open) == Some(true) {
                         close_menu();
                     }
@@ -4989,6 +6233,10 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                 None => DefWindowProcW(h, m, wp, lp),
             },
             WM_DESTROY => {
+                // Losing focus closed the color picker already; this drops it writing nothing.
+                let _ = KillTimer(Some(h), EASE_TIMER);
+                RING.set(None);
+                SQUARE.set(None);
                 crate::keys::record(h, false);
                 let _ = UiaReturnRawElementProvider(h, WPARAM(0), LPARAM(0), None);
                 drop(PAGE.with_borrow_mut(Option::take));
@@ -5013,9 +6261,20 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
             WM_SETTINGCHANGE | WM_SYSCOLORCHANGE => {
                 crate::ui::refresh();
                 let t = theme();
-                if set(|w| std::mem::replace(&mut w.theme, t) != t) == Some(true) {
+                // The color picker's preview is rebuilt with the theme, and goes once the page shows its color.
+                if set(|w| {
+                    if let Some(p) = w.pick.as_mut() {
+                        p.preview = preview_for(t, p.key, p.color);
+                    }
+                    std::mem::replace(&mut w.theme, t) != t
+                }) == Some(true)
+                {
                     dark_title(h, &t);
                     layout();
+                }
+                // High contrast coming on closes it, writing nothing (spec 0021 AC-10).
+                if get(must_close) == Some(true) {
+                    pick_close(How::Quiet);
                 }
                 DefWindowProcW(h, m, wp, lp)
             }
@@ -5264,17 +6523,17 @@ mod tests {
         assert_eq!(took(&s, sh), Some("Find a window"));
     }
 
-    // Not a check that can fail: draws the page in the design's states into
-    // target/settings/*.png, to compare by eye with the approved captures (AC-1). Run with
-    // `cargo test render_settings -- --ignored`.
-    #[test]
-    #[ignore]
-    fn render_settings() {
-        assert!(ui::gdiplus());
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("settings");
-        std::fs::create_dir_all(&dir).unwrap();
-        let r = |l, t, rr, b| RECT { left: l, top: t, right: rr, bottom: b };
-        let fake = || Pics {
+    // The page tests that set settings::get() for every reader run one at a time.
+    static SETTINGS: Mutex<()> = Mutex::new(());
+
+    fn rect(l: i32, t: i32, r: i32, b: i32) -> RECT {
+        RECT { left: l, top: t, right: r, bottom: b }
+    }
+
+    /// Two screens as the render states draw them: a laptop on workspace 1 and a DELL on 2.
+    fn fake_pics() -> Pics {
+        let r = rect;
+        Pics {
             screens: vec![
                 crate::ws::ScreenInfo { device: "DISPLAY1".into(), number: 1, name: "Built-in display".into(), rect: r(0, 600, 1440, 1500), scale: 200 },
                 crate::ws::ScreenInfo { device: "DISPLAY2".into(), number: 2, name: "DELL U2720Q".into(), rect: r(1440, 0, 4000, 1440), scale: 150 },
@@ -5299,12 +6558,273 @@ mod tests {
             pad: Some(PadState { pad: true, enabled: true, rows: [PadRow::Nothing; 4], off: true, saved: true }),
             back: None,
             here: Some("DISPLAY2".into()),
+        }
+    }
+
+    fn fake_win(theme: Theme, scale: f32) -> Win {
+        Win {
+            hwnd: HWND::default(), scale, theme, fonts: Fonts::new(scale), scroll: 0.0, height: 0.0, fixed: 0.0, tops: vec![], hits: vec![],
+            focus: None, kb: true, hover: None, press: None, drag: None, vw: W, vh: H, error: None, rec: None, refused: None, prompt: None, menu: None,
+            pics: fake_pics(), edited: None, tree: Arc::new(Mutex::new(Node::default())),
+            hexes: vec![], own: None, screen: None, chooser: None, dragging: None, pick: None, geo: Geo::default(), ease: None, down_at: (0, 0),
+        }
+    }
+
+    /// One layout pass of the page, measuring only, as `lay` does.
+    fn measure(win: &Win) -> Out {
+        unsafe {
+            let dc = GetDC(None);
+            let out = compose(&mut Canvas::new(dc, false, win.scale, painted(win), &win.fonts), win);
+            ReleaseDC(None, dc);
+            out
+        }
+    }
+
+    fn take(win: &mut Win, out: Out) {
+        (win.hits, win.height, win.fixed, win.tops, win.geo) = (out.hits, out.height, out.fixed, out.tops, out.geo);
+    }
+
+    /// An open picker for `key`, showing `color` and holding it in the file.
+    fn picking(key: &'static str, anchor: Anchor, color: u32) -> ColorPick {
+        let start = file_color(settings::get(), key).unwrap_or(color);
+        ColorPick {
+            key, from: None, anchor, before: None, start, file: color, color, hsv: ui::hsv_of(color, (0.0, 0.0, 0.0)), preview: None, written: None, failed: None,
+            saved: false, held_edit: None, placed: None, scroll0: 0.0, guard: None, focus: Stop::Ring, last_swatch: 0, drag: None, held: None,
+        }
+    }
+
+    // AC-6: Esc and Cancel put back exactly what the file had. No key then: it goes again (des-k's
+    // own gold stays des-k's). des-k's gold typed by hand: it is written back as typed, not
+    // taken out, since the file is yours. Nothing is written when the file holds it already.
+    #[test]
+    fn undo_writes_back_exactly_what_the_file_had() {
+        let k = |t: &str| settings::raw_for_test(t, &path_of("colors.ws2"));
+        let saved = k("[colors]\nws2 = \"#92BF4F\"\n");
+        assert_eq!(said(undo_edit("colors.ws2", None, saved.as_ref())), "remove colors.ws2");
+        let typed = k("[colors]\nws2 = \"#DDB43C\" # mine\n");
+        assert_eq!(said(undo_edit("colors.ws2", typed.as_ref(), saved.as_ref())), "at colors.ws2 = \"#DDB43C\" # mine");
+        assert_eq!(said(undo_edit("colors.ws2", typed.as_ref(), k("[colors]\nws2 = \"#DDB43C\"\n").as_ref())), "none", "a comment is no difference");
+        assert_eq!(said(undo_edit("colors.ws2", None, None)), "none");
+        // An inline table reads the same as a section.
+        assert_eq!(said(undo_edit("colors.ws2", None, k("colors = { ws2 = \"#92BF4F\" }\n").as_ref())), "remove colors.ws2");
+    }
+
+    // AC-12: the picker's own write reloads before it returns, so the value in flight is never an
+    // outside edit; a save that works, then one that fails, then the 1 s reload (the file still
+    // holding the first) leaves the picker open; anything else closes it, and Windows' accent always does.
+    #[test]
+    fn only_a_value_the_picker_did_not_write_closes_it() {
+        assert!(!outside(Some(0x92BF4F), 0xDDB43C, Some(0x92BF4F)), "its own write, in flight");
+        assert!(!outside(Some(0x92BF4F), 0x92BF4F, None), "the reload after a save that worked");
+        assert!(!outside(Some(0x92BF4F), 0x92BF4F, None), "a failed save left the file as it was");
+        assert!(outside(Some(0x123456), 0x92BF4F, None), "an edit by hand");
+        assert!(outside(None, 0xE0457B, None), "the accent switched to Windows");
+    }
+
+    // AC-13: the page's notes hold still while the picker is open, and catch up on any close.
+    #[test]
+    fn notes_catch_up_when_the_picker_closes() {
+        let why = Some("os error 32".to_string());
+        let title = || color_title("colors.ws2");
+        let old = || Some(("Workspace 2 color".to_string(), "os error 5".to_string()));
+        // A failure, then Esc: undone, no note.
+        assert_eq!(note_after(why.as_ref(), false, How::Undo, title(), None), None);
+        // A failure, then Done: the note, with Windows' words, under the color's title.
+        assert_eq!(note_after(why.as_ref(), false, How::Keep(true), title(), None), Some(("Workspace 2 color".into(), "os error 32".into())));
+        // A failure, then a re-pick of the file's color (Not saved gone, nothing written), then Done.
+        assert_eq!(note_after(None, false, How::Keep(true), title(), None), None);
+        // A note from before it opened, and a save in it that worked: the note goes.
+        assert_eq!(note_after(None, true, How::Keep(true), title(), old()), None);
+        // A failure, then an outside edit to its key: the page caused the close, the note shows.
+        assert_eq!(note_after(why.as_ref(), false, How::Quiet, title(), None).map(|n| n.0), Some("Workspace 2 color".into()));
+        // Nothing saved, nothing failed: the note stays as it was.
+        assert_eq!(note_after(None, false, How::Undo, title(), old()), old());
+    }
+
+    /// The card never covers what you clicked (ring and hover edge included), stays in the
+    /// window past the side list, keeps what you clicked in view 8 dip from the edges and below
+    /// the notes, and scrolls only within the page's limits.
+    fn sound(room: &Room, anchor: Bx, (at, d): (Place, f32)) {
+        let card = (PICK_W, PICK_H);
+        assert!(at.x >= room.lo - 0.5 && at.x <= room.hi + 0.5, "x {at:?}");
+        assert!(at.y >= MARGIN - 0.5 && at.y + PICK_H <= room.vh - MARGIN + 0.5, "y {at:?}");
+        let a = grown(anchor, d);
+        assert!(!covers(a, (at.x, at.y), card), "covers what you clicked: {at:?} {a:?}");
+        assert!(a.1 >= room.fixed + MARGIN - 0.5 && a.1 + a.3 <= room.vh - MARGIN + 0.5, "what you clicked is out of view: {a:?}");
+        assert!(room.scroll + d >= -0.5 && room.scroll + d <= room.smax + 0.5, "scrolled past the page: {d}");
+    }
+
+    fn room(vh: f32, fixed: f32, scroll: f32, smax: f32) -> Room {
+        Room { vh, fixed, lo: X0, hi: X0 + (W - X0 - PAD_R) - PICK_W, scroll, smax }
+    }
+
+    fn tile_levels(rows: &[Bx], row: usize, tile: Bx) -> Vec<Level> {
+        let one = |b: Bx| Level { next_to: b, keep: vec![b] };
+        vec![one(rows.iter().copied().reduce(union).unwrap()), one(rows[row]), one(tile)]
+    }
+
+    // AC-14, the design pass's tight cases: the card finds a place without covering what you
+    // clicked, scrolling the least it must, and over the notes only when nothing else fits.
+    #[test]
+    fn the_card_never_covers_what_you_clicked() {
+        let card = (PICK_W, PICK_H);
+        // A 528 window with both notes (210 dip of them): below the notes there is no room for
+        // the card, so it opens beside the tiles, over the notes.
+        let (rows, tile) = ([(744.0, 300.0, 264.0, 34.0), (744.0, 360.0, 264.0, 34.0)], (798.0, 360.0, 48.0, 34.0));
+        let r = room(MIN_H, 210.0, 400.0, 1800.0);
+        let got = place(&r, &tile_levels(&rows, 1, tile), tile, true, card, true);
+        sound(&r, tile, got);
+        assert!(got.0.y < 210.0, "over the notes: {got:?}");
+        // 9 workspaces, the page scrolled to its end: what you clicked sits 8 dip from the bottom.
+        let (rows, tile) = ([(632.0, 560.0, 376.0, 34.0), (632.0, 600.0, 376.0, 34.0)], (920.0, 600.0, 40.0, 34.0));
+        let r = room(H, 0.0, 1800.0, 1800.0);
+        let got = place(&r, &tile_levels(&rows, 1, tile), tile, true, card, true);
+        sound(&r, tile, got);
+        // Your accent with both notes in 648: the swatch always stays clear, the legend when it can.
+        let (sw, legend) = ((828.0, 420.0, 48.0, 32.0), (604.0, 300.0, 300.0, 132.0));
+        let levels = [Level { next_to: sw, keep: vec![sw, legend] }, Level { next_to: sw, keep: vec![sw] }];
+        let r = room(H, 230.0, 900.0, 1800.0);
+        let got = place(&r, &levels, sw, false, card, true);
+        sound(&r, sw, got);
+        // A swatch near the window's bottom: below doesn't fit, above does, nothing scrolls.
+        let sw = (828.0, 560.0, 48.0, 32.0);
+        let r = room(H, 0.0, 900.0, 1800.0);
+        let (at, d) = place(&r, &[Level { next_to: sw, keep: vec![sw] }], sw, false, card, true);
+        assert_eq!((d, at.y), (0.0, 560.0 - MARGIN - PICK_H));
+        // A tile 10 dip into the bottom margin: the page scrolls the least that brings it in view
+        // with its ring, and no more.
+        let (rows, tile) = ([(744.0, 608.0, 264.0, 34.0)], (798.0, 608.0, 48.0, 34.0));
+        let r = room(H, 0.0, 300.0, 1800.0);
+        let (at, d) = place(&r, &tile_levels(&rows, 0, tile), tile, true, card, true);
+        assert_eq!(d, 608.0 + 34.0 + OUTSET - (H - MARGIN));
+        sound(&r, tile, (at, d));
+        // Placed again without the scroll step, the page never moves.
+        assert_eq!(place(&r, &tile_levels(&rows, 0, tile), tile, true, card, false).1, 0.0);
+    }
+
+    // AC-14: once placed, the card keeps its window position while it still fits; when what
+    // it keeps clear moves under it, it is placed again.
+    #[test]
+    fn the_card_stays_put_while_it_fits() {
+        let card = (PICK_W, PICK_H);
+        let sw = (828.0, 200.0, 48.0, 32.0);
+        let r = room(H, 0.0, 0.0, 1800.0);
+        let levels = [Level { next_to: sw, keep: vec![sw] }];
+        let (at, _) = place(&r, &levels, sw, false, card, true);
+        assert!(kept(&r, &levels, at, card));
+        let moved = [Level { next_to: (828.0, 300.0, 48.0, 32.0), keep: vec![(828.0, 300.0, 48.0, 32.0)] }];
+        assert!(!kept(&r, &moved, at, card), "the swatch moved under the card");
+    }
+
+    // AC-15: a double click on a tile opens the picker and does nothing else, but a quick pick
+    // right after opening still works.
+    #[test]
+    fn the_opening_click_guards_only_its_own_spot_and_moment() {
+        let now = Instant::now();
+        let g = Some(Guard { at: (500, 300), until: now + Duration::from_millis(500) });
+        let soon = now + Duration::from_millis(200);
+        assert!(guarded(g, (501, 300), soon, (4, 4)), "the second press of a double click");
+        assert!(!guarded(g, (503, 300), soon, (4, 4)), "3 px away: a press of its own");
+        assert!(!guarded(g, (501, 300), now + Duration::from_millis(600), (4, 4)), "after the double click time");
+        assert!(!guarded(None, (500, 300), soon, (4, 4)), "opened from the keyboard: no guard");
+    }
+
+    // AC-9: the picker's keys.
+    #[test]
+    fn the_keys_move_pick_keep_and_undo() {
+        let h = |a: Option<Arrow>| match a {
+            Some(Arrow::Hsv(hsv)) => hsv,
+            other => panic!("{other:?}"),
         };
+        assert_eq!(h(arrow(Stop::Ring, VK_LEFT, false, (0.0, 0.5, 0.5))).0, 359.0, "Left at hue 0 wraps");
+        assert_eq!(h(arrow(Stop::Ring, VK_RIGHT, true, (355.0, 0.5, 0.5))).0, 5.0, "Shift turns 10");
+        assert_eq!(h(arrow(Stop::Square, VK_UP, true, (10.0, 0.5, 0.95))).2, 1.0, "Shift+Up stops at full value");
+        assert_eq!(h(arrow(Stop::Square, VK_LEFT, false, (10.0, 0.0, 0.5))).1, 0.0, "saturation stops at 0");
+        assert_eq!(arrow(Stop::Swatches(2), VK_RIGHT, false, (0.0, 0.0, 0.0)), Some(Arrow::Swatch(3)), "the third of a row goes on to the next row");
+        assert_eq!(arrow(Stop::Swatches(11), VK_RIGHT, false, (0.0, 0.0, 0.0)), None, "the last stays");
+        assert_eq!(arrow(Stop::Swatches(10), VK_DOWN, false, (0.0, 0.0, 0.0)), None, "the bottom row stays");
+        assert_eq!(arrow(Stop::Swatches(4), VK_UP, false, (0.0, 0.0, 0.0)), Some(Arrow::Swatch(1)));
+        assert_eq!(arrow(Stop::Done, VK_LEFT, false, (0.0, 0.0, 0.0)), None);
+        assert_eq!(key_does(VK_RETURN, Stop::Ring, false), KeyDoes::Close(How::Keep(true)), "Enter on the ring keeps");
+        assert_eq!(key_does(VK_RETURN, Stop::Swatches(3), false), KeyDoes::Close(How::Keep(true)), "Enter never picks");
+        assert_eq!(key_does(VK_RETURN, Stop::Cancel, false), KeyDoes::Close(How::Undo), "Enter on Cancel undoes");
+        assert_eq!(key_does(VK_SPACE, Stop::Done, false), KeyDoes::Close(How::Keep(true)));
+        assert_eq!(key_does(VK_SPACE, Stop::Swatches(3), false), KeyDoes::Pick(3));
+        assert_eq!(key_does(VK_ESCAPE, Stop::Square, false), KeyDoes::Close(How::Undo));
+        assert_eq!(key_does(VK_RETURN, Stop::Ring, true), KeyDoes::Nothing, "a held Enter acts once");
+        assert_eq!(key_does(VK_ESCAPE, Stop::Ring, true), KeyDoes::Nothing);
+        // Tab wraps through five stops; back on the swatches, the color shown, else the last.
+        assert_eq!(tab(Stop::Cancel, false, 0x123456, 4), Stop::Swatches(4));
+        assert_eq!(tab(Stop::Cancel, false, ui::PRESETS[7], 4), Stop::Swatches(7));
+        assert_eq!(tab(Stop::Swatches(7), true, 0, 7), Stop::Cancel);
+        assert_eq!(tab(Stop::Ring, false, 0, 0), Stop::Square);
+    }
+
+    // AC-8: the duplicate line names the lowest other workspace in use with the same or a very
+    // close color, counted as it shows (its default with no key), and never one you don't have.
+    #[test]
+    fn the_duplicate_line_names_the_lowest_workspace_in_use() {
+        let mut ws = ui::WS;
+        assert_eq!(dup_of(0x79A4F3, 1, &ws, 4), Some((0, true)), "workspace 1's own blue");
+        assert_eq!(dup_of(0x7AA5F2, 1, &ws, 4), Some((0, false)), "a step off is very close");
+        assert_eq!(dup_of(0x92BF4F, 1, &ws, 9), None, "lime is nobody's");
+        assert_eq!(dup_of(0xDDB43C, 1, &ws, 4), None, "its own color is no duplicate");
+        ws[2] = 0x92BF4F;
+        ws[5] = 0x92BF4F;
+        assert_eq!(dup_of(0x92BF4F, 1, &ws, 9), Some((2, true)), "the lowest");
+        assert_eq!(dup_of(0xF97676, 1, &ws, 8), None, "workspace 9 isn't in use");
+    }
+
+    // AC-1: a click on the part of the last tile's × box inside the tile opens the picker; only
+    // the part outside the tile removes a workspace. And the tiles are no keyboard stop of their own.
+    #[test]
+    fn a_click_inside_a_tile_never_removes_a_workspace() {
+        let _one = SETTINGS.lock();
+        settings::use_for_test("workspaces = 4\n");
+        let mut win = fake_win(ui::LIGHT, 1.0);
+        win.hover = Some(Ctl::WsTile(0, 3));
+        let out = measure(&win);
+        take(&mut win, out);
+        let tile = win.geo.tiles.iter().find(|(d, i, _)| d == "DISPLAY1" && *i == 3).unwrap().2;
+        let corner = (tile.0 + tile.2 - 2.0, tile.1 + 2.0); // inside the tile, inside the × box
+        let beyond = (tile.0 + tile.2 + 4.0, tile.1 - 4.0); // in the × box, past the tile
+        assert_eq!(hit_at(&win, corner), Some(Ctl::WsTile(0, 3)));
+        assert_eq!(hit_at(&win, beyond), Some(Ctl::TileRemove));
+        assert!(stops(&win, false).iter().any(|(c, _)| *c == Ctl::Tiles));
+        assert!(!stops(&win, false).iter().any(|(c, _)| matches!(c, Ctl::WsTile(..) | Ctl::ShowTile(..))));
+    }
+
+    // AC-2: with 2 workspaces, the Overview picture's tiles 3 and 4 are empty slots that open
+    // nothing; 1 and 2 open the picker.
+    #[test]
+    fn overview_tiles_past_your_count_open_nothing() {
+        let _one = SETTINGS.lock();
+        settings::use_for_test("workspaces = 2\n");
+        let mut win = fake_win(ui::LIGHT, 1.0);
+        let out = measure(&win);
+        take(&mut win, out);
+        let live: Vec<(usize, usize)> = win.hits.iter().filter_map(|h| match h.ctl {
+            Ctl::ShowTile(r, i) => Some((r, i)),
+            _ => None,
+        }).collect();
+        assert_eq!(live, [(0, 0), (0, 1), (1, 0), (1, 1)]);
+        assert_eq!(win.geo.shows.len(), 4);
+    }
+
+    // Not a check that can fail: draws the page in the design's states into
+    // target/settings/*.png, to compare by eye with the approved captures (AC-1). Run with
+    // `cargo test render_settings -- --ignored`.
+    #[test]
+    #[ignore]
+    fn render_settings() {
+        assert!(ui::gdiplus());
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("settings");
+        std::fs::create_dir_all(&dir).unwrap();
         let night_sky = ui::high_contrast([0x000000, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);
         let runs: Vec<(&str, Theme, f32)> = vec![("light", ui::LIGHT, 1.0), ("dark", ui::DARK, 1.0), ("hc", night_sky, 1.0), ("light-150", ui::LIGHT, 1.5), ("rose", ui::tests::rose(true), 1.0), ("rose-dark", ui::tests::rose(false), 1.0)];
         // Name, section to scroll to, what to set up.
         type Setup = fn(&mut Win);
-        let states: [(&str, Option<Section>, Setup); 13] = [
+        let states: [(&str, Option<Section>, Setup); 24] = [
             ("colors", Some(Section::Colors), |_| {}),
             ("colors-own", Some(Section::Colors), |w| {
                 settings::use_for_test("[colors]\naccent = \"#E0457B\"\nws2 = \"#FFF4B0\"\nws3 = \"blue\"\n");
@@ -5340,37 +6860,103 @@ mod tests {
             ("overview", Some(Section::Overview), |w| w.focus = Some(Ctl::Stepper("overview.fade_ms"))),
             ("motion", Some(Section::Motion), |w| w.focus = Some(Ctl::Toggle("fastest"))),
             ("touchpad", Some(Section::Touchpad), |_| {}),
+            // The color picker (spec 0021): the tile and picture cues, then the card in its states.
+            ("tile-hover", None, |w| {
+                w.hover = Some(Ctl::WsTile(1, 2));
+                w.kb = false;
+            }),
+            ("overview-slots", Some(Section::Overview), |w| {
+                settings::use_for_test("workspaces = 3\n");
+                w.hover = Some(Ctl::ShowTile(0, 1));
+                w.kb = false;
+            }),
+            ("pick-tile", None, |w| {
+                w.pick = Some(picking("colors.ws2", Anchor::Tile("DISPLAY2".into(), 1), 0xDDB43C));
+                w.kb = false;
+            }),
+            ("pick-swatch", Some(Section::Colors), |w| {
+                // Workspace 3 moved to workspace 1's blue: the header shows start and now, and the duplicate line says so.
+                let mut p = picking("colors.ws3", Anchor::Swatch("colors.ws3"), 0x79A4F3);
+                (p.focus, p.from) = (Stop::Swatches(0), Some(Ctl::Swatch("colors.ws3")));
+                w.pick = Some(p);
+                w.focus = Some(Ctl::Swatch("colors.ws3"));
+            }),
+            ("pick-close", Some(Section::Colors), |w| {
+                let mut p = picking("colors.ws3", Anchor::Swatch("colors.ws3"), 0x7AA5F2);
+                p.focus = Stop::Square;
+                w.pick = Some(p);
+            }),
+            ("pick-accent", Some(Section::Colors), |w| {
+                settings::use_for_test("[colors]\naccent = \"#E0457B\"\n");
+                let mut p = picking(ACCENT, Anchor::Swatch(ACCENT), 0x2E8B57);
+                p.focus = Stop::Done;
+                w.pick = Some(p);
+            }),
+            ("pick-failed", Some(Section::Colors), |w| {
+                let mut p = picking("colors.ws2", Anchor::Swatch("colors.ws2"), 0xDDB43C);
+                (p.failed, p.focus) = (Some("os error 32".into()), Stop::Cancel);
+                w.pick = Some(p);
+            }),
+            ("pick-notes", None, |w| {
+                // Both notes in the smallest window: the card opens over them, beside the tiles.
+                w.vh = MIN_H;
+                w.error = Some(("Workspace 4 color".into(), "os error 32".into()));
+                w.edited = Some(("14:02".into(), vec!["Indicator stays: 550 → 800 ms".into()]));
+                w.pick = Some(picking("colors.ws1", Anchor::Tile("DISPLAY1".into(), 0), 0x79A4F3));
+                w.kb = false;
+            }),
+            ("pick-ring", None, |w| {
+                let mut p = picking("colors.ws4", Anchor::Tile("DISPLAY2".into(), 3), 0x2E8B57);
+                p.focus = Stop::Ring;
+                w.pick = Some(p);
+            }),
+            ("pick-preset", None, |w| {
+                let mut p = picking("colors.ws2", Anchor::Tile("DISPLAY2".into(), 1), 0x92BF4F);
+                (p.focus, p.last_swatch) = (Stop::Swatches(10), 10);
+                w.pick = Some(p);
+                w.hover = Some(Ctl::Preset(4));
+            }),
+            ("pick-overview", Some(Section::Overview), |w| {
+                w.pick = Some(picking("colors.ws2", Anchor::Show("DISPLAY1".into(), 1), 0xDDB43C));
+                w.kb = false;
+            }),
         ];
         for (tname, theme, scale) in &runs {
             for (sname, sec, setup) in &states {
-                let mut win = Win {
-                    hwnd: HWND::default(), scale: *scale, theme: *theme, fonts: Fonts::new(*scale), scroll: 0.0, height: 0.0, fixed: 0.0, tops: vec![], hits: vec![],
-                    focus: None, kb: true, hover: None, press: None, drag: None, vw: W, vh: H, error: None, rec: None, refused: None, prompt: None, menu: None,
-                    pics: fake(), edited: None, tree: Arc::new(Mutex::new(Node::default())),
-                    hexes: vec![], own: None, screen: None, chooser: None, dragging: None,
-                };
+                // The picker opens in neither high contrast nor (for brevity) the rose accent.
+                if sname.starts_with("pick") && (theme.hc || tname.starts_with("rose")) {
+                    continue;
+                }
+                let mut win = fake_win(*theme, *scale);
                 settings::use_for_test("");
                 setup(&mut win);
-                let measure = |win: &Win| unsafe {
-                    let dc = GetDC(None);
-                    let out = compose(&mut Canvas::new(dc, false, *scale, *theme, &win.fonts), win);
-                    ReleaseDC(None, dc);
-                    out
-                };
                 let out = measure(&win);
                 if let Some(top) = out.tops.iter().find(|(s, _)| *s == *sec).map(|(_, t)| *t) {
-                    win.scroll = (top - 8.0 + win.scroll).clamp(0.0, (out.height - win.vh).max(0.0));
+                    win.scroll = (top - 8.0 + win.scroll).clamp(0.0, (out.height - (win.vh - out.fixed)).max(0.0));
                 }
-                win.hits = measure(&win).hits;
+                let out = measure(&win);
+        take(&mut win, out);
                 if *sname == "menu"
                     && let Some(at) = win.hits.iter().find(|h| h.ctl == Ctl::Picker(2)).map(|h| h.at)
                 {
                     win.menu = Some(Menu { row: 2, times: 1, family: None, at, focus: 0 });
                 }
-                let (pw, ph) = ((W * scale).round() as i32, (H * scale).round() as i32);
+                // An open picker: placed as on open, the page scrolled at once, the preview in place.
+                if let Some((anchor, levels, beside)) = win.pick.as_ref().and_then(|p| levels_of(&p.anchor, &win.geo).map(|(a, l)| (a, l, !matches!(p.anchor, Anchor::Swatch(_))))) {
+                    let (at, d) = place(&room_of(&win), &levels, anchor, beside, (PICK_W, PICK_H), true);
+                    win.scroll += d;
+                    let p = win.pick.as_mut().unwrap();
+                    p.placed = Some(at);
+                    let shown = ws_index(p.key).map_or(theme.b.acc, |i| theme.b.ws[i]);
+                    p.preview = (shown != p.color).then(|| ui::theme_preview(!theme.dark, ui::tests::plain(), ws_index(p.key), p.color));
+                    let out = measure(&win);
+        take(&mut win, out);
+                }
+                let (pw, ph) = ((W * scale).round() as i32, (win.vh * scale).round() as i32);
+                let t = painted(&win);
                 ui::tests::save_png(pw, ph, &dir.join(format!("{sname}-{tname}.png")), |dc| {
-                    let mut c = Canvas::new(dc, true, *scale, *theme, &win.fonts);
-                    c.boxed((0.0, 0.0, W + 1.0, H + 1.0), 0.0, theme.b.bg, None);
+                    let mut c = Canvas::new(dc, true, *scale, t, &win.fonts);
+                    c.boxed((0.0, 0.0, W + 1.0, win.vh + 1.0), 0.0, t.b.bg, None);
                     compose(&mut c, &win);
                 });
             }

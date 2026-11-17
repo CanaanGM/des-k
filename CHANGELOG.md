@@ -3,6 +3,13 @@
 What changed in each release, newest first. Downloads are on
 [Releases](https://github.com/CanaanGM/des-k/releases).
 
+## 0.8.0 (2026-11-17)
+
+- Pick a workspace's color or your accent without typing a hex value: click a tile under
+  **Workspaces**, a workspace in the **Overview** picture, or a swatch under **Colors**, then
+  choose one of des-k's colors or any color on the wheel. Esc puts the old color back.
+- A color you save shows at once in every open des-k window.
+
 ## 0.7.1 (2026-11-10)
 
 - A shorter README; the full details live in the [guide](https://canaangm.github.io/des-k/),
