@@ -261,6 +261,18 @@ pub struct Settings {
     pub gestures: Vec<Gesture>,
     pub accent: Accent,
     pub ws_colors: [Option<u32>; 9], // None keeps look B's color (spec 0020 AC-4)
+    // Spec 0023: shown on the card when two or more screens are plugged in.
+    pub indicator_screen_name: bool,
+    // Spec 0023. Read only through ws_name and screen_rename, which own the fallback rules.
+    pub names: [String; 9], // every screen's; empty = no name
+    pub names_screens: BTreeMap<String, ScreenNames>, // by screen id (spec 0016)
+}
+
+/// One `[names.screens."<id>"]` table (spec 0023 AC-1, AC-11).
+#[derive(PartialEq, Debug, Default)]
+pub struct ScreenNames {
+    pub screen: Option<String>,  // the rename; never empty
+    pub ws: [Option<String>; 9], // Some("") = no name on this screen
 }
 
 /// The map used when settings.toml has no [[gesture]] rule (spec 0011 AC-2).
@@ -323,6 +335,9 @@ impl Default for Settings {
             gestures: default_gestures(),
             accent: Accent::Windows,
             ws_colors: [None; 9],
+            indicator_screen_name: true,
+            names: Default::default(),
+            names_screens: BTreeMap::new(),
         }
     }
 }
@@ -361,6 +376,7 @@ hints = []
 [indicator]
 enabled = true
 style = "card"              # "card" or "dots"
+screen_name = true          # with two or more screens, the card names its screen
 spot = "center"             # top-left, top, top-right, left, center, right, bottom-left, bottom, bottom-right or custom
 gap = 24                    # 0 to 400: pixels from the screen's edges at 100% scale (center ignores it)
 x = 50                      # 0 to 100, with spot = "custom": the card's center, in percent of the screen
@@ -379,6 +395,14 @@ text = "{{appname}} misses you"   # up to 100 characters; {{appname}} is the app
 accent = "windows"          # "windows" follows your Windows accent color, or your own "#RRGGBB"
 # Your own color for a workspace, in light and dark alike; a workspace left out keeps des-k's:
 # ws1 = "#79A4F3"
+
+[names]
+# A name for a workspace on every screen, up to 32 characters; a workspace left out shows its number:
+# ws1 = "Mail"
+# A screen's own table, named by its id, renames the screen and can name its workspaces its own way:
+# [names.screens."DEL-A1B2-12345"]
+# screen = "Left"
+# ws2 = "Notes"             # "" is no name on this screen
 
 [restore]
 enabled = true              # after a reboot or sign in, hide reopened windows back into their workspaces
@@ -456,14 +480,17 @@ tap = true
 do = "notifications"
 "##;
 
-const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activation", "fastest", "first_run_seen", "shortcuts", "indicator", "attention", "colors", "restore", "overview", "touchpad", "gesture"];
+const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activation", "fastest", "first_run_seen", "shortcuts", "indicator", "attention", "colors", "names", "restore", "overview", "touchpad", "gesture"];
 const SHORTCUT_KEYS: &[&str] = &["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "jump", "send_to", "send_to_stay", "finder", "overview", "pin", "hints"];
-const INDICATOR_KEYS: &[&str] = &["enabled", "style", "spot", "gap", "x", "y", "hold_ms", "fade_ms", "screens"];
+const INDICATOR_KEYS: &[&str] = &["enabled", "style", "screen_name", "spot", "gap", "x", "y", "hold_ms", "fade_ms", "screens"];
 const SCREEN_KEYS: &[&str] = &["spot", "gap", "x", "y"];
 const ATTENTION_KEYS: &[&str] = &["enabled", "text"];
 pub const ATTENTION_TEXT: &str = "{{appname}} misses you";
 pub const ATTENTION_MAX: usize = 100; // in UTF-16 units, as the page's text box counts (spec 0022 AC-9)
 const COLORS_KEYS: &[&str] = &["accent", "ws1", "ws2", "ws3", "ws4", "ws5", "ws6", "ws7", "ws8", "ws9"];
+const NAMES_KEYS: &[&str] = &["ws1", "ws2", "ws3", "ws4", "ws5", "ws6", "ws7", "ws8", "ws9", "screens"];
+const SCREEN_NAMES_KEYS: &[&str] = &["screen", "ws1", "ws2", "ws3", "ws4", "ws5", "ws6", "ws7", "ws8", "ws9"];
+pub const NAME_MAX: usize = 32; // in UTF-16 units, after cleanup (spec 0023 AC-2)
 const RESTORE_KEYS: &[&str] = &["enabled", "minutes"];
 const OVERVIEW_KEYS: &[&str] = &["animation", "labels", "live", "fade_ms"];
 const TOUCHPAD_KEYS: &[&str] = &["enabled", "swipe_mm", "twice_ms"];
@@ -637,8 +664,11 @@ fn diff(old: &Settings, new: &Settings, source: Source) -> Vec<Change> {
         Source::File => "file",
     };
     let mut changes = Vec::new();
+    // Names log their keys only (spec 0023 AC-15), so a new name for a key already set changes
+    // no text here; compare the names themselves, or the new one is never stored.
+    let renamed = old.names != new.names || old.names_screens != new.names_screens;
     for ((key, was), (_, now)) in old.fields().into_iter().zip(new.fields()) {
-        if was != now {
+        if was != now || (key == "names" && renamed) {
             info!("settings: {key} {was} -> {now} ({from})");
             changes.push(Change { key, was, now });
         }
@@ -879,6 +909,13 @@ fn set_value(doc: &mut toml_edit::DocumentMut, name: &str, value: toml_edit::Val
 pub fn use_for_test(text: &str) {
     let (settings, warnings) = parse(text);
     store(settings, warnings.into_iter().map(Problem::new).collect());
+    PARSE_ERROR.set(None); // as a good read does
+}
+
+/// For the settings page's renders: the file can't be read, so the page is read only.
+#[cfg(test)]
+pub fn broken_for_test(why: &str) {
+    PARSE_ERROR.set(Some(why.to_string()));
 }
 
 /// For the settings page's tests: any text with an edit made.
@@ -987,6 +1024,7 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
         unknown_keys(t, "indicator.", INDICATOR_KEYS, &mut warn);
         s.indicator_enabled = boolean(t, "enabled", "indicator.enabled", s.indicator_enabled, &mut warn);
         s.indicator_style = choice(t, "style", "indicator.style", STYLES, s.indicator_style, &mut warn);
+        s.indicator_screen_name = boolean(t, "screen_name", "indicator.screen_name", s.indicator_screen_name, &mut warn);
         s.hold_ms = int(t, "hold_ms", "indicator.hold_ms", 0, 5000, s.hold_ms as i64, &mut warn) as u32;
         s.fade_ms = int(t, "fade_ms", "indicator.fade_ms", 0, 2000, s.fade_ms as i64, &mut warn) as u32;
         let d = Pos::default();
@@ -1015,6 +1053,15 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
             let key = COLORS_KEYS[i + 1];
             *c = color(t, key, &format!("colors.{key}"), "des-k's color", &mut warn);
         }
+    }
+
+    if let Some(t) = section(&top, "names", &mut warn) {
+        unknown_keys(t, "names.", NAMES_KEYS, &mut warn);
+        for (i, n) in s.names.iter_mut().enumerate() {
+            let key = NAMES_KEYS[i];
+            *n = name(t, key, &format!("names.{key}"), &mut warn).unwrap_or_default();
+        }
+        s.names_screens = name_screens(t, &mut warn);
     }
 
     if let Some(t) = section(&top, "restore", &mut warn) {
@@ -1418,6 +1465,49 @@ fn screens(t: &Table, d: Pos, warn: &mut Vec<String>) -> BTreeMap<String, PosOve
     out
 }
 
+/// A name or rename as spec 0023 AC-2 cleans it. None when missing or bad; the warn line
+/// names the key, never the text, since a name can say anything about you (AC-15).
+fn name(t: &Table, key: &str, full: &str, warn: &mut Vec<String>) -> Option<String> {
+    let text = match t.get(key)? {
+        Value::String(s) => clean_name(s),
+        v => {
+            warn.push(format!("{full}: expected text, got a {}, ignored", v.type_str()));
+            return None;
+        }
+    };
+    let n = text.encode_utf16().count();
+    if n > NAME_MAX {
+        warn.push(format!("{full}: {n} characters, the most is {NAME_MAX}, ignored"));
+        return None;
+    }
+    Some(text)
+}
+
+/// Control characters (a newline, a tab) become spaces and both ends are trimmed, since a
+/// name is drawn on one line (spec 0023 AC-2).
+pub fn clean_name(text: &str) -> String {
+    text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>().trim().to_string()
+}
+
+/// The `[names.screens."<id>"]` tables. A table for a screen not plugged in is kept (AC-3).
+fn name_screens(t: &Table, warn: &mut Vec<String>) -> BTreeMap<String, ScreenNames> {
+    let Some(v) = t.get("screens") else { return BTreeMap::new() };
+    let Some(list) = v.as_table().filter(|l| l.values().all(Value::is_table)) else {
+        let got = if v.is_table() { "table with plain values in it" } else { v.type_str() };
+        warn.push(format!("names.screens: expected [names.screens.\"<screen id>\"] tables, got a {got}, ignored"));
+        return BTreeMap::new();
+    };
+    let mut out = BTreeMap::new();
+    for (id, st) in list.iter().filter_map(|(id, v)| Some((id, v.as_table()?))) {
+        let full = |k: &str| format!("names.screens.\"{id}\".{k}");
+        unknown_keys(st, &full(""), SCREEN_NAMES_KEYS, warn);
+        let screen = name(st, "screen", &full("screen"), warn).filter(|n| !n.is_empty());
+        let ws = std::array::from_fn(|i| name(st, NAMES_KEYS[i], &full(NAMES_KEYS[i]), warn));
+        out.insert(id.clone(), ScreenNames { screen, ws });
+    }
+    out
+}
+
 /// Bad entries are dropped one by one; a list left empty by that falls back to `default`.
 /// A list written empty, `[]`, is off: the settings page writes it when you remove the last
 /// combo (spec 0012 AC-8).
@@ -1609,6 +1699,21 @@ impl Settings {
         self.indicator_screens.get(id).map_or(self.indicator_pos, |o| o.over(self.indicator_pos))
     }
 
+    /// Workspace `i`'s name (0 based) on screen `id`: the screen's own key, else `[names]`'s,
+    /// else none; `""` is none, and so is a workspace past the count (spec 0023 AC-1, AC-3).
+    pub fn ws_name(&self, id: &str, i: usize) -> Option<&str> {
+        if i >= self.workspaces {
+            return None;
+        }
+        let own = self.names_screens.get(id).and_then(|n| n.ws.get(i)?.as_deref());
+        Some(own.unwrap_or(self.names.get(i)?)).filter(|n| !n.is_empty())
+    }
+
+    /// Your name for screen `id`, if you renamed it (spec 0023 AC-11).
+    pub fn screen_rename(&self, id: &str) -> Option<&str> {
+        self.names_screens.get(id)?.screen.as_deref()
+    }
+
     /// Every setting as (name, value) in file order: the start log line, and the change log
     /// that compares two of these (spec 0012 AC-15).
     fn fields(&self) -> Vec<(&'static str, String)> {
@@ -1636,6 +1741,7 @@ impl Settings {
             ("shortcuts.hints", list(&self.hints)),
             ("indicator.enabled", self.indicator_enabled.to_string()),
             ("indicator.style", word(STYLES.iter().find(|(_, v)| *v == self.indicator_style).map(|(w, _)| *w))),
+            ("indicator.screen_name", self.indicator_screen_name.to_string()),
             ("indicator.hold_ms", self.hold_ms.to_string()),
             ("indicator.fade_ms", self.fade_ms.to_string()),
             ("indicator.spot", word(SPOTS.iter().find(|(_, v)| *v == self.indicator_pos.spot).map(|(w, _)| *w))),
@@ -1666,6 +1772,8 @@ impl Settings {
         let at = fields.iter().position(|(k, _)| *k == "restore.enabled").unwrap_or(fields.len());
         let ws = WS_NAMES.iter().zip(self.ws_colors).map(|(k, c)| (*k, c.map_or(String::new(), hex)));
         fields.splice(at..at, ws);
+        let at = fields.iter().position(|(k, _)| *k == "restore.enabled").unwrap_or(fields.len());
+        fields.insert(at, ("names", names_text(&self.names, &self.names_screens)));
         fields
     }
 }
@@ -1685,6 +1793,25 @@ fn screens_text(screens: &BTreeMap<String, PosOverride>) -> String {
     };
     let all: Vec<String> = screens.iter().map(|(id, o)| format!("{id}: {}", one(o))).collect();
     format!("[{}]", all.join(", "))
+}
+
+/// Which `[names]` keys are set, never their text (spec 0023 AC-15), like
+/// `[ws1, ws2; screens: internal (screen, ws2)]`.
+fn names_text(names: &[String; 9], screens: &BTreeMap<String, ScreenNames>) -> String {
+    let all: Vec<&str> = (0..9).filter(|&i| !names[i].is_empty()).map(|i| NAMES_KEYS[i]).collect();
+    let one = |n: &ScreenNames| {
+        let keys: Vec<&str> = n.screen.iter().map(|_| "screen").chain((0..9).filter(|&i| n.ws[i].is_some()).map(|i| NAMES_KEYS[i])).collect();
+        keys.join(", ")
+    };
+    let per: Vec<String> = screens.iter().map(|(id, n)| format!("{id} ({})", one(n))).collect();
+    let mut parts = vec![];
+    if !all.is_empty() {
+        parts.push(all.join(", "));
+    }
+    if !per.is_empty() {
+        parts.push(format!("screens: {}", per.join(", ")));
+    }
+    format!("[{}]", parts.join("; "))
 }
 
 impl fmt::Display for Settings {
@@ -2322,7 +2449,68 @@ do = "previous"
         let mut unique = names.clone();
         unique.sort();
         unique.dedup();
-        assert_eq!((names.len(), unique.len()), (49, 49));
+        assert_eq!((names.len(), unique.len()), (51, 51));
+    }
+
+    // Spec 0023 AC-1, AC-3: a screen's own name beats every screen's, "" there hides the name on
+    // that screen only, and a workspace past the count shows no name until the count grows back.
+    // Every surface asks ws_name, so this order is the one you see everywhere.
+    #[test]
+    fn a_screen_name_beats_every_screens_name() {
+        let file = "workspaces = 3\n[names]\nws2 = \"Code\"\nws3 = \"\"\nws4 = \"Later\"\n\
+                    [names.screens.internal]\nws2 = \"Notes\"\nws1 = \"\"\n\
+                    [names.screens.\"DEL-1\"]\nws2 = \"\"\n";
+        let (s, warn) = parse(file);
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(s.ws_name("internal", 1), Some("Notes"));
+        assert_eq!(s.ws_name("SAM-9", 1), Some("Code"));
+        assert_eq!(s.ws_name("DEL-1", 1), None);
+        assert_eq!((s.ws_name("SAM-9", 0), s.ws_name("internal", 0)), (None, None));
+        assert_eq!(s.ws_name("SAM-9", 2), None, "\"\" in [names] is no name");
+        assert_eq!(s.ws_name("SAM-9", 3), None, "past the count");
+        let (more, _) = parse(&file.replace("workspaces = 3", "workspaces = 4"));
+        assert_eq!(more.ws_name("SAM-9", 3), Some("Later"));
+    }
+
+    // Spec 0023 AC-11: a rename names its screen; "" or no key leaves Windows' name.
+    #[test]
+    fn an_empty_rename_is_no_rename() {
+        let (s, warn) = parse("[names.screens.internal]\nscreen = \"Left\"\n[names.screens.\"DEL-1\"]\nscreen = \"  \"\nws1 = \"Mail\"\n");
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!((s.screen_rename("internal"), s.screen_rename("DEL-1"), s.screen_rename("SAM-9")), (Some("Left"), None, None));
+    }
+
+    // Spec 0023 AC-2, AC-15: a bad name resets only its own key, and the warn line names the key
+    // but never the text (a name can say anything). 32 units fit after cleanup; an emoji is two.
+    #[test]
+    fn a_bad_name_resets_only_itself_and_is_never_logged() {
+        let full = "é".repeat(30) + "😀";
+        let (s, warn) = parse(&format!("[names]\nws1 = \"  {full}\\t\"\nws2 = \"Mail\\nRoom\"\n"));
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!((s.names[0].as_str(), s.names[1].as_str()), (full.as_str(), "Mail Room"));
+        let long = format!("\"{full}x\"");
+        for (key, value, why) in [("ws1", long.as_str(), "33 characters"), ("ws1", "7", "expected text"), ("ws10", "\"Secret\"", "unknown key"), ("foo", "\"Secret\"", "unknown key")] {
+            let (s, warn) = parse(&format!("[names]\nws2 = \"Code\"\n{key} = {value}\n"));
+            assert_eq!((s.names[0].as_str(), s.names[1].as_str()), ("", "Code"), "{key} = {value}");
+            assert!(warn.len() == 1 && warn[0].contains(why) && !warn[0].contains('é') && !warn[0].contains("Secret") && !warn[0].contains("Code"), "{warn:?}");
+        }
+        let (s, warn) = parse(&format!("[names.screens.internal]\nscreen = {long}\nws2 = \"Notes\"\nws12 = \"x\"\n"));
+        assert_eq!(warn.len(), 2, "{warn:?}");
+        assert_eq!((s.screen_rename("internal"), s.ws_name("internal", 1)), (None, Some("Notes")));
+    }
+
+    // Spec 0023 AC-15: the change line says which name keys are set, never what they say, and a
+    // new name for a key already set still counts as a change, or it would never take effect.
+    #[test]
+    fn names_change_lines_hold_keys_only() {
+        let (old, _) = parse("[names]\nws1 = \"Mail\"\n");
+        let (new, _) = parse("[names]\nws1 = \"Post\"\nws2 = \"Code\"\n[names.screens.internal]\nscreen = \"Kitchen\"\nws2 = \"\"\n");
+        let changes = diff(&old, &new, Source::File);
+        assert_eq!(changes, [Change { key: "names", was: "[ws1]".into(), now: "[ws1, ws2; screens: internal (screen, ws2)]".into() }]);
+        let (renamed, _) = parse("[names]\nws1 = \"Post\"\n");
+        let changes = diff(&old, &renamed, Source::File);
+        assert_eq!(changes.len(), 1);
+        assert!(!format!("{changes:?}{new}").contains("Post") && !format!("{new}").contains("Kitchen"));
     }
 
     // Spec 0020 AC-9: a screen's table changes only the keys it sets; the rest, and every screen

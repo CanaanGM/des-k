@@ -30,7 +30,8 @@ use crate::ui::{self, Bx, Canvas, F, Fonts, Theme, buffered, dark_title, mix, op
 use crate::uia::{self, Node, Tree};
 
 const CLASS: PCWSTR = w!("des-k-settings");
-// Clips its one child, the popup words' text box (spec 0022), so a paint never covers it.
+// Clips its one child, the text box the popup words and the name boxes share (specs 0022, 0023),
+// so a paint never covers it.
 const STYLE: WINDOW_STYLE = WINDOW_STYLE(WS_OVERLAPPED.0 | WS_CAPTION.0 | WS_SYSMENU.0 | WS_MINIMIZEBOX.0 | WS_MAXIMIZEBOX.0 | WS_THICKFRAME.0 | WS_CLIPCHILDREN.0);
 const WHO: &str = "des-k settings";
 
@@ -123,7 +124,7 @@ impl Section {
 /// Which section a problem belongs to, by its key; None: no one setting (the Notes section).
 fn home(key: &str) -> Option<Section> {
     Some(match key.split('.').next().unwrap_or("") {
-        "workspaces" | "follow_activation" => Section::Workspaces,
+        "workspaces" | "follow_activation" | "names" => Section::Workspaces,
         "shortcuts" | "copilot_as_right_ctrl" => Section::Shortcuts,
         "indicator" => Section::Indicator,
         "attention" => Section::Attention,
@@ -175,6 +176,7 @@ pub(crate) const ROWS: &[Row] = &[
     row("indicator.style", "Style", "", Kind::Choice(STYLE_WORDS)),
     row("indicator.hold_ms", "Indicator stays", "How long it shows. 0 to 5000 ms. With a line under it, at least 1.5 s.", step(0, 5000, 50, "ms")),
     row("indicator.fade_ms", "Indicator fades out", "How long it takes to go. 0 to 2000 ms.", step(0, 2000, 50, "ms")),
+    row("indicator.screen_name", "Show screen name", "The screen's name under the workspace's name, with two or more screens.", Kind::Toggle),
     row("attention.enabled", "Show windows that want you", "The indicator pops up on the window's screen, even with the indicator off, and that workspace keeps a dot until you go there.", Kind::Toggle),
     row("restore.enabled", "Restore after restart", "Reopened windows go back to their workspaces, hidden.", Kind::Toggle),
     row("restore.minutes", "Restore runs for", "How long after des-k starts it puts reopened windows back. 1 to 30 min.", step(1, 30, 1, "min")),
@@ -213,6 +215,7 @@ pub(crate) fn value(s: &Settings, key: &str) -> i64 {
         "indicator.style" => index(word(settings::STYLES, s.indicator_style), STYLE_WORDS),
         "indicator.hold_ms" => s.hold_ms as i64,
         "indicator.fade_ms" => s.fade_ms as i64,
+        "indicator.screen_name" => s.indicator_screen_name as i64,
         "attention.enabled" => s.attention_enabled as i64,
         "restore.enabled" => s.restore_enabled as i64,
         "restore.minutes" => s.restore_minutes as i64,
@@ -254,17 +257,20 @@ pub(crate) fn stepped(v: i64, lo: i64, hi: i64, by: i64, up: bool) -> i64 {
 }
 
 /// Why a kept value is not in use now (AC-SET-8): every reason, in the caption's order. The
-/// Style row greys with the indicator and needs no words: the switch is right above it.
+/// Style and Show screen name rows grey with the indicator and need no words: the switch is
+/// right above them.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Why {
     AnimationNone,
     Skip,
     IndicatorOff,
+    Dots, // the Dots style shows no names (spec 0023 AC-14)
 }
 
 pub(crate) fn unused(s: &Settings, key: &str) -> Vec<Why> {
     match key {
-        "indicator.style" if !s.indicator_enabled => vec![Why::IndicatorOff],
+        "indicator.style" | "indicator.screen_name" if !s.indicator_enabled => vec![Why::IndicatorOff],
+        "indicator.screen_name" if s.indicator_style == settings::Style::Dots => vec![Why::Dots],
         "indicator.fade_ms" if s.fastest => vec![Why::Skip],
         "overview.fade_ms" => {
             let mut why = vec![];
@@ -522,6 +528,7 @@ const WS_NAMES: [&str; 9] = ["blue", "gold", "green", "violet", "orange", "cyan"
 pub(crate) const SPOT: &str = "indicator.spot";
 const WORDS: &str = "attention.text";
 const WORDS_W: f32 = 300.0;
+const NAME_W: f32 = 300.0; // a name box (spec 0023)
 // The popup preview's sample (spec 0022): an app everyone knows, on workspace 3.
 const SAMPLE_APP: &str = "Slack";
 const SAMPLE_WS: usize = 2;
@@ -661,6 +668,105 @@ pub(crate) fn screen_choices(view: &crate::ws::View, s: &Settings) -> Vec<Screen
     out
 }
 
+// ---- Names (spec 0023 AC-12, AC-13) ----
+
+/// A line of the Names card's chooser: All screens (no id), then the screens plugged in, then
+/// remembered ones, each by its shown name. Nothing comes from the indicator's settings.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct NameChoice {
+    pub(crate) id: Option<String>,
+    pub(crate) name: String,
+    pub(crate) windows: String, // Windows' own name: the Screen name box's hint
+    pub(crate) side: String,
+}
+
+pub(crate) fn name_choices(view: &crate::ws::View) -> Vec<NameChoice> {
+    let mut out = vec![NameChoice { id: None, name: "All screens".into(), windows: String::new(), side: String::new() }];
+    for p in &view.present {
+        out.push(NameChoice { id: Some(p.id.clone()), name: p.name.clone(), windows: p.windows_name.clone(), side: String::new() });
+    }
+    for w in view.waiting.iter().filter(|w| !view.present.iter().any(|p| p.id == w.id)) {
+        out.push(NameChoice { id: Some(w.id.clone()), name: w.name.clone(), windows: w.windows_name.clone(), side: "Not plugged in".into() });
+    }
+    // Two screens you gave the same name are told apart by Windows' own.
+    let names: Vec<String> = out.iter().map(|c| c.name.clone()).collect();
+    for c in out.iter_mut().skip(1) {
+        if names.iter().skip(1).filter(|n| **n == c.name).count() > 1 {
+            c.side = c.windows.clone();
+        }
+    }
+    out
+}
+
+/// A row of the Names card: the chosen screen's own name, or workspace N (0 based).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum Nm {
+    Screen,
+    Ws(usize),
+}
+
+/// How a name row reads, set by the file's keys alone (AC-12).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum NameState {
+    All,    // an All screens row: [names] wsN
+    Follow, // a screen's row with no key of its own: it shows the All screens name
+    Own,    // a screen's own name, even one equal to All screens'
+    NoName, // "" on this screen: only the number shows
+    Rename, // the Screen name row
+}
+
+/// Row `row` for `screen` (None: All screens): its state and the text its box holds when saved.
+pub(crate) fn name_held(s: &Settings, screen: Option<&str>, row: Nm) -> (NameState, String) {
+    let own = screen.and_then(|id| s.names_screens.get(id));
+    match (screen, row) {
+        (_, Nm::Screen) => (NameState::Rename, own.and_then(|n| n.screen.clone()).unwrap_or_default()),
+        (None, Nm::Ws(i)) => (NameState::All, s.names[i].clone()),
+        (Some(_), Nm::Ws(i)) => match own.and_then(|n| n.ws[i].as_deref()) {
+            None => (NameState::Follow, String::new()),
+            Some("") => (NameState::NoName, String::new()),
+            Some(t) => (NameState::Own, t.to_string()),
+        },
+    }
+}
+
+/// The file key a name row writes: `names.wsN`, or in the screen's own table.
+pub(crate) fn name_path(screen: Option<&str>, row: Nm) -> Option<Vec<String>> {
+    let key = match row {
+        Nm::Screen => "screen".to_string(),
+        Nm::Ws(i) => format!("ws{}", i + 1),
+    };
+    match screen {
+        Some(id) => Some(vec!["names".into(), "screens".into(), id.into(), key]),
+        None if row == Nm::Screen => None,
+        None => Some(vec!["names".into(), key]),
+    }
+}
+
+/// What saving `text` in a name box writes, if anything (AC-12, AC-13). Text is cleaned as the
+/// file's reader cleans it, so a box never saves what reads back different. An emptied box
+/// takes its key out (an own row then follows all screens again); Enter on a following row left
+/// empty writes "" (no name on this screen), and only when All screens has a name to hide;
+/// unchanged text writes nothing.
+pub(crate) fn name_edit(s: &Settings, screen: Option<&str>, row: Nm, text: &str, enter: bool) -> Option<Edit> {
+    let text = settings::clean_name(text);
+    let path = name_path(screen, row)?;
+    let (state, saved) = name_held(s, screen, row);
+    match (state, row) {
+        (NameState::Follow, Nm::Ws(i)) if text.is_empty() => (enter && !s.names[i].is_empty()).then(|| Edit::At(path, "".into())),
+        (NameState::NoName, _) if text.is_empty() => None,
+        _ if text.is_empty() => (!saved.is_empty()).then_some(Edit::Remove(path)),
+        _ => (text != saved).then(|| Edit::At(path, text.into())),
+    }
+}
+
+/// The title a failed save's note names: "Couldn't save “Workspace 2 name”" (AC-13).
+fn name_title(row: Nm) -> String {
+    match row {
+        Nm::Screen => "Screen name".into(),
+        Nm::Ws(i) => format!("Workspace {} name", i + 1),
+    }
+}
+
 // ---- What the page shows of des-k and Windows ----
 
 /// What the recorder is recording for (spec 0012 AC-7, AC-12).
@@ -738,6 +844,9 @@ enum Ctl {
     Screens,           // Where it shows' screen chooser: opens its menu
     ScreenItem(usize), // a line of the open screen menu
     SameAll,           // Same as all screens: takes out the chosen screen's table
+    NameScreens,       // the Names card's screen chooser (spec 0023)
+    Name(Nm),          // a name box
+    NameSame(usize),   // a workspace row's Same as all screens: takes out the screen's key
     Picture,           // focus only: the place picture is one stop; Left and Right move
     Spot(usize),       // a third of the picture across and down, 0 to 8 in reading order
     ShowThere,         // Show it there: the real indicator on the chosen screen
@@ -772,7 +881,7 @@ impl Ctl {
             self,
             Ctl::Toggle(_) | Ctl::Minus(_) | Ctl::Plus(_) | Ctl::Choice(..) | Ctl::Reset(_) | Ctl::WsTile(..) | Ctl::TileAdd | Ctl::TileRemove | Ctl::Forget(_)
                 | Ctl::KeyRow(_) | Ctl::Key(..) | Ctl::KeyX(..) | Ctl::AddKey(_) | Ctl::WinSide(..) | Ctl::Move(_) | Ctl::Picker(_) | Ctl::Item(_) | Ctl::Pad(Pad::ReadOn | Pad::GiveBack)
-                | Ctl::Hex(_) | Ctl::SameAll | Ctl::Picture | Ctl::Spot(_) | Ctl::ShowTile(..) | Ctl::Swatch(_) | Ctl::Words
+                | Ctl::Hex(_) | Ctl::SameAll | Ctl::Picture | Ctl::Spot(_) | Ctl::ShowTile(..) | Ctl::Swatch(_) | Ctl::Words | Ctl::Name(_) | Ctl::NameSame(_)
         )
     }
 
@@ -980,6 +1089,10 @@ fn changed(key: &str, was: &str, now: &str) -> String {
     if key == "gestures" {
         return "Gestures: changed".into();
     }
+    // The change line lists only which names are set; the page shows the names themselves.
+    if key == "names" {
+        return "Workspace names: changed".into();
+    }
     let name = title_of(key).unwrap_or(key);
     let words = |v: &str| -> String {
         if let Some(r) = find_row(key) {
@@ -1032,13 +1145,16 @@ struct Win {
     hexes: Vec<Hex>,              // hex boxes holding digits not saved yet (spec 0020)
     own: Option<u32>,             // the last own accent while the page is open (AC-12)
     screen: Option<String>,       // the screen Where it shows changes, by id; None: All screens
-    chooser: Option<(Bx, usize)>, // the open screen menu: the chooser it opened from, its focused line
+    chooser: Option<(Ctl, Bx, usize)>, // the open screen menu: the chooser it opened from, where, its focused line
     dragging: Option<(f64, f64)>, // Custom: where a drag on the picture has the card, in percent
     pick: Option<ColorPick>,      // the open color picker (spec 0021)
     geo: Geo,                     // where its anchors were last drawn
     ease: Option<Ease>,           // the page scrolling on its own, for the picker
     down_at: (i32, i32),          // the last press, in screen pixels, for the picker's guard
     words: Option<String>,        // the popup words as typed, before they save (spec 0022)
+    names_screen: Option<String>, // the screen the Names card shows, by id; None: All screens (spec 0023)
+    typed: Option<String>,        // the name box with focus, as typed
+    unsaved: Vec<(Option<String>, Nm, String)>, // name boxes whose save failed: screen, row, your text (AC-13)
 }
 
 /// The color picker while it is open (spec 0021): one key, the color shown, and what it saved.
@@ -1295,13 +1411,14 @@ impl Ctx<'_, '_> {
         self.c.width(if on { "On" } else { "Off" }, F::Body) + 10.0 + 40.0
     }
 
-    fn switch(&mut self, key: &'static str, x: f32, y: f32, on: bool) {
+    /// `na`: greyed, kept but not in use, drawn as read only.
+    fn switch(&mut self, key: &'static str, x: f32, y: f32, on: bool, na: bool) {
         let b = self.c.t.b;
         let ctl = Ctl::Toggle(key);
         let label = if on { "On" } else { "Off" };
         let lw = self.c.width(label, F::Body);
         self.c.text(x, y, 20.0, label, F::Body, b.tx2);
-        let (sx, ro) = (x + lw + 10.0, self.ro);
+        let (sx, ro) = (x + lw + 10.0, self.ro || na);
         let track = (sx, y, 40.0, 20.0);
         if on {
             self.c.fill_rr(track, 10.0, op(if ro { b.tx3 } else { b.acc }));
@@ -1569,7 +1686,9 @@ impl Ctx<'_, '_> {
         let note = self.bad(key);
         let mut cap: Vec<P> = vec![];
         let base = match key {
-            "indicator.style" if v == 0 => "The number and a bar per workspace, with the screen's name when you have two or more.",
+            // What the card shows (spec 0023 AC-14).
+            "indicator.style" if v == 0 && self.s.indicator_screen_name => "The number and a bar per workspace, with its name and, with two or more screens, the screen's name.",
+            "indicator.style" if v == 0 => "The number and a bar per workspace, with its name.",
             "indicator.style" => "A dot per workspace, the current one wide.",
             "copilot_as_right_ctrl" if v != 0 => "So Win Ctrl keys work with it. Taken from Windows, where it opens Copilot, or what you set.",
             "copilot_as_right_ctrl" => "Windows keeps it (Copilot, or what you set). Win Ctrl keys need the left Ctrl.",
@@ -1591,6 +1710,7 @@ impl Ctx<'_, '_> {
                         cap.push(P::Link("Skip animations".into(), Ctl::Link(Link::Skip)));
                         cap.push(P::Why(" is on".into()));
                     }
+                    Why::Dots => cap.push(P::Why("the dots show no names".into())),
                     Why::IndicatorOff => {}
                 }
             }
@@ -1602,8 +1722,8 @@ impl Ctx<'_, '_> {
         match r.kind {
             Kind::Toggle => {
                 let size = (self.switch_w(v != 0), 20.0);
-                self.say(Ctl::Toggle(key), UIA_ButtonControlTypeId, r.title, &help, ro, (Some(v != 0), None));
-                self.row(y, r.title, &cap, size, |c, x, y| c.switch(key, x, y, v != 0), note.as_ref())
+                self.say(Ctl::Toggle(key), UIA_ButtonControlTypeId, r.title, &help, ro || na, (Some(v != 0), None));
+                self.row(y, r.title, &cap, size, |c, x, y| c.switch(key, x, y, v != 0, na), note.as_ref())
             }
             Kind::Pair(on, off) => {
                 let size = (self.seg_w(&[on, off]), 28.0);
@@ -1681,7 +1801,10 @@ impl Ctx<'_, '_> {
         let mut h = self.heading(Some(sec), y);
         h += self.section_notes(sec, y + h);
         h += match sec {
-            Section::Workspaces => self.card(y + h, |c, y| c.workspaces(y)),
+            Section::Workspaces => {
+                let first = self.card(y + h, |c, y| c.workspaces(y)) + 12.0;
+                first + self.card(y + h + first, |c, y| c.names(y))
+            }
             Section::Shortcuts => self.shortcuts(y + h),
             Section::Restore => self.card(y + h, |c, y| c.restore(y)),
             Section::Indicator => {
@@ -1745,6 +1868,169 @@ impl Ctx<'_, '_> {
         h + self.setting("follow_activation", y + h)
     }
 
+    // ---- Names (spec 0023 AC-12, AC-13) ----
+
+    /// The Names card. With two or more known screens: the chooser, then for a chosen screen its
+    /// Screen name row, then a row per workspace in use. With one: that screen's Screen name
+    /// row, then All screens' rows.
+    fn names(&mut self, y: f32) -> f32 {
+        let b = self.c.t.b;
+        let (list, i) = names_chosen(self.w);
+        let two = list.len() > 2;
+        self.header(y, "Names", None, "");
+        if two {
+            let who = if i == 0 { "all screens".to_string() } else { list[i].name.clone() };
+            let rw = self.c.width("For ", F::Small) + self.c.width(&who, F::SmallBold);
+            self.c.para(X0 + self.cw - 16.0 - rw, y + 11.0, rw + 1.0, 16.0, &[("For ", F::Small, b.tx2), (&who, F::SmallBold, b.tx)]);
+        }
+        let mut h = 38.0;
+        if two {
+            h += self.names_chooser_row(y + h, &list, i);
+        }
+        let mut rows = if (two && i > 0) || list.len() == 2 { vec![Nm::Screen] } else { vec![] };
+        rows.extend((0..self.s.workspaces).map(Nm::Ws));
+        for (k, row) in rows.into_iter().enumerate() {
+            if k > 0 || two {
+                self.sep(y + h);
+            }
+            h += self.name_row(y + h, row);
+        }
+        h
+    }
+
+    fn names_chooser_row(&mut self, y: f32, list: &[NameChoice], i: usize) -> f32 {
+        let cap = match &list[i].id {
+            None => "Names every screen shows, unless it has its own. Up to 32 characters each; most emoji count as two.".to_string(),
+            Some(id) => {
+                let own = self.s.names_screens.get(id);
+                match (0..self.s.workspaces).filter(|&k| own.is_some_and(|o| o.ws[k].is_some())).count() {
+                    0 => "Empty rows follow all screens.".to_string(),
+                    1 => "1 workspace differs on this screen. Empty rows follow all screens.".to_string(),
+                    n => format!("{n} workspaces differ on this screen. Empty rows follow all screens."),
+                }
+            }
+        };
+        let name = list[i].name.clone();
+        self.say(Ctl::NameScreens, UIA_ComboBoxControlTypeId, "Screen", &cap, false, (None, Some(name.clone())));
+        self.row(y, "Screen", &[t(cap)], (240.0, 32.0), |c, x, y| c.screen_picker(Ctl::NameScreens, x, y, 240.0, &name), None)
+    }
+
+    /// One name row: its title and caption, the chip of a workspace row, the box, and the
+    /// focused box's note.
+    fn name_row(&mut self, y: f32, row: Nm) -> f32 {
+        let look = name_look(self.w, self.s, row);
+        let ctl = Ctl::Name(row);
+        let focused = self.w.focus == Some(ctl) && !self.ro;
+        let text = if focused { self.w.typed.clone().unwrap_or_else(|| look.shown.clone()) } else { look.shown.clone() };
+        // No link takes focus on a read only page.
+        let same = |k: usize, ro: bool| (!ro).then(|| P::Link(" Same as all screens".into(), Ctl::NameSame(k)));
+        let cap: Vec<P> = match (look.state, row) {
+            _ if look.unsaved => {
+                let back = if look.saved.is_empty() { "Esc empties it again.".to_string() } else { format!("Esc puts back {}.", look.saved) };
+                vec![P::Why("Not saved.".into()), t(format!(" Enter in the box tries again; {back}"))]
+            }
+            (NameState::Rename, _) => vec![t("Shown everywhere des-k names this screen. Empty: Windows' name.")],
+            (NameState::All, Nm::Ws(k)) => self.differ_pieces(k),
+            (NameState::Follow, _) if look.all.is_empty() => vec![t("Follows all screens, which has no name for it.")],
+            (NameState::Follow, _) => vec![t("Follows all screens.")],
+            (NameState::Own, Nm::Ws(k)) => [Some(t("Its own name on this screen.")), same(k, self.ro)].into_iter().flatten().collect(),
+            (NameState::NoName, Nm::Ws(k)) => [Some(t("Only the number shows here.")), same(k, self.ro)].into_iter().flatten().collect(),
+            _ => vec![],
+        };
+        let note = focused.then(|| {
+            let line = match (look.state, row) {
+                (NameState::Follow, _) if !look.all.is_empty() && text.is_empty() => "Type a name for this screen, or press Enter with the box empty: no name on this screen.".to_string(),
+                (NameState::Own, _) if text.is_empty() => {
+                    let all = if look.all.is_empty() { String::new() } else { format!(" ({})", look.all) };
+                    format!("Enter saves it empty: this row follows all screens again{all}. Esc puts back {}.", look.saved)
+                }
+                (NameState::All, Nm::Ws(k)) if !look.saved.is_empty() && text.is_empty() => {
+                    format!("Enter saves it empty: no name for workspace {} on screens that follow all screens. Esc puts back {}.", k + 1, look.saved)
+                }
+                _ => format!("Enter saves it; Esc puts back the saved name. Leaving the box saves it too. {} of {}.", text.encode_utf16().count(), settings::NAME_MAX),
+            };
+            NoteSpec { tone: Tone::Info, icon: I_INFO, title: String::new(), lines: vec![t(line)], buttons: vec![], group: 1 }
+        });
+        let help: String = cap.iter().map(|p| match p { P::T(s) | P::Why(s) | P::Link(s, _) | P::Mono(s) => s.as_str() }).collect();
+        self.say(ctl, UIA_EditControlTypeId, &name_title(row), help.trim(), self.ro, (None, Some(text.clone())));
+        let (title, chip) = match row {
+            Nm::Screen => ("Screen name".to_string(), 0.0),
+            Nm::Ws(k) => (format!("Workspace {}", k + 1), self.ws_chip_w(k) + 10.0),
+        };
+        self.row(y, &title, &cap, (chip + NAME_W, 32.0), |c, x, y| {
+            if let Nm::Ws(k) = row {
+                c.ws_chip(x, y + 7.0, k);
+            }
+            c.name_box(ctl, x + chip, y, &text, &look.hint, focused);
+        }, note.as_ref())
+    }
+
+    /// An All screens row's caption: each screen whose own key differs (AC-12).
+    fn differ_pieces(&self, k: usize) -> Vec<P> {
+        let line: Vec<String> = self
+            .s
+            .names_screens
+            .iter()
+            .filter_map(|(id, o)| match o.ws[k].as_deref()? {
+                "" => Some(format!("{}: no name there.", self.screen_called(id))),
+                own => Some(format!("{} has its own: {own}.", self.screen_called(id))),
+            })
+            .collect();
+        if line.is_empty() { vec![] } else { vec![t(line.join(" "))] }
+    }
+
+    /// Screen `id` as des-k names it: plugged in or remembered, as `ws::label` gave it, else your
+    /// rename, else the id.
+    fn screen_called(&self, id: &str) -> String {
+        let v = &self.w.pics.view;
+        v.present
+            .iter()
+            .find(|p| p.id == id)
+            .map(|p| p.name.clone())
+            .or_else(|| v.waiting.iter().find(|w| w.id == id).map(|w| w.name.clone()))
+            .or_else(|| self.s.screen_rename(id).map(String::from))
+            .unwrap_or_else(|| id.to_string())
+    }
+
+    fn ws_chip_w(&self, k: usize) -> f32 {
+        (self.c.width(&(k + 1).to_string(), F::SmallBold) + 10.0).max(20.0)
+    }
+
+    /// Workspace `k`'s chip, as the overview draws a shown workspace's: its color, its number.
+    fn ws_chip(&self, x: f32, y: f32, k: usize) {
+        let b = self.c.t.b;
+        let (w, color) = (self.ws_chip_w(k), b.ws[k.min(8)]);
+        self.c.boxed((x, y, w, 18.0), 4.0, color, (b.ws_edge > 0.0).then(|| mix(color, 0, b.ws_edge)));
+        let label = (k + 1).to_string();
+        let tw = self.c.width(&label, F::SmallBold);
+        self.c.text(x + (w - tw) / 2.0, y, 18.0, &label, F::SmallBold, b.on_ws[k.min(8)]);
+    }
+
+    /// A name box, drawn as the popup words' box: an empty one shows its hint. On a read only
+    /// page names are greyed, empty boxes show no hint, and no box takes focus.
+    fn name_box(&mut self, ctl: Ctl, x: f32, y: f32, text: &str, hint: &str, focused: bool) {
+        let b = self.c.t.b;
+        let bx = (x, y, NAME_W, 32.0);
+        if !self.ro {
+            self.hit(ctl, bx, 1);
+        }
+        self.field(bx, b.card, None);
+        if focused {
+            self.c.fill_rr((x + 1.0, y + 29.0, NAME_W - 2.0, 2.0), 0.0, op(b.acc));
+        }
+        let room = NAME_W - 24.0;
+        let shown = self.c.fit(text, F::Body, room);
+        if !text.is_empty() {
+            self.c.text(x + 12.0, y, 32.0, &shown, F::Body, if self.ro { b.tx3 } else { b.tx });
+        } else if !self.ro {
+            self.c.text(x + 12.0, y, 32.0, &self.c.fit(hint, F::Body, room), F::Body, b.hint);
+        }
+        if focused {
+            let tw = if text.is_empty() { 0.0 } else { self.c.width(&shown, F::Body) + 1.0 };
+            self.c.fill_rr((x + 12.0 + tw, y + 7.0, 1.0, 18.0), 0.0, op(b.tx));
+        }
+    }
+
     /// What a removal moves, per screen, unplugged ones included (AC-SET-3), since there is no undo.
     fn removal(&self, one: bool) -> NoteSpec {
         let n = self.s.workspaces;
@@ -1775,6 +2061,14 @@ impl Ctx<'_, '_> {
 
     fn name_of(&self, sc: &crate::ws::ScreenInfo) -> String {
         self.w.pics.view.names.iter().find(|(d, _)| *d == sc.device).map_or_else(|| sc.name.clone(), |(_, n)| n.clone())
+    }
+
+    /// Screen `device`'s workspace names, as its indicator shows them (spec 0023 build
+    /// conditions): the same lookup as `ws::names`, by the id the page's view already holds,
+    /// since the page can lay out from inside a switch and the ws lock is not reentrant.
+    fn names_here(&self, device: &str) -> Vec<String> {
+        let Some(p) = self.w.pics.view.present.iter().find(|p| p.device == device) else { return vec![] };
+        (0..self.s.workspaces).map(|i| self.s.ws_name(&p.id, i).unwrap_or_default().to_string()).collect()
     }
 
     fn active_on(&self, device: &str) -> usize {
@@ -2288,9 +2582,9 @@ impl Ctx<'_, '_> {
         let n = self.s.workspaces;
         let here = self.w.pics.here.clone().unwrap_or_default();
         let a = self.active_on(&here);
-        let named = self.w.pics.screens.len() > 1;
+        let named = self.w.pics.screens.len() > 1 && self.s.indicator_screen_name;
         let label = self.w.pics.view.names.iter().find(|(d, _)| *d == here).map(|(_, l)| l.clone());
-        let card = crate::indicator::Card::new(a, n, if named { label } else { None });
+        let card = crate::indicator::Card { names: self.names_here(&here), ..crate::indicator::Card::new(a, n, if named { label } else { None }) };
         let style = self.s.indicator_style;
         let (pw, ph) = crate::indicator::draw_preview(&self.c.measuring(), 0.0, 0.0, style, &card);
         let (wx, ww) = (X0 + 16.0, self.cw - 32.0);
@@ -2310,7 +2604,9 @@ impl Ctx<'_, '_> {
         self.sep(y + h);
         h += self.setting("indicator.hold_ms", y + h);
         self.sep(y + h);
-        h + self.setting("indicator.fade_ms", y + h)
+        h += self.setting("indicator.fade_ms", y + h);
+        self.sep(y + h);
+        h + self.setting("indicator.screen_name", y + h)
     }
 
     // ---- Attention (spec 0022) ----
@@ -2326,11 +2622,11 @@ impl Ctx<'_, '_> {
         let n = self.s.workspaces;
         let here = self.w.pics.here.clone().unwrap_or_default();
         let a = self.active_on(&here);
-        let named = self.w.pics.screens.len() > 1;
+        let named = self.w.pics.screens.len() > 1 && self.s.indicator_screen_name;
         let label = self.w.pics.view.names.iter().find(|(d, _)| *d == here).map(|(_, l)| l.clone());
         let ws = if SAMPLE_WS.min(n - 1) == a { (a + 1) % n } else { SAMPLE_WS.min(n - 1) };
         let text = settings::fill(self.w.words.as_deref().unwrap_or(&self.s.attention_text), SAMPLE_APP);
-        let card = Card { wants: vec![ws], ..Card::new(a, n, if named { label } else { None }) }.with(Line::Wants { text, ws });
+        let card = Card { wants: vec![ws], names: self.names_here(&here), ..Card::new(a, n, if named { label } else { None }) }.with(Line::Wants { text, ws });
         let style = self.s.indicator_style;
         let (pw, ph) = crate::indicator::draw_preview(&self.c.measuring(), 0.0, 0.0, style, &card);
         let (wx, ww) = (X0 + 16.0, self.cw - 32.0);
@@ -2519,15 +2815,14 @@ impl Ctx<'_, '_> {
         let pw = 240.0;
         let name = ch.name.clone();
         self.say(Ctl::Screens, UIA_ComboBoxControlTypeId, "Screen", "", false, (None, Some(name.clone())));
-        self.row(y, "Screen", &cap, (pw, 32.0), |c, x, y| c.screen_picker(x, y, pw, &name), None)
+        self.row(y, "Screen", &cap, (pw, 32.0), |c, x, y| c.screen_picker(Ctl::Screens, x, y, pw, &name), None)
     }
 
     /// The chooser: the touchpad's picker, with a screen for its mark. Never greyed: it only
     /// picks which place you see (live with the indicator off and in read only).
-    fn screen_picker(&mut self, x: f32, y: f32, w: f32, name: &str) {
+    fn screen_picker(&mut self, ctl: Ctl, x: f32, y: f32, w: f32, name: &str) {
         let b = self.c.t.b;
-        let ctl = Ctl::Screens;
-        if self.w.chooser.is_some() {
+        if matches!(self.w.chooser, Some((from, ..)) if from == ctl) {
             self.field((x, y, w, 32.0), b.card, Some(b.acc));
         } else {
             let fill = if self.hovered(ctl) { mix(b.track, b.tx, 0.05) } else { b.track };
@@ -3465,7 +3760,6 @@ impl Ctx<'_, '_> {
             self.c.fill_rr((mx, my + 4.0, mw, mh), 8.0, ui::alpha(0, 0.08));
         }
         self.c.fill_rr((mx, my, mw, mh), 8.0, op(b.card));
-        self.hit(Ctl::Item(usize::MAX), (mx, my, mw, mh), 3); // inside the menu, between lines
         self.c.text(mx + 14.0, my + 4.0, 24.0, &head, F::SmallBold, b.tx2);
         let mut ys = [my + 28.0; 2];
         if !small {
@@ -3535,16 +3829,18 @@ impl Ctx<'_, '_> {
             }
             self.hit(ctl, (x, y, w, 28.0), 3);
         }
+        // Inside the menu, between lines; after them, since a click takes the first hit it is in.
+        self.hit(Ctl::Item(usize::MAX), (mx, my, mw, mh), 3);
     }
 }
 
 impl Ctx<'_, '_> {
     /// The open screen menu, placed like the touchpad's: the chosen line over the chooser.
     fn screens_menu(&mut self) {
-        let Some((at, focus)) = self.w.chooser else { return };
+        let Some((from, at, focus)) = self.w.chooser else { return };
         let t = self.c.t;
         let b = t.b;
-        let (choices, cur) = chosen(self.w, self.s);
+        let (choices, cur) = chooser_lines(self.w, self.s, from);
         let mw = at.2.max(320.0);
         let mh = 4.0 + 24.0 + choices.len() as f32 * 28.0 + 4.0;
         let my = (at.1 - 28.0 - cur as f32 * 28.0).clamp(8.0, (self.w.vh - mh - 8.0).max(8.0));
@@ -3554,9 +3850,8 @@ impl Ctx<'_, '_> {
             self.c.fill_rr((mx, my + 4.0, mw, mh), 8.0, ui::alpha(0, 0.08));
         }
         self.c.fill_rr((mx, my, mw, mh), 8.0, op(b.card));
-        self.hit(Ctl::ScreenItem(usize::MAX), (mx, my, mw, mh), 3);
         self.c.text(mx + 14.0, my + 4.0, 24.0, "Screen", F::SmallBold, b.tx2);
-        for (i, ch) in choices.iter().enumerate() {
+        for (i, (name, side)) in choices.iter().enumerate() {
             let (x, y, w) = (mx + 4.0, my + 28.0 + i as f32 * 28.0, mw - 8.0);
             let ctl = Ctl::ScreenItem(i);
             let on = i == cur;
@@ -3573,17 +3868,19 @@ impl Ctx<'_, '_> {
             if on {
                 self.icon(x + 10.0, y, 28.0, I_OK, F::IconSmall, check);
             }
-            let sw = if ch.side.is_empty() { 0.0 } else { self.c.width(ch.side, F::Small) + 10.0 };
-            let shown = self.c.fit(&ch.name, F::Body, w - 30.0 - 6.0 - sw);
+            let sw = if side.is_empty() { 0.0 } else { self.c.width(side, F::Small) + 10.0 };
+            let shown = self.c.fit(name, F::Body, w - 30.0 - 6.0 - sw);
             self.c.text(x + 30.0, y, 28.0, &shown, F::Body, ink);
-            if !ch.side.is_empty() {
-                self.c.text(x + w - sw, y, 28.0, ch.side, F::Small, if on && t.hc { b.on_acc } else { b.tx2 });
+            if !side.is_empty() {
+                self.c.text(x + w - sw, y, 28.0, side, F::Small, if on && t.hc { b.on_acc } else { b.tx2 });
             }
             if self.w.kb && focus == i {
                 self.c.stroke_rr((x + 1.0, y + 1.0, w - 2.0, 26.0), 4.0, 2.0, op(b.tx));
             }
             self.hit(ctl, (x, y, w, 28.0), 3);
         }
+        // Inside the menu, between lines; after them, since a click takes the first hit it is in.
+        self.hit(Ctl::ScreenItem(usize::MAX), (mx, my, mw, mh), 3);
     }
 
     /// The open color picker, over everything (spec 0021 AC-4, sizes from the approved design):
@@ -3762,6 +4059,24 @@ fn chosen(w: &Win, s: &Settings) -> (Vec<ScreenChoice>, usize) {
     (list, i)
 }
 
+/// The Names card's choices and the chosen one: All screens when the card's screen is gone.
+fn names_chosen(w: &Win) -> (Vec<NameChoice>, usize) {
+    let list = name_choices(&w.pics.view);
+    let i = w.names_screen.as_ref().and_then(|id| list.iter().position(|c| c.id.as_ref() == Some(id))).unwrap_or(0);
+    (list, i)
+}
+
+/// The open screen menu's lines, each a name and its side words, and the chosen one: Where it
+/// shows' chooser, or the Names card's.
+fn chooser_lines(w: &Win, s: &Settings, from: Ctl) -> (Vec<(String, String)>, usize) {
+    if from == Ctl::NameScreens {
+        let (list, i) = names_chosen(w);
+        return (list.into_iter().map(|c| (c.name, c.side)).collect(), i);
+    }
+    let (list, i) = chosen(w, s);
+    (list.into_iter().map(|c| (c.name, c.side.to_string())).collect(), i)
+}
+
 /// The digits a hex box shows when no one is typing: the color in use, None in high contrast.
 fn shown_digits(t: Theme, s: &Settings, key: &str) -> Option<String> {
     if t.hc {
@@ -3775,6 +4090,41 @@ fn shown_digits(t: Theme, s: &Settings, key: &str) -> Option<String> {
         },
     };
     Some(format!("{c:06X}"))
+}
+
+/// A name row as the Names card draws it and the text box takes it (spec 0023 AC-12, AC-13).
+struct NameLook {
+    screen: Option<String>, // the screen the row writes for; None: All screens
+    state: NameState,
+    saved: String, // what its box holds when saved
+    shown: String, // what it shows without focus: your text that failed to save, else the saved
+    unsaved: bool,
+    hint: String, // what it shows empty
+    all: String,  // All screens' name for its workspace
+}
+
+fn name_look(w: &Win, s: &Settings, row: Nm) -> NameLook {
+    let (list, i) = names_chosen(w);
+    // With one known screen there is no chooser: its Screen name row, then All screens' rows.
+    let screen = match row {
+        _ if list.len() > 2 => list[i].id.clone(),
+        Nm::Screen => list.get(1).and_then(|c| c.id.clone()),
+        Nm::Ws(_) => None,
+    };
+    let (state, saved) = name_held(s, screen.as_deref(), row);
+    let kept = w.unsaved.iter().find(|u| u.0 == screen && u.1 == row).map(|u| u.2.clone());
+    let all = match row {
+        Nm::Ws(k) => s.names[k].clone(),
+        Nm::Screen => String::new(),
+    };
+    let hint = match state {
+        NameState::All => "Add a name".to_string(),
+        NameState::Follow | NameState::Own if all.is_empty() => "No name · all screens".to_string(),
+        NameState::Follow | NameState::Own => format!("{all} · all screens"),
+        NameState::NoName => "No name on this screen".to_string(),
+        NameState::Rename => list.iter().find(|c| c.id == screen).map(|c| c.windows.clone()).unwrap_or_default(),
+    };
+    NameLook { screen, state, unsaved: kept.is_some(), shown: kept.unwrap_or_else(|| saved.clone()), saved, hint, all }
 }
 
 /// A note as it is drawn: its tone and icon, title, caption pieces and buttons.
@@ -3948,30 +4298,32 @@ fn hwnd() -> Option<HWND> {
     get(|w| w.hwnd)
 }
 
-// ---- The popup words' text box (spec 0022 AC-10) ----
+// ---- The page's text box (spec 0022 AC-10, spec 0023 AC-13) ----
 //
 // A Windows EDIT, as the finder's search box is, so typing, selection, IME and the clipboard
-// all work. It shows only while the box has the page's focus, over the field the page paints;
-// the rest of the time the page paints the words, so a menu or the color picker drawn over the
-// page is never covered by it.
+// all work. It serves whichever text field has the page's focus, the popup words or a name, and
+// shows only while one does, over the field the page paints; the rest of the time the page
+// paints the text, so a menu or the color picker drawn over the page is never covered by it.
 
 thread_local! {
-    static WORDS_EDIT: std::cell::Cell<Option<HWND>> = const { std::cell::Cell::new(None) };
-    static WORDS_PROC: std::cell::Cell<isize> = const { std::cell::Cell::new(0) };
-    static WORDS_FONT: std::cell::Cell<isize> = const { std::cell::Cell::new(0) };
+    static BOX_EDIT: std::cell::Cell<Option<HWND>> = const { std::cell::Cell::new(None) };
+    static BOX_PROC: std::cell::Cell<isize> = const { std::cell::Cell::new(0) };
+    static BOX_FONT: std::cell::Cell<isize> = const { std::cell::Cell::new(0) };
+    // The field it serves, and for a name the screen it writes for, as it was when the box
+    // took that field: leaving saves where you typed, whatever the card shows by then.
+    static BOX_FOR: RefCell<Option<(Ctl, Option<String>)>> = const { RefCell::new(None) };
+    // What it shows while empty, and in which ink: a name box's hint.
+    static BOX_HINT: RefCell<(String, u32)> = const { RefCell::new((String::new(), 0)) };
 }
 
-fn make_words(page: HWND, inst: windows::Win32::Foundation::HINSTANCE) {
+fn make_box(page: HWND, inst: windows::Win32::Foundation::HINSTANCE) {
     unsafe {
         let style = WS_CHILD | WINDOW_STYLE(ES_AUTOHSCROLL as u32);
         let Ok(e) = CreateWindowExW(WINDOW_EX_STYLE(0), w!("EDIT"), w!(""), style, 0, 0, 0, 0, Some(page), None, Some(inst), None) else {
-            return warn!("settings page: no text box for the popup words");
+            return warn!("settings page: no text box for the popup words and names");
         };
-        // Windows counts UTF-16 units, as the parser does (AC-9).
-        SendMessageW(e, EM_SETLIMITTEXT, Some(WPARAM(settings::ATTENTION_MAX)), Some(LPARAM(0)));
-        WORDS_PROC.set(SetWindowLongPtrW(e, GWLP_WNDPROC, words_proc as *const () as isize));
-        uia::name_control(e, "Popup words");
-        WORDS_EDIT.set(Some(e));
+        BOX_PROC.set(SetWindowLongPtrW(e, GWLP_WNDPROC, box_proc as *const () as isize));
+        BOX_EDIT.set(Some(e));
     }
 }
 
@@ -3990,19 +4342,29 @@ fn set_edit(e: HWND, text: &str) {
     }
 }
 
-/// Shows the box over its field while it has the page's focus and can be typed in, and moves
-/// Windows' keyboard focus to match. It takes the file's words only while it has no focus, so a
-/// reload never overwrites what you are typing.
-fn place_words() {
-    let Some(e) = WORDS_EDIT.get() else { return };
-    let Some((page, at, font)) = get(|w| {
+/// Shows the box over the field that has the page's focus while it can be typed in, and moves
+/// Windows' keyboard focus to match; moving on to another field saves the one it leaves first.
+/// It takes the file's text only while it has no focus, so a reload never overwrites what you
+/// are typing.
+fn place_box() {
+    let Some(e) = BOX_EDIT.get() else { return };
+    let Some((page, want, at, font, held, hint)) = get(|w| {
+        let s = settings::get();
         let open = w.menu.is_some() || w.pick.is_some() || w.chooser.is_some();
-        let can = settings::parse_error().is_none() && settings::get().attention_enabled && !open;
-        let at = w.hits.iter().find(|h| h.ctl == Ctl::Words && h.group == 1).map(|h| h.at);
-        let at = at.filter(|b| can && w.focus == Some(Ctl::Words) && b.1 >= w.fixed && b.1 + b.3 <= w.vh);
+        let can = settings::parse_error().is_none() && !open;
+        let (want, held, hint) = match w.focus {
+            Some(Ctl::Words) if can && s.attention_enabled => (Some((Ctl::Words, None)), s.attention_text.clone(), (String::new(), 0)),
+            Some(Ctl::Name(row)) if can => {
+                let l = name_look(w, s, row);
+                (Some((Ctl::Name(row), l.screen)), l.shown, (l.hint, painted(w).b.hint))
+            }
+            _ => (None, String::new(), (String::new(), 0)),
+        };
+        let at = want.as_ref().and_then(|(c, _)| w.hits.iter().find(|h| h.ctl == *c && h.group == 1)).map(|h| h.at);
+        let at = at.filter(|b| b.1 >= w.fixed && b.1 + b.3 <= w.vh);
         let s = w.scale;
         let px = |(x, y, bw, bh): Bx| ((x * s).round() as i32, (y * s).round() as i32, (bw * s).round() as i32, (bh * s).round() as i32);
-        (w.hwnd, at.map(|b| px((b.0 + 12.0, b.1 + 6.0, b.2 - 24.0, 20.0))), w.fonts.get(F::Body))
+        (w.hwnd, want, at.map(|b| px((b.0 + 12.0, b.1 + 6.0, b.2 - 24.0, 20.0))), w.fonts.get(F::Body), held, hint)
     }) else {
         return;
     };
@@ -4015,14 +4377,34 @@ fn place_words() {
             }
             return;
         };
+        // Another field has it: leaving that one saves it, and lays out, which places it again.
+        if has && BOX_FOR.with_borrow(|f| *f != want) {
+            let _ = SetFocus(Some(page));
+            if GetFocus() != e {
+                place_box();
+            }
+            return;
+        }
         if !has {
-            let saved = settings::get().attention_text.clone();
-            if edit_text(e) != saved {
-                set_edit(e, &saved);
+            if BOX_FOR.with_borrow(|f| *f != want) {
+                // Windows counts UTF-16 units, as the parser does (spec 0022 AC-9, spec 0023 AC-2).
+                let (limit, name) = match want {
+                    Some((Ctl::Name(row), _)) => (settings::NAME_MAX, name_title(row)),
+                    _ => (settings::ATTENTION_MAX, "Popup words".to_string()),
+                };
+                SendMessageW(e, EM_SETLIMITTEXT, Some(WPARAM(limit)), Some(LPARAM(0)));
+                uia::name_control(e, &name);
+                BOX_FOR.set(want);
+            }
+            if edit_text(e) != held {
+                set_edit(e, &held);
             }
         }
+        if BOX_HINT.replace(hint.clone()) != hint {
+            let _ = InvalidateRect(Some(e), None, true);
+        }
         // A new font (the page's dpi changed) sets the margins back to the font's own.
-        if WORDS_FONT.replace(font.0 as isize) != font.0 as isize {
+        if BOX_FONT.replace(font.0 as isize) != font.0 as isize {
             SendMessageW(e, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(0)));
             SendMessageW(e, EM_SETMARGINS, Some(WPARAM((EC_LEFTMARGIN | EC_RIGHTMARGIN) as usize)), Some(LPARAM(0)));
         }
@@ -4048,9 +4430,44 @@ fn save_words(text: &str) {
     }
 }
 
-unsafe extern "system" fn words_proc(e: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+/// Saves a name box (spec 0023 AC-12, AC-13). A failed write keeps your text for its row, shown
+/// as Not saved, until a good save or Esc; a save, or text that writes nothing, forgets it.
+fn save_name(screen: Option<String>, row: Nm, text: &str, enter: bool) {
+    let _ = set(|w| w.unsaved.retain(|u| !(u.0 == screen && u.1 == row)));
+    match name_edit(settings::get(), screen.as_deref(), row, text, enter) {
+        None => layout(),
+        Some(edit) => {
+            if !wrote(edit, &name_title(row)) {
+                let _ = set(|w| w.unsaved.push((screen, row, text.to_string())));
+                layout();
+            }
+        }
+    }
+}
+
+/// Saves the field the box serves.
+fn save_box(text: &str, enter: bool) {
+    match BOX_FOR.with_borrow(|f| f.clone()) {
+        Some((Ctl::Name(row), screen)) => save_name(screen, row, text, enter),
+        Some((Ctl::Words, _)) => save_words(text),
+        _ => {}
+    }
+}
+
+/// The text the box's field holds in the file, and whether your text for it failed to save.
+fn box_saved() -> (String, bool) {
+    match BOX_FOR.with_borrow(|f| f.clone()) {
+        Some((Ctl::Name(row), screen)) => {
+            let failed = get(|w| w.unsaved.iter().any(|u| u.0 == screen && u.1 == row)) == Some(true);
+            (name_held(settings::get(), screen.as_deref(), row).1, failed)
+        }
+        _ => (settings::get().attention_text.clone(), false),
+    }
+}
+
+unsafe extern "system" fn box_proc(e: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
-        let own: WNDPROC = std::mem::transmute(WORDS_PROC.get());
+        let own: WNDPROC = std::mem::transmute(BOX_PROC.get());
         let page = GetParent(e).unwrap_or_default();
         match m {
             WM_KEYDOWN => match VIRTUAL_KEY(wp.0 as u16) {
@@ -4059,21 +4476,26 @@ unsafe extern "system" fn words_proc(e: HWND, m: u32, wp: WPARAM, lp: LPARAM) ->
                     let _ = PostMessageW(Some(page), m, wp, lp);
                     return LRESULT(0);
                 }
+                // Saves and stays. Text that failed to save stays in the box to try again.
                 VK_RETURN => {
-                    save_words(&edit_text(e));
-                    let now = settings::get().attention_text.clone();
-                    if edit_text(e) != now {
+                    save_box(&edit_text(e), true);
+                    let (now, failed) = box_saved();
+                    if !failed && edit_text(e) != now {
                         set_edit(e, &now);
                     }
                     return LRESULT(0);
                 }
-                // Esc puts back the saved words; with nothing changed it is the page's Esc.
+                // Esc puts back the saved text; with nothing changed it is the page's Esc.
                 VK_ESCAPE => {
-                    let saved = settings::get().attention_text.clone();
-                    if edit_text(e) == saved {
+                    let (saved, failed) = box_saved();
+                    if edit_text(e) == saved && !failed {
                         let _ = PostMessageW(Some(page), m, wp, lp);
                     } else {
+                        if let Some((Ctl::Name(row), screen)) = BOX_FOR.with_borrow(|f| f.clone()) {
+                            let _ = set(|w| w.unsaved.retain(|u| !(u.0 == screen && u.1 == row)));
+                        }
                         set_edit(e, &saved);
+                        layout();
                     }
                     return LRESULT(0);
                 }
@@ -4085,9 +4507,32 @@ unsafe extern "system" fn words_proc(e: HWND, m: u32, wp: WPARAM, lp: LPARAM) ->
             WM_KILLFOCUS => {
                 let r = CallWindowProcW(own, e, m, wp, lp);
                 let text = edit_text(e);
-                let _ = set(|w| w.words = None);
-                save_words(&text);
+                let _ = set(|w| {
+                    w.words = None;
+                    w.typed = None;
+                });
+                save_box(&text, false);
                 layout();
+                return r;
+            }
+            // An empty name box shows its hint as the page paints it: without Common Controls 6,
+            // which des-k's manifest does not ask for, an EDIT has no cue banner of its own.
+            WM_PAINT => {
+                let r = CallWindowProcW(own, e, m, wp, lp);
+                let (hint, ink) = BOX_HINT.with_borrow(|h| h.clone());
+                if !hint.is_empty() && GetWindowTextLengthW(e) == 0 {
+                    let dc = GetDC(Some(e));
+                    let font = HGDIOBJ(SendMessageW(e, WM_GETFONT, None, None).0 as *mut _);
+                    let was = SelectObject(dc, font);
+                    SetTextColor(dc, ui::cref(ink));
+                    SetBkMode(dc, TRANSPARENT);
+                    let _ = HideCaret(Some(e));
+                    let text: Vec<u16> = hint.encode_utf16().collect();
+                    let _ = TextOutW(dc, 0, 0, &text);
+                    let _ = ShowCaret(Some(e));
+                    SelectObject(dc, was);
+                    ReleaseDC(Some(e), dc);
+                }
                 return r;
             }
             _ => {}
@@ -4119,7 +4564,7 @@ fn layout() {
         Some(Fit::Gone) => return pick_close(How::Quiet),
         _ => {}
     }
-    place_words();
+    place_box();
     repaint();
 }
 
@@ -4149,8 +4594,12 @@ fn lay() {
             if let Some(f) = w.focus
                 && !w.hits.iter().any(|h| h.ctl.stop() == f)
             {
-                // A Reset that just reset itself away: the focus moves to its row's control.
-                w.focus = f.key().and_then(|k| w.hits.iter().find(|h| h.ctl.key() == Some(k) && h.ctl.stop() != Ctl::Reset(k)).map(|h| h.ctl.stop()));
+                // A Reset or Same as all screens that just took itself away: the focus moves to
+                // its row's control.
+                w.focus = match f {
+                    Ctl::NameSame(k) => Some(Ctl::Name(Nm::Ws(k))).filter(|c| w.hits.iter().any(|h| h.ctl == *c)),
+                    _ => f.key().and_then(|k| w.hits.iter().find(|h| h.ctl.key() == Some(k) && h.ctl.stop() != Ctl::Reset(k)).map(|h| h.ctl.stop())),
+                };
             }
             let s = w.scale;
             let px = |b: Bx| RECT { left: (b.0 * s) as i32, top: (b.1 * s) as i32, right: ((b.0 + b.2) * s) as i32, bottom: ((b.1 + b.3) * s) as i32 };
@@ -4273,13 +4722,22 @@ fn failed(what: &str, why: String) {
 
 /// Writes an edit that is not one row's value; a failure shows like a failed save.
 fn commit(edit: Edit, title: &str) {
+    let _ = wrote(edit, title);
+}
+
+/// `commit`, saying whether it saved.
+fn wrote(edit: Edit, title: &str) -> bool {
     assert_no_pick();
     match settings::write(edit) {
         Ok(()) => {
             let _ = set(|w| w.error = None);
             refresh();
+            true
         }
-        Err(why) => failed(title, why),
+        Err(why) => {
+            failed(title, why);
+            false
+        }
     }
 }
 
@@ -4592,7 +5050,8 @@ fn act(ctl: Ctl) {
         Ctl::Side(sec) => jump(sec),
         Ctl::Welcome => crate::welcome::show(),
         Ctl::Open => crate::tray::open(&settings::path()),
-        Ctl::Toggle(key) => save(key, 1 - value(s, key)),
+        Ctl::Toggle(key) if unused(s, key).is_empty() => save(key, 1 - value(s, key)),
+        Ctl::Toggle(_) => {} // greyed: kept but not in use
         Ctl::Choice(ACCENT, i) => set_accent(i == 1),
         Ctl::Choice(MODE, i) => set_mode(i == 1),
         Ctl::Minus(key) if is_place(key) => step_place(key, false),
@@ -4600,9 +5059,10 @@ fn act(ctl: Ctl) {
         Ctl::Reset(key) if key == ACCENT || ws_index(key).is_some() => reset_color(key),
         Ctl::Reset(key) if is_place(key) => reset_place(key),
         Ctl::Reset(WORDS) => commit(Edit::Remove(path_of(WORDS)), "Popup words"),
-        Ctl::Hex(_) | Ctl::Words | Ctl::Picture | Ctl::ScreenItem(usize::MAX) => {}
+        Ctl::Hex(_) | Ctl::Words | Ctl::Name(_) | Ctl::Picture | Ctl::ScreenItem(usize::MAX) => {}
+        Ctl::NameSame(k) => same_name(k),
         Ctl::Spot(i) => set_place(SPOT, i as f64),
-        Ctl::Screens => open_chooser(),
+        Ctl::Screens | Ctl::NameScreens => open_chooser(ctl),
         Ctl::ScreenItem(i) => choose_screen(i),
         Ctl::SameAll => same_as_all(),
         Ctl::ShowThere => show_there(),
@@ -5809,6 +6269,16 @@ fn reset_place(key: &'static str) {
     }
 }
 
+/// Same as all screens on a Names row: the screen's key goes, so the row follows all screens
+/// again, and any text of yours that failed to save there goes with it.
+fn same_name(k: usize) {
+    let Some(screen) = get(|w| name_look(w, settings::get(), Nm::Ws(k)).screen).flatten() else { return };
+    let _ = set(|w| w.unsaved.retain(|u| !(u.0.as_deref() == Some(screen.as_str()) && u.1 == Nm::Ws(k))));
+    if let Some(path) = name_path(Some(&screen), Nm::Ws(k)) {
+        commit(Edit::Remove(path), &name_title(Nm::Ws(k)));
+    }
+}
+
 /// Same as all screens: the chosen screen's whole table goes.
 fn same_as_all() {
     let Some(id) = screen_id() else { return };
@@ -5832,30 +6302,38 @@ fn after_table(keep_focus: bool) {
     layout();
 }
 
-fn open_chooser() {
-    let Some(at) = get(|w| w.hits.iter().find(|h| h.ctl == Ctl::Screens).map(|h| h.at)).flatten() else { return };
+fn open_chooser(from: Ctl) {
+    let Some(at) = get(|w| w.hits.iter().find(|h| h.ctl == from).map(|h| h.at)).flatten() else { return };
     let _ = set(|w| {
-        let (_, i) = chosen(w, settings::get());
-        w.chooser = Some((at, i));
+        let (_, i) = chooser_lines(w, settings::get(), from);
+        w.chooser = Some((from, at, i));
     });
     layout();
 }
 
+/// A line of the open screen menu chosen. A new screen on the Names card drops the text of
+/// boxes that failed to save (spec 0023 AC-13).
 fn choose_screen(i: usize) {
     let _ = set(|w| {
-        let (list, _) = chosen(w, settings::get());
-        if let Some(c) = list.get(i) {
+        let Some((from, ..)) = w.chooser else { return };
+        if from == Ctl::NameScreens {
+            let (list, cur) = names_chosen(w);
+            if let Some(c) = list.get(i).filter(|_| i != cur) {
+                w.names_screen = c.id.clone();
+                w.unsaved.clear();
+            }
+        } else if let Some(c) = chosen(w, settings::get()).0.get(i) {
             w.screen = c.id.clone();
         }
         w.chooser = None;
-        w.focus = Some(Ctl::Screens);
+        w.focus = Some(from);
     });
     layout();
 }
 
 /// The screen menu's keys: Up and Down move, Enter or Space picks, Esc closes.
 fn chooser_key(vk: VIRTUAL_KEY) {
-    let Some((at, f, n)) = get(|w| w.chooser.map(|(at, f)| (at, f, chosen(w, settings::get()).0.len()))).flatten() else { return };
+    let Some((from, at, f, n)) = get(|w| w.chooser.map(|(from, at, f)| (from, at, f, chooser_lines(w, settings::get(), from).0.len()))).flatten() else { return };
     match vk {
         VK_ESCAPE => close_menu(),
         VK_UP | VK_DOWN | VK_HOME | VK_END => {
@@ -5865,7 +6343,7 @@ fn chooser_key(vk: VIRTUAL_KEY) {
                 VK_HOME => 0,
                 _ => n - 1,
             };
-            let _ = set(|w| w.chooser = Some((at, f)));
+            let _ = set(|w| w.chooser = Some((from, at, f)));
             layout();
         }
         VK_RETURN | VK_SPACE => choose_screen(f),
@@ -5950,7 +6428,7 @@ fn focus_on(c: Ctl) {
         }
         _ => reveal(),
     }
-    place_words();
+    place_box();
 }
 
 /// Where the keyboard goes next, as in Windows Settings: Tab between the side list and the
@@ -5988,7 +6466,7 @@ fn change(focus: Ctl, right: bool) {
     let s = settings::get();
     match focus {
         Ctl::Toggle(k) => {
-            if value(s, k) != right as i64 {
+            if value(s, k) != right as i64 && unused(s, k).is_empty() {
                 save(k, right as i64);
             }
         }
@@ -6193,8 +6671,11 @@ pub fn open(section: Option<Section>) {
             ease: None,
             down_at: (0, 0),
             words: None,
+            names_screen: None,
+            typed: None,
+            unsaved: vec![],
         }));
-        make_words(h, inst.into());
+        make_box(h, inst.into());
         // Shorter than H when the screen is (1366 × 768 at 125%); WM_SIZE sets vw and vh.
         let (ww, wh) = size(h, W, H);
         let wh = wh.min(work.bottom - work.top);
@@ -6247,7 +6728,8 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                 LRESULT(0)
             }
             WM_ERASEBKGND => LRESULT(1),
-            // The popup words' box: the page's colors, and the preview follows each key typed.
+            // The text box: the page's colors; the popup words' preview and a name box's note
+            // follow each key typed.
             WM_CTLCOLOREDIT => {
                 let (dc, b) = (HDC(wp.0 as *mut _), get(|w| painted(w).b).unwrap_or(theme().b));
                 SetTextColor(dc, ui::cref(b.tx));
@@ -6255,12 +6737,16 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                 LRESULT(crate::finder::edit_brush(b.card).0 as isize)
             }
             WM_COMMAND if (wp.0 >> 16) as u32 == EN_CHANGE => {
-                if let Some(e) = WORDS_EDIT.get()
+                if let Some(e) = BOX_EDIT.get()
                     && e.0 as isize == lp.0
                     && GetFocus() == e
                 {
                     let text = edit_text(e);
-                    let _ = set(|w| w.words = Some(text));
+                    let words = BOX_FOR.with_borrow(|f| matches!(f, Some((Ctl::Words, _))));
+                    let _ = set(|w| if words { w.words = Some(text) } else { w.typed = Some(text) });
+                    // The hint shows only while it is empty: paint all of it again, not only
+                    // what changed.
+                    let _ = InvalidateRect(Some(e), None, true);
                     layout();
                 }
                 LRESULT(0)
@@ -6383,7 +6869,7 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                     let x = get(|w| point(lp, w.scale).0).unwrap_or(0.0);
                     enter_hex(k, Some(caret_at(at, x)));
                 }
-                place_words();
+                place_box();
                 let _ = PostMessageW(Some(h), WM_MOUSEMOVE, wp, lp);
                 repaint();
                 LRESULT(0)
@@ -6508,8 +6994,10 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                 let _ = KillTimer(Some(h), EASE_TIMER);
                 RING.set(None);
                 SQUARE.set(None);
-                WORDS_EDIT.set(None);
-                WORDS_FONT.set(0);
+                BOX_EDIT.set(None);
+                BOX_FONT.set(0);
+                BOX_FOR.set(None);
+                BOX_HINT.set((String::new(), 0));
                 crate::keys::record(h, false);
                 let _ = UiaReturnRawElementProvider(h, WPARAM(0), LPARAM(0), None);
                 drop(PAGE.with_borrow_mut(Option::take));
@@ -6633,8 +7121,8 @@ mod tests {
     fn the_chooser_lists_every_known_screen() {
         let r = RECT { left: 0, top: 0, right: 10, bottom: 10 };
         let view = crate::ws::View {
-            present: vec![crate::ws::Present { id: "DEL-1".into(), device: "DISPLAY2".into(), name: "DELL U2720Q".into(), full: r, work: r }],
-            waiting: vec![crate::ws::Waiting { id: "LG-2".into(), name: "LG 27UL850".into(), windows: vec![] }],
+            present: vec![crate::ws::Present { id: "DEL-1".into(), device: "DISPLAY2".into(), name: "DELL U2720Q".into(), windows_name: "DELL U2720Q".into(), full: r, work: r }],
+            waiting: vec![crate::ws::Waiting { id: "LG-2".into(), name: "LG 27UL850".into(), windows_name: "LG 27UL850".into(), windows: vec![] }],
             ..Default::default()
         };
         let s = loaded("[indicator.screens.\"DEL-1\"]\nspot = \"top\"\n[indicator.screens.\"ACR-9\"]\nspot = \"left\"\n");
@@ -6718,6 +7206,99 @@ mod tests {
         assert!(unused(&s, "overview.fade_ms").is_empty());
         s.indicator_enabled = false;
         assert_eq!(unused(&s, "indicator.style"), vec![Why::IndicatorOff]);
+        // Spec 0023 AC-14: Show screen name greys with the indicator, without words, and in
+        // the Dots style, which shows no names; greyed, it keeps its value.
+        assert_eq!(unused(&s, "indicator.screen_name"), vec![Why::IndicatorOff]);
+        s.indicator_enabled = true;
+        assert!(unused(&s, "indicator.screen_name").is_empty());
+        s.indicator_style = settings::Style::Dots;
+        assert_eq!(unused(&s, "indicator.screen_name"), vec![Why::Dots]);
+        assert_eq!(value(&s, "indicator.screen_name"), 1);
+    }
+
+    // Spec 0023 AC-12: a name box writes its own key and nothing else. An emptied All screens
+    // box takes out names.wsN; an emptied own row takes out the screen's key, so the row
+    // follows all screens again; Enter on an empty following row writes "" (no name there) only
+    // when all screens has a name to hide, and leaving it writes nothing. Text is cleaned as the
+    // file is read, so unchanged text, give or take spaces, writes nothing.
+    #[test]
+    fn a_name_box_writes_only_its_own_key() {
+        let s = loaded("[names]\nws1 = \"Mail\"\nws2 = \"Code\"\n[names.screens.internal]\nscreen = \"Left\"\nws2 = \"Notes\"\nws3 = \"\"\n");
+        let e = |screen: Option<&str>, row: Nm, text: &str, enter: bool| said(name_edit(s, screen, row, text, enter));
+        assert_eq!(e(None, Nm::Ws(0), "", false), "remove names.ws1");
+        assert_eq!(e(None, Nm::Ws(0), " Mail ", true), "none");
+        assert_eq!(e(None, Nm::Ws(0), "Post", false), "at names.ws1 = \"Post\"");
+        assert_eq!(e(None, Nm::Ws(2), "", true), "none"); // nothing there to take out
+        assert_eq!(e(Some("internal"), Nm::Ws(1), "", false), "remove names.screens.internal.ws2");
+        assert_eq!(e(Some("internal"), Nm::Ws(0), "", true), "at names.screens.internal.ws1 = \"\"");
+        assert_eq!(e(Some("internal"), Nm::Ws(0), "", false), "none");
+        assert_eq!(e(Some("internal"), Nm::Ws(3), "", true), "none"); // all screens has no name for it
+        assert_eq!(e(Some("internal"), Nm::Ws(2), "", true), "none"); // no name stays no name
+        assert_eq!(e(Some("internal"), Nm::Ws(2), "Mail", false), "at names.screens.internal.ws3 = \"Mail\"");
+        assert_eq!(e(Some("internal"), Nm::Screen, "", false), "remove names.screens.internal.screen");
+        assert_eq!(e(Some("DEL-1"), Nm::Screen, "Right", true), "at names.screens.DEL-1.screen = \"Right\"");
+        assert_eq!(e(None, Nm::Screen, "Right", true), "none"); // All screens has no screen name
+    }
+
+    // Spec 0023 AC-12: a screen id holding # or . gets its own quoted table, never a table
+    // path made from its parts, and taking out its last key takes the table with it.
+    #[test]
+    fn a_screen_id_with_odd_letters_keeps_its_own_table() {
+        let id = "DEL#1.A";
+        let at = name_edit(loaded(""), Some(id), Nm::Ws(1), "Notes", false).unwrap();
+        let text = settings::apply_for_test("[names]\nws2 = \"Code\"\n", &at);
+        let (read, warn) = settings::parse_for_test(&text);
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!((read.ws_name(id, 1), read.ws_name("internal", 1)), (Some("Notes"), Some("Code")));
+        let gone = settings::apply_for_test(&text, &Edit::Remove(name_path(Some(id), Nm::Ws(1)).unwrap()));
+        assert!(!gone.contains("screens"), "{gone}");
+        assert!(gone.contains("ws2 = \"Code\""), "{gone}");
+    }
+
+    // Spec 0023 AC-12: the Names chooser lists the screens plugged in, then remembered ones, and
+    // tells two screens you gave the same name apart by Windows' own name.
+    #[test]
+    fn the_names_chooser_tells_same_names_apart() {
+        let r = RECT::default();
+        let p = |id: &str, name: &str, windows: &str| crate::ws::Present { id: id.into(), device: String::new(), name: name.into(), windows_name: windows.into(), full: r, work: r };
+        let view = crate::ws::View {
+            present: vec![p("DEL-1", "Left", "DELL U2720Q"), p("LG-2", "Left", "LG 27UL850"), p("internal", "Built-in display", "Built-in display")],
+            waiting: vec![crate::ws::Waiting { id: "HP-3".into(), name: "HP E24".into(), windows_name: "HP E24".into(), windows: vec![] }],
+            ..Default::default()
+        };
+        let shown: Vec<(String, String)> = name_choices(&view).into_iter().map(|c| (c.name, c.side)).collect();
+        let want = [("All screens", ""), ("Left", "DELL U2720Q"), ("Left", "LG 27UL850"), ("Built-in display", ""), ("HP E24", "Not plugged in")];
+        assert_eq!(shown, want.map(|(a, b)| (a.to_string(), b.to_string())));
+    }
+
+    // Spec 0023 AC-13: after a failed save the box keeps your text, whatever a reload brings,
+    // until a good save or Esc; the same workspace on a screen is another box.
+    #[test]
+    fn a_name_that_failed_to_save_outlives_a_reload() {
+        let mut w = fake_win(ui::LIGHT, 1.0);
+        w.unsaved = vec![(None, Nm::Ws(1), "Codex".into())];
+        let l = name_look(&w, loaded("[names]\nws2 = \"Code\"\n"), Nm::Ws(1));
+        assert!(l.unsaved);
+        assert_eq!((l.shown.as_str(), l.saved.as_str()), ("Codex", "Code"));
+        let edited = loaded("[names]\nws2 = \"Mail\"\n");
+        assert_eq!(name_look(&w, edited, Nm::Ws(1)).shown, "Codex");
+        assert_eq!(name_look(&w, edited, Nm::Ws(0)).shown, "");
+        w.names_screen = Some("internal".into());
+        assert!(!name_look(&w, edited, Nm::Ws(1)).unsaved);
+    }
+
+    // Spec 0023 AC-12: with one known screen the card has no chooser: its Screen name row
+    // renames that screen, with Windows' name as the hint, and the workspace rows name every
+    // screen, whatever screen was chosen before.
+    #[test]
+    fn one_screen_renames_itself_and_names_all_screens() {
+        let mut w = fake_win(ui::LIGHT, 1.0);
+        w.pics.view.present.truncate(1);
+        w.names_screen = Some("DEL-A0F5-1234".into());
+        let s = loaded("");
+        let screen = name_look(&w, s, Nm::Screen);
+        assert_eq!((screen.screen.as_deref(), screen.hint.as_str()), (Some("internal"), "Built-in display"));
+        assert_eq!(name_look(&w, s, Nm::Ws(0)).screen, None);
     }
 
     // AC-SET-5: each kind of log line gets a plain title, and the bad values the design draws
@@ -6816,8 +7397,8 @@ mod tests {
                 windows: [("DISPLAY1", 0), ("DISPLAY1", 0), ("DISPLAY1", 0), ("DISPLAY2", 0), ("DISPLAY2", 1), ("DISPLAY2", 1), ("DISPLAY2", 3)].iter().map(|(d, w)| (d.to_string(), *w, r(0, 0, 10, 10))).collect(),
                 names: vec![("DISPLAY1".into(), "Built-in display".into()), ("DISPLAY2".into(), "DELL U2720Q".into())],
                 present: vec![
-                    crate::ws::Present { id: "internal".into(), device: "DISPLAY1".into(), name: "Built-in display".into(), full: r(0, 600, 1440, 1500), work: r(0, 600, 1440, 1452) },
-                    crate::ws::Present { id: "DEL-A0F5-1234".into(), device: "DISPLAY2".into(), name: "DELL U2720Q".into(), full: r(1440, 0, 4000, 1440), work: r(1440, 0, 4000, 1392) },
+                    crate::ws::Present { id: "internal".into(), device: "DISPLAY1".into(), name: "Built-in display".into(), windows_name: "Built-in display".into(), full: r(0, 600, 1440, 1500), work: r(0, 600, 1440, 1452) },
+                    crate::ws::Present { id: "DEL-A0F5-1234".into(), device: "DISPLAY2".into(), name: "DELL U2720Q".into(), windows_name: "DELL U2720Q".into(), full: r(1440, 0, 4000, 1440), work: r(1440, 0, 4000, 1392) },
                 ],
                 removals: vec![
                     vec![
@@ -6840,6 +7421,7 @@ mod tests {
             focus: None, kb: true, hover: None, press: None, drag: None, vw: W, vh: H, error: None, rec: None, refused: None, prompt: None, menu: None,
             pics: fake_pics(), edited: None, tree: Arc::new(Mutex::new(Node::default())),
             hexes: vec![], own: None, screen: None, chooser: None, dragging: None, pick: None, geo: Geo::default(), ease: None, down_at: (0, 0), words: None,
+            names_screen: None, typed: None, unsaved: vec![],
         }
     }
 
@@ -7067,6 +7649,48 @@ mod tests {
         assert!(!stops(&win, false).iter().any(|(c, _)| matches!(c, Ctl::WsTile(..) | Ctl::ShowTile(..))));
     }
 
+    // A click on a line of an open menu picks that line: the menu's own hit, which keeps a
+    // click between lines from reaching the page under it, must never swallow its lines. It
+    // did, for the Names chooser (spec 0023 AC-12) and the gesture menu alike.
+    #[test]
+    fn a_click_on_a_menu_line_lands_on_that_line() {
+        let _one = SETTINGS.lock();
+        settings::use_for_test("workspaces = 4
+");
+        let mut win = fake_win(ui::LIGHT, 1.0);
+        let out = measure(&win);
+        take(&mut win, out);
+        let mid = |a: Bx| (a.0 + a.2 / 2.0, a.1 + a.3 / 2.0);
+        let open = |win: &mut Win, ctl: Ctl, sec: Section| {
+            let top = win.tops.iter().find(|t| t.0 == Some(sec)).unwrap().1;
+            win.scroll = top;
+            let out = measure(win);
+            take(win, out);
+            win.hits.iter().find(|h| h.ctl == ctl).map(|h| h.at).unwrap()
+        };
+
+        let at = open(&mut win, Ctl::NameScreens, Section::Workspaces);
+        win.chooser = Some((Ctl::NameScreens, at, 0));
+        let out = measure(&win);
+        take(&mut win, out);
+        let lines: Vec<(Ctl, Bx)> = win.hits.iter().filter(|h| matches!(h.ctl, Ctl::ScreenItem(i) if i != usize::MAX)).map(|h| (h.ctl, h.at)).collect();
+        assert!(lines.len() >= 3, "All screens and the two fake screens");
+        for (c, a) in lines {
+            assert_eq!(hit_at(&win, mid(a)), Some(c));
+        }
+        win.chooser = None;
+
+        let at = open(&mut win, Ctl::Picker(2), Section::Touchpad);
+        win.menu = Some(Menu { row: 2, times: 1, family: None, at, focus: 0 });
+        let out = measure(&win);
+        take(&mut win, out);
+        let lines: Vec<(Ctl, Bx)> = win.hits.iter().filter(|h| matches!(h.ctl, Ctl::Item(i) if i != usize::MAX)).map(|h| (h.ctl, h.at)).collect();
+        assert!(!lines.is_empty());
+        for (c, a) in lines {
+            assert_eq!(hit_at(&win, mid(a)), Some(c));
+        }
+    }
+
     // AC-2: with 2 workspaces, the Overview picture's tiles 3 and 4 are empty slots that open
     // nothing; 1 and 2 open the picker.
     #[test]
@@ -7097,7 +7721,18 @@ mod tests {
         let runs: Vec<(&str, Theme, f32)> = vec![("light", ui::LIGHT, 1.0), ("dark", ui::DARK, 1.0), ("hc", night_sky, 1.0), ("light-150", ui::LIGHT, 1.5), ("rose", ui::tests::rose(true), 1.0), ("rose-dark", ui::tests::rose(false), 1.0)];
         // Name, section to scroll to, what to set up.
         type Setup = fn(&mut Win);
-        let states: [(&str, Option<Section>, Setup); 27] = [
+        // Spec 0023: names on every screen, and the laptop's own (renamed Left, Notes on 2, no name on 3).
+        const NAMES: &str = "[names]
+ws1 = \"Mail\"
+ws2 = \"Code\"
+ws4 = \"Research and reading\"
+[names.screens.internal]
+screen = \"Left\"
+ws2 = \"Notes\"
+ws3 = \"\"
+";
+        const DOWN_TO_NAMES: f32 = 380.0;
+        let states: [(&str, Option<Section>, Setup); 43] = [
             ("colors", Some(Section::Colors), |_| {}),
             ("colors-own", Some(Section::Colors), |w| {
                 settings::use_for_test("[colors]\naccent = \"#E0457B\"\nws2 = \"#FFF4B0\"\nws3 = \"blue\"\n");
@@ -7199,6 +7834,91 @@ mod tests {
                 w.pick = Some(picking("colors.ws2", Anchor::Show("DISPLAY1".into(), 1), 0xDDB43C));
                 w.kb = false;
             }),
+            // Spec 0023: the Names card in each of its states, then the Indicator's.
+            ("names", Some(Section::Workspaces), |w| {
+                settings::use_for_test(NAMES);
+                w.scroll = DOWN_TO_NAMES;
+            }),
+            ("names-empty", Some(Section::Workspaces), |w| w.scroll = DOWN_TO_NAMES),
+            ("names-screen", Some(Section::Workspaces), |w| {
+                settings::use_for_test(NAMES);
+                w.pics.view.present[0].name = "Left".into();
+                w.names_screen = Some("internal".into());
+                w.scroll = DOWN_TO_NAMES;
+            }),
+            ("names-follow", Some(Section::Workspaces), |w| {
+                settings::use_for_test(NAMES);
+                w.pics.view.present[0].name = "Left".into();
+                (w.names_screen, w.focus) = (Some("internal".into()), Some(Ctl::Name(Nm::Ws(0))));
+                w.scroll = DOWN_TO_NAMES;
+            }),
+            ("names-own-emptied", Some(Section::Workspaces), |w| {
+                settings::use_for_test(NAMES);
+                w.pics.view.present[0].name = "Left".into();
+                (w.names_screen, w.focus, w.typed) = (Some("internal".into()), Some(Ctl::Name(Nm::Ws(1))), Some(String::new()));
+                w.scroll = DOWN_TO_NAMES;
+            }),
+            ("names-all-emptied", Some(Section::Workspaces), |w| {
+                settings::use_for_test(NAMES);
+                (w.focus, w.typed) = (Some(Ctl::Name(Nm::Ws(0))), Some(String::new()));
+                w.scroll = DOWN_TO_NAMES;
+            }),
+            ("names-typing", Some(Section::Workspaces), |w| {
+                settings::use_for_test(NAMES);
+                (w.focus, w.typed) = (Some(Ctl::Name(Nm::Ws(2))), Some("Ideas 💡".into()));
+                w.scroll = DOWN_TO_NAMES;
+            }),
+            ("names-failed", Some(Section::Workspaces), |w| {
+                settings::use_for_test(NAMES);
+                w.unsaved = vec![(None, Nm::Ws(1), "Codex".into())];
+                w.error = Some(("Workspace 2 name".into(), "os error 32".into()));
+                w.scroll = DOWN_TO_NAMES;
+            }),
+            ("names-one", Some(Section::Workspaces), |w| {
+                settings::use_for_test(NAMES);
+                w.pics.screens.truncate(1);
+                w.pics.view.present.truncate(1);
+                w.pics.view.names.truncate(1);
+                w.scroll = DOWN_TO_NAMES - 120.0;
+            }),
+            ("names-menu", Some(Section::Workspaces), |w| {
+                settings::use_for_test("[names.screens.internal]
+screen = \"Desk\"
+[names.screens.\"DEL-A0F5-1234\"]
+screen = \"Desk\"
+");
+                for p in w.pics.view.present.iter_mut() {
+                    p.name = "Desk".into();
+                }
+                w.pics.view.waiting = vec![crate::ws::Waiting { id: "LG-2".into(), name: "LG 27UL850".into(), windows_name: "LG 27UL850".into(), windows: vec![] }];
+                w.scroll = DOWN_TO_NAMES;
+            }),
+            ("names-readonly", Some(Section::Workspaces), |w| {
+                settings::use_for_test(NAMES);
+                settings::broken_for_test("expected `=`, found newline at line 3 column 9");
+                w.names_screen = Some("internal".into());
+                w.scroll = DOWN_TO_NAMES;
+            }),
+            ("indicator-names", Some(Section::Indicator), |_| settings::use_for_test(NAMES)),
+            ("indicator-no-screen", Some(Section::Indicator), |w| {
+                settings::use_for_test(&format!("{NAMES}[indicator]
+screen_name = false
+"));
+                w.scroll = 200.0;
+            }),
+            ("indicator-dots", Some(Section::Indicator), |w| {
+                settings::use_for_test("[indicator]
+style = \"dots\"
+");
+                w.scroll = 200.0;
+            }),
+            ("indicator-off", Some(Section::Indicator), |w| {
+                settings::use_for_test("[indicator]
+enabled = false
+");
+                w.scroll = 200.0;
+            }),
+            ("attention-names", Some(Section::Attention), |_| settings::use_for_test(NAMES)),
         ];
         for (tname, theme, scale) in &runs {
             for (sname, sec, setup) in &states {
@@ -7219,6 +7939,11 @@ mod tests {
                     && let Some(at) = win.hits.iter().find(|h| h.ctl == Ctl::Picker(2)).map(|h| h.at)
                 {
                     win.menu = Some(Menu { row: 2, times: 1, family: None, at, focus: 0 });
+                }
+                if *sname == "names-menu"
+                    && let Some(at) = win.hits.iter().find(|h| h.ctl == Ctl::NameScreens).map(|h| h.at)
+                {
+                    win.chooser = Some((Ctl::NameScreens, at, 2));
                 }
                 // An open picker: placed as on open, the page scrolled at once, the preview in place.
                 if let Some((anchor, levels, beside)) = win.pick.as_ref().and_then(|p| levels_of(&p.anchor, &win.geo).map(|(a, l)| (a, l, !matches!(p.anchor, Anchor::Swatch(_))))) {

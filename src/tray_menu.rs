@@ -160,7 +160,7 @@ impl Menu {
 #[derive(Default)]
 struct Lay {
     height: f32,
-    chips: Vec<(Bx, f32, String)>, // one or two screens: the chip, where its name starts, the name as it fits
+    chips: Vec<(Bx, f32, String, String)>, // one or two screens: the chip, where its words start, the screen and workspace names as they fit
     map: Vec<Bx>,                  // three or more: each screen's box
     warn: Option<Bx>,
     rules: Vec<f32>,
@@ -205,6 +205,34 @@ fn words_w(c: &Canvas, it: &Item) -> f32 {
     RIGHT - LABEL_X - if r > 0.0 { r + 12.0 } else { 0.0 }
 }
 
+const SEP: &str = " · ";
+
+/// A chip line's screen and workspace names cut to `room` (spec 0023 handoff trayCut): the
+/// screen is the line's subject, so the workspace's name is cut first, down to 10 letters, then
+/// the screen at a word, keeping at least its first word and a twin's " #n". No name: today's cut.
+fn tray_cut(c: &Canvas, screen: &str, name: &str, room: f32) -> (String, String) {
+    if name.is_empty() {
+        return (c.fit(screen, F::Small, room), String::new());
+    }
+    let w = |s: &str| c.width(s, F::Small);
+    let ten: String = name.chars().take(10).collect();
+    let floor = if name.chars().count() > 10 { c.fit_name(name, F::Small, w(&format!("{ten}…"))) } else { name.to_string() };
+    let name_room = room - w(screen) - w(SEP);
+    if name_room >= w(&floor) {
+        return (screen.to_string(), c.fit_name(name, F::Small, name_room));
+    }
+    let (base, end) = match screen.rsplit_once(" #") {
+        Some((base, n)) if !n.is_empty() && n.chars().all(|d| d.is_ascii_digit()) => (base, format!(" #{n}")),
+        _ => (screen, String::new()),
+    };
+    let first = base.split(' ').next().unwrap_or(base);
+    let mut cut = c.fit_name(base, F::Small, room - w(SEP) - w(&floor) - w(&end));
+    if cut.trim_end_matches('…').chars().count() < first.chars().count() {
+        cut = format!("{first}…");
+    }
+    (cut + &end, floor)
+}
+
 fn layout(c: &Canvas, m: &Menu) -> Lay {
     let mut l = Lay::default();
     let mut y = PAD + HEAD;
@@ -218,12 +246,13 @@ fn layout(c: &Canvas, m: &Menu) -> Lay {
         for s in &m.screens {
             let n = (s.active + 1).to_string();
             let cw = (c.width(&n, F::SmallBold) + 10.0).max(20.0);
-            let name = c.fit(&s.name, F::Small, RIGHT - IN_X - cw - 6.0);
-            let span = cw + 6.0 + c.width(&name, F::Small);
+            let (screen, name) = tray_cut(c, &s.name, &s.ws_name, RIGHT - IN_X - cw - 6.0);
+            let named = if name.is_empty() { 0.0 } else { c.width(SEP, F::Small) + c.width(&name, F::Small) };
+            let span = cw + 6.0 + c.width(&screen, F::Small) + named;
             if x > IN_X && x + span > RIGHT {
                 (x, line) = (IN_X, line + 18.0 + 4.0);
             }
-            l.chips.push(((x, line, cw, 18.0), x + cw + 6.0, name));
+            l.chips.push(((x, line, cw, 18.0), x + cw + 6.0, screen, name));
             x += span + 12.0;
         }
         y = line + 18.0 + 10.0;
@@ -273,10 +302,12 @@ impl Session {
         self.lay.map.iter().position(|&(bx, by, bw, bh)| x >= bx && x < bx + bw && y >= by && y < by + bh)
     }
 
-    /// A screen as Narrator and its tooltip name it.
+    /// A screen as Narrator and its tooltip name it. The tooltip says the workspace only when it
+    /// has a name, which then follows its number in both (spec 0023 AC-10).
     fn screen_words(&self, i: usize, workspace: bool) -> String {
         let s = &self.menu.screens[i];
-        let ws = if workspace { format!(", workspace {}", s.active + 1) } else { String::new() };
+        let name = if s.ws_name.is_empty() { String::new() } else { format!(", {}", s.ws_name) };
+        let ws = if workspace || !name.is_empty() { format!(", workspace {}{name}", s.active + 1) } else { String::new() };
         format!("{}{ws}{}", s.name, if s.main { ", main display" } else { "" })
     }
 
@@ -557,13 +588,19 @@ fn draw(c: &Canvas, s: &Session) {
         let color = b.ws[n.min(8)];
         (color, (b.ws_edge > 0.0).then(|| mix(color, 0, b.ws_edge)))
     };
-    for (i, ((x, y, w, h), name_x, name)) in s.lay.chips.iter().enumerate() {
+    for (i, ((x, y, w, h), name_x, screen, name)) in s.lay.chips.iter().enumerate() {
         let sc = &m.screens[i];
         let (fill, edge) = ws_fill(sc.active);
         let n = (sc.active + 1).to_string();
         c.boxed((*x, *y, *w, *h), 4.0, fill, edge);
         c.text(x + (w - c.width(&n, F::SmallBold)) / 2.0, *y, *h, &n, F::SmallBold, b.on_ws[sc.active.min(8)]);
-        c.text(*name_x, *y, *h, name, F::Small, b.tx2);
+        c.text(*name_x, *y, *h, screen, F::Small, b.tx2);
+        if !name.is_empty() {
+            // The screen and " · " grey, the workspace's name in the text color.
+            let sep_x = name_x + c.width(screen, F::Small);
+            c.text(sep_x, *y, *h, SEP, F::Small, b.tx2);
+            c.text(sep_x + c.width(SEP, F::Small), *y, *h, name, F::Small, b.tx);
+        }
     }
     for (i, &(x, y, w, h)) in s.lay.map.iter().enumerate() {
         let sc = &m.screens[i];
@@ -758,7 +795,31 @@ mod tests {
     use crate::ui::{DARK, Fonts, LIGHT};
 
     fn screen(name: &str, (x, y, w, h): (i32, i32, i32, i32), active: usize, main: bool) -> TrayScreen {
-        TrayScreen { name: name.into(), rect: RECT { left: x, top: y, right: x + w, bottom: y + h }, active, main }
+        TrayScreen { name: name.into(), rect: RECT { left: x, top: y, right: x + w, bottom: y + h }, active, main, ws_name: String::new() }
+    }
+
+    fn named(s: TrayScreen, ws_name: &str) -> TrayScreen {
+        TrayScreen { ws_name: ws_name.into(), ..s }
+    }
+
+    // Spec 0023 handoff trayCut: the screen is what the line is about, so a long workspace name
+    // gives way first, down to 10 letters; only then is the screen cut, at a word, keeping its
+    // first word and a twin's " #n". A line with no name is cut as before.
+    #[test]
+    fn a_chip_line_cuts_the_workspace_name_before_the_screen() {
+        let fonts = Fonts::new(1.0);
+        let dc = unsafe { windows::Win32::Graphics::Gdi::GetDC(None) };
+        let c = Canvas::new(dc, false, 1.0, LIGHT, &fonts);
+        let room = RIGHT - IN_X - 20.0 - 6.0;
+        let fits = |(a, b): &(String, String)| c.width(a, F::Small) + c.width(SEP, F::Small) + c.width(b, F::Small) <= room;
+        assert_eq!(tray_cut(&c, "DELL U2720Q", "Code", room), ("DELL U2720Q".into(), "Code".into()));
+        let name_cut = tray_cut(&c, "DELL U2720Q #1", "Quarterly planning and budget 26", room);
+        assert!(name_cut.0 == "DELL U2720Q #1" && name_cut.1.ends_with('…') && name_cut.1.chars().count() > 10 && fits(&name_cut), "{name_cut:?}");
+        let both = tray_cut(&c, "Studio monitor above the desk 32 #2", "Quarterly planning and budget 26", room);
+        assert!(both.0.starts_with("Studio") && both.0.ends_with("… #2") && both.1.chars().count() <= 11 && fits(&both), "{both:?}");
+        let long = "LG ULTRAGEAR 27GR95QE OLED Gaming Monitor and then some more words";
+        assert_eq!(tray_cut(&c, long, "", room), (c.fit(long, F::Small, room), String::new()));
+        unsafe { let _ = windows::Win32::Graphics::Gdi::ReleaseDC(None, dc); }
     }
 
     fn menu(screens: Vec<TrayScreen>) -> Menu {
@@ -783,6 +844,18 @@ mod tests {
         let odd = [RECT { left: 0, top: 0, right: 20000, bottom: 8000 }, RECT { left: 20000, top: 0, right: 20400, bottom: 300 }];
         let (boxes, _) = map(&odd);
         assert!(boxes[1].2 >= MIN_SIDE - 0.5 && boxes[1].3 >= MIN_SIDE - 0.5, "{boxes:?}");
+    }
+
+    // Spec 0023 AC-10: a screen showing a named workspace says the name after its number, in
+    // the tooltip too; an unnamed one keeps today's tooltip, which has no workspace words.
+    #[test]
+    fn a_screen_says_its_workspaces_name() {
+        let mut named = screen("Left", (0, 0, 1920, 1080), 1, true);
+        named.ws_name = "Mail".into();
+        let m = menu(vec![named, screen("Right", (1920, 0, 1920, 1080), 0, false)]);
+        let s = Session { menu: m, lay: Lay::default(), scale: 1.0, theme: LIGHT, hot: None, focus: None, landed: None, tip: None, came_from: HWND::default() };
+        assert_eq!((s.screen_words(0, true), s.screen_words(0, false)), ("Left, workspace 2, Mail, main display".into(), "Left, workspace 2, Mail, main display".into()));
+        assert_eq!((s.screen_words(1, true), s.screen_words(1, false)), ("Right, workspace 1".into(), "Right".into()));
     }
 
     // AC-TRY-5, AC-TRY-7: a greyed item can't run; a newer release says where it goes; Q's
@@ -867,6 +940,20 @@ mod tests {
             ("three", three, Some(0), |s| s.hot = Some(1)),
             ("twelve-wall", wall12, Some(8), |s| s.hot = Some(1)),
             ("twelve-mixed", twelve_mixed(), Some(10), |_| {}),
+            // Spec 0023: the handoff's t1 one, t2 two, t4 long twins, t4b a long rename, t3 map.
+            ("names-one", vec![named(screen("Built-in display", (0, 0, 2560, 1600), 0, true), "Mail")], Some(0), |_| {}),
+            ("names-two", vec![named(two()[0].clone(), "Code"), named(two()[1].clone(), "Mail")], Some(0), |_| {}),
+            (
+                "names-long",
+                vec![
+                    named(screen("DELL U2720Q #1", (0, 0, 3840, 2160), 1, true), "Quarterly planning and budget 26"),
+                    named(screen("DELL U2720Q #2", (3840, 0, 3840, 2160), 0, false), "Reading list and papers to file"),
+                ],
+                Some(0),
+                |_| {},
+            ),
+            ("names-long-rename", vec![named(screen("Studio monitor above the desk 32", (0, 0, 3840, 2160), 1, true), "Quarterly planning and budget 26")], Some(0), |_| {}),
+            ("names-three", wall(&[(0, 0, 16, 9, 2), (16, 0, 16, 9, 5), (32, 0, 16, 9, 1)]).into_iter().enumerate().map(|(i, s)| named(s, ["Code", "", "Mail"][i])).collect(), Some(0), |s| s.hot = Some(0)),
         ];
         let aquatic = ui::high_contrast([0x202020, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);
         let desert = ui::high_contrast([0xFFFAEF, 0x3D3D3D, 0x903909, 0xFFF5E3, 0x6D6D6D]);

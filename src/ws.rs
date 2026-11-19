@@ -245,29 +245,55 @@ fn mon_of(s: &State, id: &str) -> Option<HMONITOR> {
     s.present.iter().find(|p| p.id == id).and_then(|p| monitor_named(&p.device))
 }
 
-/// The name des-k shows for a screen (spec 0017): Windows' friendly name, with " #1", " #2" left
-/// to right when two present screens share it. A screen that is not present keeps its last name.
+/// The name des-k shows for a screen (spec 0017): your rename as typed (spec 0023 AC-11), else
+/// Windows' friendly name, with " #1", " #2" left to right when two present screens not renamed
+/// share it. A screen that is not present keeps its last name. Never for a log line: the log
+/// names a screen by Windows' name and id, so no rename reaches it (AC-15).
 fn label(s: &State, id: &str) -> String {
+    label_by(settings::get(), s, id)
+}
+
+fn label_by(set: &settings::Settings, s: &State, id: &str) -> String {
+    if let Some(rename) = set.screen_rename(id) {
+        return rename.to_string();
+    }
     let Some(p) = s.present.iter().find(|p| p.id == id) else {
         return s.monitors.get(id).map_or_else(|| id.to_string(), |m| m.name.clone());
     };
-    let name = if p.name.is_empty() { p.device.trim_start_matches(r"\\.\").to_string() } else { p.name.clone() };
+    let name = windows_name(p);
     // present is sorted left to right.
-    let twins: Vec<&Screen> = s.present.iter().filter(|q| q.name == p.name).collect();
+    let twins: Vec<&Screen> = s.present.iter().filter(|q| q.name == p.name && set.screen_rename(&q.id).is_none()).collect();
     match twins.iter().position(|q| q.id == p.id) {
         Some(i) if twins.len() > 1 => format!("{name} #{}", i + 1),
         _ => name,
     }
 }
 
-/// The indicator's card for screen `id`: named only when two or more screens are plugged in,
-/// and carrying the id so the indicator finds that screen's own place (spec 0020 AC-9).
+/// The indicator's card for screen `id`: named only when two or more screens are plugged in and
+/// `[indicator] screen_name` is on (spec 0023 AC-5), with this screen's workspace names, and
+/// carrying the id so the indicator finds that screen's own place (spec 0020 AC-9).
 fn card(s: &State, id: &str, active: usize, count: usize) -> Card {
-    let on = settings::get().attention_enabled;
-    let wants = s.monitors.get(id).filter(|_| on).map_or_else(Vec::new, |m| {
+    let set = settings::get();
+    let wants = s.monitors.get(id).filter(|_| set.attention_enabled).map_or_else(Vec::new, |m| {
         (0..m.hidden.len()).filter(|&i| m.hidden[i].iter().any(|h| s.wants.contains(h))).collect()
     });
-    Card { screen_id: id.to_string(), wants, ..Card::new(active, count, (s.present.len() > 1).then(|| label(s, id))) }
+    let screen = (s.present.len() > 1 && set.indicator_screen_name).then(|| label(s, id));
+    Card { screen_id: id.to_string(), wants, names: names_of(id, count), ..Card::new(active, count, screen) }
+}
+
+/// Screen `id`'s workspace names, one per workspace in use, empty for none (spec 0023 AC-1).
+fn names_of(id: &str, count: usize) -> Vec<String> {
+    let set = settings::get();
+    (0..count).map(|i| set.ws_name(id, i).unwrap_or_default().to_string()).collect()
+}
+
+/// `device`'s workspace names, for the overview, which knows screens by device name (spec 0023
+/// AC-7). An unknown device has no names.
+pub fn names(device: &str) -> Vec<String> {
+    let count = settings::get().workspaces;
+    let mut s = state();
+    let id = id_of(&mut s, device);
+    if s.present.iter().any(|p| p.id == id) { names_of(&id, count) } else { vec![String::new(); count] }
 }
 
 /// The indicator on `mon` as it is now: the settings page's Show (spec 0012 AC-19).
@@ -1047,6 +1073,7 @@ pub struct Place {
     pub screen: String, // its screen's name, as `label` gives it (spec 0017)
     pub pinned: bool,
     pub unplugged: bool, // hidden on a screen that left and has not folded yet
+    pub ws_name: String, // its workspace's name on its screen; empty for none, and when pinned (spec 0023)
 }
 
 /// Every listed window on screen (front to back), then every live window des-k hid, by
@@ -1062,7 +1089,9 @@ fn windows_in(s: &mut State) -> Vec<Place> {
             let device = device_name(unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) });
             let id = id_of(s, &device);
             let workspace = mon_mut(s, &id).active;
-            Place { hwnd: h, device, workspace, on_screen: true, screen: label(s, &id), pinned: s.pinned.contains(&(h.0 as isize)), unplugged: false }
+            let pinned = s.pinned.contains(&(h.0 as isize));
+            let ws_name = if pinned { String::new() } else { ws_name(&id, workspace) };
+            Place { hwnd: h, device, workspace, on_screen: true, screen: label(s, &id), pinned, unplugged: false, ws_name }
         })
         .collect();
     // By device name, as before screens had ids; a screen only just unplugged keeps its old one.
@@ -1074,12 +1103,16 @@ fn windows_in(s: &mut State) -> Vec<Place> {
             for &raw in list {
                 let h = HWND(raw as *mut _);
                 if unsafe { IsWindow(Some(h)) }.as_bool() {
-                    out.push(Place { hwnd: h, device: dev.clone(), workspace: ws, on_screen: false, screen: screen.clone(), pinned: false, unplugged });
+                    out.push(Place { hwnd: h, device: dev.clone(), workspace: ws, on_screen: false, screen: screen.clone(), pinned: false, unplugged, ws_name: ws_name(id, ws) });
                 }
             }
         }
     }
     out
+}
+
+fn ws_name(id: &str, ws: usize) -> String {
+    settings::get().ws_name(id, ws).unwrap_or_default().to_string()
 }
 
 /// How many screens are plugged in, and the main display's name: the finder's screen column
@@ -1097,6 +1130,7 @@ pub struct TrayScreen {
     pub rect: RECT,   // the whole screen, physical pixels
     pub active: usize, // the workspace it shows, 0 based
     pub main: bool,
+    pub ws_name: String, // the shown workspace's name; empty for none (spec 0023 AC-10)
 }
 
 /// Every present screen, left to right, copied out so the menu paints with no lock held.
@@ -1105,11 +1139,15 @@ pub fn tray_screens() -> Vec<TrayScreen> {
     let s = state();
     s.present
         .iter()
-        .map(|p| TrayScreen {
-            name: label(&s, &p.id),
-            rect: full.iter().find(|(d, _)| *d == p.device).map_or(p.area, |(_, r)| *r),
-            active: s.monitors.get(&p.id).map_or(0, |m| m.active),
-            main: p.primary,
+        .map(|p| {
+            let active = s.monitors.get(&p.id).map_or(0, |m| m.active);
+            TrayScreen {
+                name: label(&s, &p.id),
+                rect: full.iter().find(|(d, _)| *d == p.device).map_or(p.area, |(_, r)| *r),
+                active,
+                main: p.primary,
+                ws_name: ws_name(&p.id, active),
+            }
         })
         .collect()
 }
@@ -1149,7 +1187,8 @@ fn in_order(mut all: Vec<(String, RECT)>) -> Vec<String> {
 fn moves(s: &State, count: usize) -> Vec<String> {
     let order = screen_order();
     let mut out = Vec::new();
-    for m in moved(s, count).into_iter().filter(|m| m.windows > 0) {
+    // Logged (settings::apply), so a screen not plugged in goes by Windows' name, never a rename.
+    for m in moved(s, count, |s, id| s.monitors.get(id).map_or_else(|| id.to_string(), |m| m.name.clone())).into_iter().filter(|m| m.windows > 0) {
         let name = m.device.and_then(|d| order.iter().position(|o| *o == d)).map_or(m.name, |i| format!("Screen {}", i + 1));
         let from: Vec<String> = m.from.iter().map(|ws| (ws + 1).to_string()).collect();
         let (win, go) = if m.windows == 1 { ("window", "moves") } else { ("windows", "move") };
@@ -1163,14 +1202,14 @@ fn moves(s: &State, count: usize) -> Vec<String> {
 /// its away windows, which are hidden on another screen, so that screen leaves them out.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Moved {
-    pub name: String, // as `label` gives it
+    pub name: String, // as `label` gives it for the page; Windows' name for the log
     pub device: Option<String>,
     pub unplugged: bool,
     pub windows: usize,
     pub from: Vec<usize>, // the removed workspaces with windows, 0 based
 }
 
-fn moved(s: &State, count: usize) -> Vec<Moved> {
+fn moved(s: &State, count: usize, name: fn(&State, &str) -> String) -> Vec<Moved> {
     let order = screen_order();
     let at = |m: &Monitor| m.device.as_ref().and_then(|d| order.iter().position(|o| o == d));
     let mut ids: Vec<&String> = s.monitors.keys().collect();
@@ -1198,7 +1237,7 @@ fn moved(s: &State, count: usize) -> Vec<Moved> {
         }
         let from: Vec<usize> = (count..per.len()).filter(|&ws| per[ws] > 0).collect();
         let windows = from.iter().map(|&ws| per[ws]).sum();
-        out.push(Moved { name: label(s, id), device: m.device.clone(), unplugged, windows, from });
+        out.push(Moved { name: name(s, id), device: m.device.clone(), unplugged, windows, from });
     }
     out
 }
@@ -1250,6 +1289,9 @@ pub struct ScreenInfo {
 pub fn screen_info() -> Vec<ScreenInfo> {
     use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
     let names = display_names();
+    // By id, read without the ws lock: the settings page asks from inside a switch too.
+    let ids: HashMap<String, String> = screen_ids().into_iter().map(|p| (p.device, p.id)).collect();
+    let set = settings::get();
     let mut all = screens();
     all.sort_by_key(|(_, r)| (r.left, r.top));
     all.into_iter()
@@ -1259,7 +1301,8 @@ pub fn screen_info() -> Vec<ScreenInfo> {
             if let Some(mon) = monitor_named(&device) {
                 unsafe { let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy); }
             }
-            let name = names.get(&device).filter(|n| !n.is_empty()).cloned().unwrap_or_else(|| device.clone());
+            let rename = ids.get(&device).and_then(|id| set.screen_rename(id));
+            let name = rename.or(names.get(&device).map(String::as_str).filter(|n| !n.is_empty())).unwrap_or(&device).to_string();
             ScreenInfo { device, number: i + 1, name, rect, scale: dx * 100 / 96 }
         })
         .collect()
@@ -1343,6 +1386,7 @@ pub struct Present {
     pub id: String,
     pub device: String,
     pub name: String, // as `label` gives it, so twins read #1, #2 from the left
+    pub windows_name: String, // Windows' own, no rename: the settings page's Screen name hint (spec 0023)
     pub full: RECT,
     pub work: RECT,
 }
@@ -1352,6 +1396,7 @@ pub struct Present {
 pub struct Waiting {
     pub id: String,
     pub name: String,
+    pub windows_name: String, // Windows' own, as remembered, no rename (spec 0023)
     pub windows: Vec<usize>, // per workspace, 0 based
 }
 
@@ -1366,9 +1411,14 @@ pub fn view(counts: &[usize]) -> Option<View> {
     let windows = windows_in(&mut s).into_iter().map(|p| (p.device, p.workspace, real_rect(p.hwnd))).collect();
     let active = s.monitors.values().filter_map(|m| Some((m.device.clone()?, m.active))).collect();
     let names = s.present.iter().map(|p| (p.device.clone(), label(&s, &p.id))).collect();
-    let removals = counts.iter().map(|&n| moved(&s, n)).collect();
-    let present = s.present.iter().map(|p| Present { id: p.id.clone(), device: p.device.clone(), name: label(&s, &p.id), full: p.full, work: p.area }).collect();
+    let removals = counts.iter().map(|&n| moved(&s, n, label)).collect();
+    let present = s.present.iter().map(|p| Present { id: p.id.clone(), device: p.device.clone(), name: label(&s, &p.id), windows_name: windows_name(p), full: p.full, work: p.area }).collect();
     Some(View { active, windows, names, removals, waiting: waiting(&s), present })
+}
+
+/// A plugged in screen's name as Windows gives it, before any rename or twin number.
+fn windows_name(p: &Screen) -> String {
+    if p.name.is_empty() { p.device.trim_start_matches(r"\\.\").to_string() } else { p.name.clone() }
 }
 
 /// Every remembered screen not plugged in, by name, with how many windows wait for it on each workspace.
@@ -1385,7 +1435,7 @@ fn waiting(s: &State) -> Vec<Waiting> {
                 }
                 windows[a.ws] += 1;
             }
-            Waiting { id: id.clone(), name: m.name.clone(), windows }
+            Waiting { id: id.clone(), name: label(s, id), windows_name: m.name.clone(), windows }
         })
         .collect();
     out.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
@@ -2567,8 +2617,8 @@ fn fold(s: &mut State, id: &str, notes: &mut Vec<Note>) {
             device: main.device.clone(),
             id: main.id.clone(),
             active: main_active,
-            line: Says::ScreenGone { name: name.clone(), moved: waiting, to: Some(label(s, &main.id)) },
-            text: format!("{name} unplugged: {} moved here", words(waiting)),
+            line: Says::ScreenGone { name: label(s, id), moved: waiting, to: Some(label(s, &main.id)) },
+            text: format!("{} unplugged: {} moved here", label(s, id), words(waiting)),
         });
     }
 }
@@ -2677,7 +2727,7 @@ fn give_back(s: &mut State, id: &str, last: bool, notes: &mut Vec<Note>) -> bool
                 id: p.id.clone(),
                 active,
                 line: Says::ScreenBack { name: label(s, &p.id), moved: total, left, here: true },
-                text: format!("{} is back: {} returned{stuck}", p.name, words(total)),
+                text: format!("{} is back: {} returned{stuck}", label(s, &p.id), words(total)),
             });
         }
     }
@@ -2966,6 +3016,31 @@ mod tests {
         let mut list = vec![at("internal", -100), at("DEL-4123", 0), at("DEL-4123", 100)];
         number_twins(&mut list);
         assert_eq!(list.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["internal", "DEL-4123#1", "DEL-4123#2"]);
+    }
+
+    // Spec 0023 AC-11: a rename shows exactly as typed, with no number, and the twin it leaves
+    // behind loses its " #2" (nothing left to tell apart). An empty rename keeps both numbers.
+    #[test]
+    fn a_renamed_twin_leaves_the_other_unnumbered() {
+        let at = |id: &str, left| Screen { device: String::new(), id: id.into(), name: "DELL U2720Q".into(), area: rect(left, 0, left + 10, 10), full: rect(left, 0, left + 10, 10), primary: false };
+        let s = State { present: vec![at("DEL-4123#1", 0), at("DEL-4123#2", 100)], ..State::default() };
+        let labels = |file: &str| {
+            let set = settings::parse_for_test(file).0;
+            (label_by(&set, &s, "DEL-4123#1"), label_by(&set, &s, "DEL-4123#2"))
+        };
+        assert_eq!(labels(""), ("DELL U2720Q #1".into(), "DELL U2720Q #2".into()));
+        assert_eq!(labels("[names.screens.\"DEL-4123#1\"]
+screen = \"Left\"
+"), ("Left".into(), "DELL U2720Q".into()));
+        assert_eq!(labels("[names.screens.\"DEL-4123#1\"]
+screen = \"\"
+"), ("DELL U2720Q #1".into(), "DELL U2720Q #2".into()));
+        let both = "[names.screens.\"DEL-4123#1\"]
+screen = \"Desk\"
+[names.screens.\"DEL-4123#2\"]
+screen = \"Desk\"
+";
+        assert_eq!(labels(both), ("Desk".into(), "Desk".into()));
     }
 
     // An EDID serial or instance id with spaces or tabs would break the state.txt line.

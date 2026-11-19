@@ -1502,6 +1502,7 @@ impl Ctx<'_, '_> {
                 sp::Why::AnimationNone => "Overview animation is None",
                 sp::Why::Skip => "Skip animations is on",
                 sp::Why::IndicatorOff => "the indicator is off",
+                sp::Why::Dots => "the dots show no names",
             }).collect();
             caps.push(P::Why(format!(" Not in use: {}.", reasons.join(", and "))));
         }

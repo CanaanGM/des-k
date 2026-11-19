@@ -91,6 +91,9 @@ pub(crate) struct B {
     pub(crate) link: u32,
     /// A chart's grid lines (the settings page's Motion).
     pub(crate) grid: u32,
+    /// An empty text box's hint: at least 4.5:1 on the box, clearly lighter than typed text
+    /// (spec 0023's name boxes).
+    pub(crate) hint: u32,
 }
 
 /// The mark's colors, the tray icon's (approved with the first run).
@@ -139,6 +142,7 @@ const B_LIGHT: B = B {
     stand: 0xC8C8C8,
     link: 0x8E3FD9,
     grid: 0xD0D0D0,
+    hint: 0x767676,
 };
 
 const B_DARK: B = B {
@@ -174,6 +178,7 @@ const B_DARK: B = B {
     stand: 0x454545,
     link: 0xB27CE5,
     grid: 0x4A4A4A,
+    hint: 0x9E9E9E,
 };
 
 pub(crate) const DARK: Theme = Theme {
@@ -230,6 +235,7 @@ pub(crate) fn high_contrast(sys: [u32; 5]) -> Theme {
             stand: fg,
             link: hl,
             grid: fg,
+            hint: gray,
         },
     }
 }
@@ -876,6 +882,22 @@ impl<'a> Canvas<'a> {
         cut(lo)
     }
 
+    /// A workspace name cut like `fit` (spec 0023, handoff `fitName`), except that a cut leaving
+    /// 3 letters or fewer of a word cuts at the space before it ("Research and r…" reads worse
+    /// than "Research and…"), and a name with nothing left is dropped instead of a lone ….
+    pub(crate) fn fit_name(&self, text: &str, f: F, w: f32) -> String {
+        let cut = self.fit(text, f, w);
+        let Some(kept) = cut.strip_suffix('…').filter(|_| cut != text) else { return cut };
+        if kept.is_empty() {
+            return String::new();
+        }
+        let inside_word = text[kept.len()..].starts_with(|c: char| !c.is_whitespace());
+        match kept.rfind(' ') {
+            Some(i) if inside_word && i > 0 && kept[i + 1..].chars().count() <= 3 => kept[..i].trim_end().to_string() + "…",
+            _ => cut,
+        }
+    }
+
     /// One run of text, centered in a line box `lh` tall whose top is `y`.
     pub(crate) fn text(&self, x: f32, y: f32, lh: f32, text: &str, f: F, color: u32) {
         if !self.draw {
@@ -1313,6 +1335,23 @@ pub(crate) mod tests {
 
     // With no Windows accent and no [colors], des-k looks exactly as look B was approved, so
     // the LIGHT and DARK constants the render tests draw with are what users see.
+    // Spec 0023 handoff fitName: a name never ends in a stub of 3 letters or fewer, a cut that
+    // falls between words stays as fit makes it, and a name with no room is dropped, not "…".
+    #[test]
+    fn a_cut_name_never_ends_in_a_stub() {
+        let fonts = Fonts::new(1.0);
+        let dc = unsafe { GetDC(None) };
+        let c = Canvas::new(dc, false, 1.0, LIGHT, &fonts);
+        let name = "Research and reading";
+        assert_eq!(c.fit(name, F::Small, c.width("Research and r…", F::Small)), "Research and r…");
+        assert_eq!(c.fit_name(name, F::Small, c.width("Research and r…", F::Small)), "Research and…");
+        assert_eq!(c.fit_name(name, F::Small, c.width("Research and read…", F::Small)), "Research and read…");
+        assert_eq!(c.fit_name("Mail and more", F::Small, c.width("Mail and…", F::Small)), "Mail and…");
+        assert_eq!(c.fit_name(name, F::Small, 1.0), "");
+        assert_eq!(c.fit_name(name, F::Small, 400.0), name);
+        unsafe { ReleaseDC(None, dc) };
+    }
+
     #[test]
     fn the_constants_are_look_b_unchanged() {
         let t = resolve(true, PLAIN, Accent::Windows, [None; 9]).b;
