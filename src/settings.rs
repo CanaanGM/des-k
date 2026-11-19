@@ -245,6 +245,9 @@ pub struct Settings {
     pub indicator_screens: BTreeMap<String, PosOverride>,
     pub hold_ms: u32,
     pub fade_ms: u32,
+    // Spec 0022: a hidden window's flash shows on its screen, in your words, kept raw.
+    pub attention_enabled: bool,
+    pub attention_text: String,
     pub restore_enabled: bool,
     pub restore_minutes: u32,
     pub overview_animation: Animation,
@@ -306,6 +309,8 @@ impl Default for Settings {
             indicator_screens: BTreeMap::new(),
             hold_ms: 550,
             fade_ms: 200,
+            attention_enabled: true,
+            attention_text: ATTENTION_TEXT.into(),
             restore_enabled: true,
             restore_minutes: 3,
             overview_animation: Animation::Off,
@@ -365,6 +370,10 @@ fade_ms = 200               # 0 to 2000
 # A screen can have its own place: a table named by its id (spec 0016), with any of spot, gap, x, y.
 # [indicator.screens."DEL-A1B2-12345"]
 # spot = "top-right"
+
+[attention]
+enabled = true              # a window on a hidden workspace that flashes shows on its screen
+text = "{{appname}} misses you"   # up to 100 characters; {{appname}} is the app's name
 
 [colors]
 accent = "windows"          # "windows" follows your Windows accent color, or your own "#RRGGBB"
@@ -447,10 +456,13 @@ tap = true
 do = "notifications"
 "##;
 
-const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activation", "fastest", "first_run_seen", "shortcuts", "indicator", "colors", "restore", "overview", "touchpad", "gesture"];
+const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activation", "fastest", "first_run_seen", "shortcuts", "indicator", "attention", "colors", "restore", "overview", "touchpad", "gesture"];
 const SHORTCUT_KEYS: &[&str] = &["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "jump", "send_to", "send_to_stay", "finder", "overview", "pin", "hints"];
 const INDICATOR_KEYS: &[&str] = &["enabled", "style", "spot", "gap", "x", "y", "hold_ms", "fade_ms", "screens"];
 const SCREEN_KEYS: &[&str] = &["spot", "gap", "x", "y"];
+const ATTENTION_KEYS: &[&str] = &["enabled", "text"];
+pub const ATTENTION_TEXT: &str = "{{appname}} misses you";
+pub const ATTENTION_MAX: usize = 100; // in UTF-16 units, as the page's text box counts (spec 0022 AC-9)
 const COLORS_KEYS: &[&str] = &["accent", "ws1", "ws2", "ws3", "ws4", "ws5", "ws6", "ws7", "ws8", "ws9"];
 const RESTORE_KEYS: &[&str] = &["enabled", "minutes"];
 const OVERVIEW_KEYS: &[&str] = &["animation", "labels", "live", "fade_ms"];
@@ -661,6 +673,9 @@ fn apply(old: &Settings, changes: &[Change]) -> Vec<String> {
     }
     if has("fastest") {
         crate::ui::transitions_all();
+    }
+    if has("attention.enabled") && !new.attention_enabled {
+        crate::ws::forget_wants();
     }
     // Colors resolve in ui::theme_of on each paint; every window just needs to paint again.
     if changes.iter().any(|c| c.key.starts_with("colors.")) {
@@ -984,6 +999,12 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
         s.indicator_screens = screens(t, s.indicator_pos, &mut warn);
     }
 
+    if let Some(t) = section(&top, "attention", &mut warn) {
+        unknown_keys(t, "attention.", ATTENTION_KEYS, &mut warn);
+        s.attention_enabled = boolean(t, "enabled", "attention.enabled", s.attention_enabled, &mut warn);
+        s.attention_text = attention_text(t, &mut warn);
+    }
+
     if let Some(t) = section(&top, "colors", &mut warn) {
         unknown_keys(t, "colors.", COLORS_KEYS, &mut warn);
         s.accent = match t.get("accent") {
@@ -1277,6 +1298,44 @@ fn int(t: &Table, key: &str, name: &str, lo: i64, hi: i64, default: i64, warn: &
             default
         }
     }
+}
+
+/// `[attention] text`: any text up to `ATTENTION_MAX` UTF-16 units, kept as typed. The log
+/// line never quotes it (spec 0022 AC-9).
+fn attention_text(t: &Table, warn: &mut Vec<String>) -> String {
+    let fail = |warn: &mut Vec<String>, why: String| {
+        warn.push(format!("attention.text: {why}, using the default"));
+        ATTENTION_TEXT.to_string()
+    };
+    match t.get("text") {
+        None => ATTENTION_TEXT.into(),
+        Some(Value::String(s)) if s.trim().is_empty() => fail(warn, "it is empty".into()),
+        Some(Value::String(s)) if s.encode_utf16().count() > ATTENTION_MAX => fail(warn, format!("{} characters, the most is {ATTENTION_MAX}", s.encode_utf16().count())),
+        Some(Value::String(s)) => s.clone(),
+        Some(v) => fail(warn, format!("expected text, got a {}", v.type_str())),
+    }
+}
+
+/// The popup's words for an app: your `[attention] text` filled (spec 0022 AC-9).
+pub fn attention_line(name: &str) -> String {
+    fill(&get().attention_text, name)
+}
+
+/// `text` with every `{{appname}}`, in any letter case, made `name` ("An app" when empty), and
+/// control characters (a newline) made spaces, since the popup's line has one paragraph.
+pub fn fill(text: &str, name: &str) -> String {
+    const TAG: &str = "{{appname}}";
+    let name = if name.trim().is_empty() { "An app" } else { name };
+    // ASCII lower casing keeps every byte where it was, so a match's place holds in `text`.
+    let lower = text.to_ascii_lowercase();
+    let (mut out, mut at) = (String::new(), 0);
+    while let Some(i) = lower[at..].find(TAG) {
+        out += &text[at..at + i];
+        out += name;
+        at += i + TAG.len();
+    }
+    out += &text[at..];
+    out.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
 }
 
 fn boolean(t: &Table, key: &str, name: &str, default: bool, warn: &mut Vec<String>) -> bool {
@@ -1584,6 +1643,9 @@ impl Settings {
             ("indicator.x", self.indicator_pos.x.to_string()),
             ("indicator.y", self.indicator_pos.y.to_string()),
             ("indicator.screens", screens_text(&self.indicator_screens)),
+            ("attention.enabled", self.attention_enabled.to_string()),
+            // Quoted, so a line break in a hand edit keeps the log line one line.
+            ("attention.text", format!("{:?}", self.attention_text)),
             ("colors.accent", match self.accent {
                 Accent::Windows => "windows".to_string(),
                 Accent::Rgb(c) => hex(c),
@@ -1677,6 +1739,33 @@ spot = \"top-right\""), "{one}");
         assert!(RESTORE_KEYS.iter().all(|k| res.contains_key(*k)));
         assert!(OVERVIEW_KEYS.iter().all(|k| top["overview"].as_table().unwrap().contains_key(*k)));
         assert!(TOUCHPAD_KEYS.iter().all(|k| top["touchpad"].as_table().unwrap().contains_key(*k)));
+        assert!(ATTENTION_KEYS.iter().all(|k| top["attention"].as_table().unwrap().contains_key(*k)));
+    }
+
+    // Spec 0022 AC-9: your words come back with the app named wherever you put the tag, in any
+    // case; text without it shows as typed; a nameless app is still "An app", never blank.
+    #[test]
+    fn attention_text_names_the_app() {
+        assert_eq!(fill(ATTENTION_TEXT, "Slack"), "Slack misses you");
+        assert_eq!(fill("{{AppName}} rang, {{appname}}!", "Teams"), "Teams rang, Teams!");
+        assert_eq!(fill("Someone wants you", "Slack"), "Someone wants you");
+        assert_eq!(fill("{{appname}} misses you", ""), "An app misses you");
+        assert_eq!(fill("Hey\n{{appname}}\tnow", "Ölçü"), "Hey Ölçü now");
+        assert_eq!(fill("{{appname", "Slack"), "{{appname");
+    }
+
+    // Spec 0022 AC-9: a bad text resets only itself, and the log line never quotes it (your
+    // words could name a person). 100 UTF-16 units fit: an emoji counts as two, as the box counts.
+    #[test]
+    fn a_bad_attention_text_resets_only_itself() {
+        let hundred = "é".repeat(98) + "😀";
+        let (s, warn) = parse(&format!("[attention]\nenabled = false\ntext = \"{hundred}\"\n"));
+        assert_eq!((s.attention_enabled, s.attention_text.as_str(), warn.len()), (false, hundred.as_str(), 0));
+        for (text, why) in [("\"\"", "it is empty"), ("\"   \"", "it is empty"), ("7", "expected text"), (&format!("\"{hundred}x\""), "101 characters")] {
+            let (s, warn) = parse(&format!("[attention]\nenabled = false\ntext = {text}\n"));
+            assert_eq!((s.attention_enabled, s.attention_text.as_str()), (false, ATTENTION_TEXT), "{text}");
+            assert!(warn.len() == 1 && warn[0].contains(why) && !warn[0].contains("é"), "{warn:?}");
+        }
     }
 
     // "none" is how you get a spread with no text at all, so it must stick; a typo costs only
@@ -2233,7 +2322,7 @@ do = "previous"
         let mut unique = names.clone();
         unique.sort();
         unique.dedup();
-        assert_eq!((names.len(), unique.len()), (47, 47));
+        assert_eq!((names.len(), unique.len()), (49, 49));
     }
 
     // Spec 0020 AC-9: a screen's table changes only the keys it sets; the rest, and every screen

@@ -443,18 +443,30 @@ fn stem(exe: &str) -> String {
 /// Store app's frame names the hosted app's package, else shows the window title. Read once per
 /// exe while des-k runs.
 pub(crate) fn program(hwnd: HWND) -> String {
+    let (name, frame) = app(hwnd);
+    name.unwrap_or_else(|| if frame { ws::title(hwnd) } else { String::new() })
+}
+
+/// `program` without the title: for words des-k shows unasked, where a title could carry a
+/// message's text (spec 0022 AC-9). None when no name can be read.
+pub(crate) fn app_name(hwnd: HWND) -> Option<String> {
+    app(hwnd).0.filter(|n| !n.trim().is_empty())
+}
+
+/// The app's name if one can be read, and whether `hwnd` is a Store app's frame.
+fn app(hwnd: HWND) -> (Option<String>, bool) {
     let exe = |h: HWND| {
         let mut pid = 0;
         unsafe { GetWindowThreadProcessId(h, Some(&mut pid)) };
         restore::exe_path(pid).map(|p| (p, pid))
     };
-    let Some((path, _)) = exe(hwnd) else { return String::new() };
+    let Some((path, _)) = exe(hwnd) else { return (None, false) };
     if stem(&path).eq_ignore_ascii_case("ApplicationFrameHost") {
         // The hosted app lives in a CoreWindow child while it runs (not while suspended).
         let core = unsafe { FindWindowExW(Some(hwnd), None, w!("Windows.UI.Core.CoreWindow"), None) }.ok().and_then(exe);
-        return core.and_then(|(path, pid)| named(&path, || package_name(pid))).unwrap_or_else(|| ws::title(hwnd));
+        return (core.and_then(|(path, pid)| named(&path, || package_name(pid))), true);
     }
-    named(&path, || Some(describe(&path).unwrap_or_else(|| stem(&path)))).unwrap_or_default()
+    (named(&path, || Some(describe(&path).unwrap_or_else(|| stem(&path)))), false)
 }
 
 fn named(exe: &str, find: impl FnOnce() -> Option<String>) -> Option<String> {
@@ -886,7 +898,7 @@ fn on_wheel(delta: i16) {
 }
 
 /// The text box's background brush, made again when the theme changes its color.
-fn edit_brush(color: u32) -> HBRUSH {
+pub(crate) fn edit_brush(color: u32) -> HBRUSH {
     if let Some((b, c)) = BRUSH.get()
         && c == color
     {

@@ -16,7 +16,7 @@ use windows::Win32::{
     System::LibraryLoader::GetModuleHandleW,
     UI::{
         Accessibility::*,
-        Controls::WM_MOUSELEAVE,
+        Controls::{EM_SETLIMITTEXT, EM_SETMARGINS, EM_SETSEL, WM_MOUSELEAVE},
         HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow},
         Input::KeyboardAndMouse::*,
         WindowsAndMessaging::*,
@@ -30,7 +30,8 @@ use crate::ui::{self, Bx, Canvas, F, Fonts, Theme, buffered, dark_title, mix, op
 use crate::uia::{self, Node, Tree};
 
 const CLASS: PCWSTR = w!("des-k-settings");
-const STYLE: WINDOW_STYLE = WINDOW_STYLE(WS_OVERLAPPED.0 | WS_CAPTION.0 | WS_SYSMENU.0 | WS_MINIMIZEBOX.0 | WS_MAXIMIZEBOX.0 | WS_THICKFRAME.0);
+// Clips its one child, the popup words' text box (spec 0022), so a paint never covers it.
+const STYLE: WINDOW_STYLE = WINDOW_STYLE(WS_OVERLAPPED.0 | WS_CAPTION.0 | WS_SYSMENU.0 | WS_MINIMIZEBOX.0 | WS_MAXIMIZEBOX.0 | WS_THICKFRAME.0 | WS_CLIPCHILDREN.0);
 const WHO: &str = "des-k settings";
 
 // The client area and its parts, in dip (AC-SET-1): 1040 × 680 with Windows' title bar, never
@@ -65,6 +66,7 @@ pub enum Section {
     Workspaces,
     Shortcuts,
     Indicator,
+    Attention,
     Restore,
     Overview,
     Colors,
@@ -72,7 +74,7 @@ pub enum Section {
     Touchpad,
 }
 
-const SECTIONS: [Section; 8] = [Section::Workspaces, Section::Shortcuts, Section::Indicator, Section::Restore, Section::Overview, Section::Colors, Section::Motion, Section::Touchpad];
+const SECTIONS: [Section; 9] = [Section::Workspaces, Section::Shortcuts, Section::Indicator, Section::Attention, Section::Restore, Section::Overview, Section::Colors, Section::Motion, Section::Touchpad];
 
 impl Section {
     fn name(self) -> &'static str {
@@ -80,6 +82,7 @@ impl Section {
             Section::Workspaces => "Workspaces",
             Section::Shortcuts => "Shortcuts",
             Section::Indicator => "Indicator",
+            Section::Attention => "Attention",
             Section::Restore => "Restore",
             Section::Overview => "Overview",
             Section::Colors => "Colors",
@@ -93,6 +96,7 @@ impl Section {
             Section::Workspaces => "\u{E8A9}",
             Section::Shortcuts => "\u{E765}",
             Section::Indicator => "\u{E712}",
+            Section::Attention => "\u{EA8F}",
             Section::Restore => "\u{E777}",
             Section::Overview => "\u{E7C4}",
             Section::Colors => "\u{E790}",
@@ -106,6 +110,7 @@ impl Section {
             Section::Workspaces => "Every screen has its own workspaces, all the same count.",
             Section::Shortcuts => "Click a key to change it, × to remove it, + to add another. An action with no key is off. Choosing Windows gives that Windows key back.",
             Section::Indicator => "Shows the workspace for a moment after a switch, a send or a pin, and when a screen comes or goes.",
+            Section::Attention => "When a window on a workspace you can't see flashes for you, like a chat with a new message, its screen tells you.",
             Section::Restore => "Puts windows back on their workspaces after a reboot or sign-in.",
             Section::Overview => "Every workspace of every screen at once.",
             Section::Colors => "des-k's accent and each workspace's color, in every des-k window. One color serves light and dark.",
@@ -121,6 +126,7 @@ fn home(key: &str) -> Option<Section> {
         "workspaces" | "follow_activation" => Section::Workspaces,
         "shortcuts" | "copilot_as_right_ctrl" => Section::Shortcuts,
         "indicator" => Section::Indicator,
+        "attention" => Section::Attention,
         "restore" => Section::Restore,
         "overview" => Section::Overview,
         "colors" => Section::Colors,
@@ -169,6 +175,7 @@ pub(crate) const ROWS: &[Row] = &[
     row("indicator.style", "Style", "", Kind::Choice(STYLE_WORDS)),
     row("indicator.hold_ms", "Indicator stays", "How long it shows. 0 to 5000 ms. With a line under it, at least 1.5 s.", step(0, 5000, 50, "ms")),
     row("indicator.fade_ms", "Indicator fades out", "How long it takes to go. 0 to 2000 ms.", step(0, 2000, 50, "ms")),
+    row("attention.enabled", "Show windows that want you", "The indicator pops up on the window's screen, even with the indicator off, and that workspace keeps a dot until you go there.", Kind::Toggle),
     row("restore.enabled", "Restore after restart", "Reopened windows go back to their workspaces, hidden.", Kind::Toggle),
     row("restore.minutes", "Restore runs for", "How long after des-k starts it puts reopened windows back. 1 to 30 min.", step(1, 30, 1, "min")),
     row("overview.labels", "Window names in overview", "", Kind::Choice(LABEL_WORDS)),
@@ -206,6 +213,7 @@ pub(crate) fn value(s: &Settings, key: &str) -> i64 {
         "indicator.style" => index(word(settings::STYLES, s.indicator_style), STYLE_WORDS),
         "indicator.hold_ms" => s.hold_ms as i64,
         "indicator.fade_ms" => s.fade_ms as i64,
+        "attention.enabled" => s.attention_enabled as i64,
         "restore.enabled" => s.restore_enabled as i64,
         "restore.minutes" => s.restore_minutes as i64,
         "overview.labels" => index(word(settings::LABELS, s.overview_labels), LABEL_WORDS),
@@ -512,6 +520,11 @@ const WS_NAMES: [&str; 9] = ["blue", "gold", "green", "violet", "orange", "cyan"
 
 // The place rows' keys; MODE is the page's Spots or Custom, never a key in the file.
 pub(crate) const SPOT: &str = "indicator.spot";
+const WORDS: &str = "attention.text";
+const WORDS_W: f32 = 300.0;
+// The popup preview's sample (spec 0022): an app everyone knows, on workspace 3.
+const SAMPLE_APP: &str = "Slack";
+const SAMPLE_WS: usize = 2;
 pub(crate) const GAP: &str = "indicator.gap";
 pub(crate) const ACROSS: &str = "indicator.x";
 pub(crate) const DOWN: &str = "indicator.y";
@@ -721,6 +734,7 @@ enum Ctl {
     Dismiss,     // the save error banner
     DismissEdit, // the hand edit banner
     Hex(&'static str), // a color's hex box, by its key: ACCENT or one of WS_KEYS (spec 0020)
+    Words,             // the attention text box (spec 0022)
     Screens,           // Where it shows' screen chooser: opens its menu
     ScreenItem(usize), // a line of the open screen menu
     SameAll,           // Same as all screens: takes out the chosen screen's table
@@ -745,6 +759,7 @@ impl Ctl {
             Ctl::Toggle(k) | Ctl::Minus(k) | Ctl::Plus(k) | Ctl::Stepper(k) | Ctl::Choice(k, _) | Ctl::Pick(k) | Ctl::Reset(k) => Some(k),
             Ctl::KeyRow(k) | Ctl::Key(k, _) | Ctl::KeyX(k, _) | Ctl::AddKey(k) | Ctl::WinSide(k, _) | Ctl::StopRec(k) | Ctl::Move(k) | Ctl::Cancel(k) => Some(k),
             Ctl::Hex(k) => Some(k),
+            Ctl::Words => Some(WORDS),
             Ctl::Picture | Ctl::Spot(_) => Some(SPOT),
             _ => None,
         }
@@ -757,7 +772,7 @@ impl Ctl {
             self,
             Ctl::Toggle(_) | Ctl::Minus(_) | Ctl::Plus(_) | Ctl::Choice(..) | Ctl::Reset(_) | Ctl::WsTile(..) | Ctl::TileAdd | Ctl::TileRemove | Ctl::Forget(_)
                 | Ctl::KeyRow(_) | Ctl::Key(..) | Ctl::KeyX(..) | Ctl::AddKey(_) | Ctl::WinSide(..) | Ctl::Move(_) | Ctl::Picker(_) | Ctl::Item(_) | Ctl::Pad(Pad::ReadOn | Pad::GiveBack)
-                | Ctl::Hex(_) | Ctl::SameAll | Ctl::Picture | Ctl::Spot(_) | Ctl::ShowTile(..) | Ctl::Swatch(_)
+                | Ctl::Hex(_) | Ctl::SameAll | Ctl::Picture | Ctl::Spot(_) | Ctl::ShowTile(..) | Ctl::Swatch(_) | Ctl::Words
         )
     }
 
@@ -1023,6 +1038,7 @@ struct Win {
     geo: Geo,                     // where its anchors were last drawn
     ease: Option<Ease>,           // the page scrolling on its own, for the picker
     down_at: (i32, i32),          // the last press, in screen pixels, for the picker's guard
+    words: Option<String>,        // the popup words as typed, before they save (spec 0022)
 }
 
 /// The color picker while it is open (spec 0021): one key, the color shown, and what it saved.
@@ -1672,6 +1688,7 @@ impl Ctx<'_, '_> {
                 let first = self.card(y + h, |c, y| c.indicator(y)) + 12.0;
                 first + self.card(y + h + first, |c, y| c.place(y))
             }
+            Section::Attention => self.card(y + h, |c, y| c.attention(y)),
             Section::Colors => self.colors(y + h),
             Section::Overview => self.card(y + h, |c, y| {
                 let mut h = c.overview_art(y);
@@ -2294,6 +2311,88 @@ impl Ctx<'_, '_> {
         h += self.setting("indicator.hold_ms", y + h);
         self.sep(y + h);
         h + self.setting("indicator.fade_ms", y + h)
+    }
+
+    // ---- Attention (spec 0022) ----
+
+    /// The switch, your words, and the popup they make, drawn by the indicator itself for a
+    /// sample app on another workspace of this screen.
+    fn attention(&mut self, y: f32) -> f32 {
+        use crate::indicator::{Card, Line};
+        let b = self.c.t.b;
+        let mut h = self.setting("attention.enabled", y);
+        self.sep(y + h);
+        h += self.words_row(y + h);
+        let n = self.s.workspaces;
+        let here = self.w.pics.here.clone().unwrap_or_default();
+        let a = self.active_on(&here);
+        let named = self.w.pics.screens.len() > 1;
+        let label = self.w.pics.view.names.iter().find(|(d, _)| *d == here).map(|(_, l)| l.clone());
+        let ws = if SAMPLE_WS.min(n - 1) == a { (a + 1) % n } else { SAMPLE_WS.min(n - 1) };
+        let text = settings::fill(self.w.words.as_deref().unwrap_or(&self.s.attention_text), SAMPLE_APP);
+        let card = Card { wants: vec![ws], ..Card::new(a, n, if named { label } else { None }) }.with(Line::Wants { text, ws });
+        let style = self.s.indicator_style;
+        let (pw, ph) = crate::indicator::draw_preview(&self.c.measuring(), 0.0, 0.0, style, &card);
+        let (wx, ww) = (X0 + 16.0, self.cw - 32.0);
+        let wy = y + h + 4.0;
+        let well_h = 16.0 + ph + 10.0 + 20.0 + 10.0;
+        self.c.boxed((wx, wy, ww, well_h), 6.0, b.track, Some(b.line));
+        crate::indicator::draw_preview(self.c, wx + (ww - pw) / 2.0, wy + 16.0, style, &card);
+        let on = self.s.attention_enabled;
+        if !on && !self.c.t.hc {
+            self.c.fill_rr((wx + 1.0, wy + 1.0, ww - 2.0, well_h - 2.0), 5.0, ui::alpha(b.track, 0.6));
+        }
+        let line = if on {
+            format!("When {SAMPLE_APP} flashes on workspace {}, its screen shows this for 3 s.", ws + 1)
+        } else {
+            "Off: a window that flashes on a workspace you can't see shows nothing.".into()
+        };
+        let lw = self.c.width(&line, F::Small);
+        self.c.text(wx + (ww - lw) / 2.0, wy + 16.0 + ph + 10.0, 20.0, &line, F::Small, b.tx2);
+        h + 4.0 + well_h + 16.0
+    }
+
+    /// Your words for the popup: a text box, with the tag explained and the default to go back to.
+    fn words_row(&mut self, y: f32) -> f32 {
+        let text = self.w.words.clone().unwrap_or_else(|| self.s.attention_text.clone());
+        let off = !self.s.attention_enabled;
+        let focused = self.w.focus == Some(Ctl::Words) && !self.ro && !off;
+        let note = self.bad(WORDS).or_else(|| {
+            let line = "Enter saves them; Esc puts back the saved words. Leaving the box saves them too.";
+            focused.then(|| NoteSpec { tone: Tone::Info, icon: I_INFO, title: String::new(), lines: vec![t(line)], buttons: vec![], group: 1 })
+        });
+        let mut cap = vec![t(format!("Up to {} characters. ", settings::ATTENTION_MAX)), P::Mono("{{appname}}".into()), t(" becomes the app's name.")];
+        if self.s.attention_text != settings::ATTENTION_TEXT {
+            cap.push(t(" Default: "));
+            cap.push(P::Mono(settings::ATTENTION_TEXT.into()));
+            cap.push(t("."));
+            cap.push(P::Link(" Reset".into(), Ctl::Reset(WORDS)));
+        }
+        let help: String = cap.iter().map(|p| match p { P::T(s) | P::Why(s) | P::Link(s, _) | P::Mono(s) => s.as_str() }).collect();
+        self.say(Ctl::Words, UIA_EditControlTypeId, "Popup words", help.trim(), self.ro || off, (None, Some(text.clone())));
+        self.row(y, "Popup words", &cap, (WORDS_W, 32.0), |c, x, y| c.words_box(x, y, &text, focused, off), note.as_ref())
+    }
+
+    /// The text box, drawn as the hex box: focus shows a 2 dip accent bottom edge and a caret.
+    fn words_box(&mut self, x: f32, y: f32, text: &str, focused: bool, na: bool) {
+        let b = self.c.t.b;
+        let bx = (x, y, WORDS_W, 32.0);
+        self.hit(Ctl::Words, bx, 1);
+        self.field(bx, b.card, None);
+        if focused {
+            self.c.fill_rr((x + 1.0, y + 29.0, WORDS_W - 2.0, 2.0), 0.0, op(b.acc));
+        }
+        let room = WORDS_W - 24.0;
+        let shown = self.c.fit(text, F::Body, room);
+        let ink = if na || self.ro { b.tx3 } else { b.tx };
+        self.c.text(x + 12.0, y, 32.0, &shown, F::Body, ink);
+        if focused {
+            let cx = x + 12.0 + self.c.width(&shown, F::Body) + 1.0;
+            self.c.fill_rr((cx, y + 7.0, 1.0, 18.0), 0.0, op(b.tx));
+        }
+        if self.focused(Ctl::Words) && !focused {
+            self.ring(bx, 6.0, Ctl::Words);
+        }
     }
 
     /// The indicator's time line: how long it shows, then its fade (none with Skip animations).
@@ -3849,6 +3948,154 @@ fn hwnd() -> Option<HWND> {
     get(|w| w.hwnd)
 }
 
+// ---- The popup words' text box (spec 0022 AC-10) ----
+//
+// A Windows EDIT, as the finder's search box is, so typing, selection, IME and the clipboard
+// all work. It shows only while the box has the page's focus, over the field the page paints;
+// the rest of the time the page paints the words, so a menu or the color picker drawn over the
+// page is never covered by it.
+
+thread_local! {
+    static WORDS_EDIT: std::cell::Cell<Option<HWND>> = const { std::cell::Cell::new(None) };
+    static WORDS_PROC: std::cell::Cell<isize> = const { std::cell::Cell::new(0) };
+    static WORDS_FONT: std::cell::Cell<isize> = const { std::cell::Cell::new(0) };
+}
+
+fn make_words(page: HWND, inst: windows::Win32::Foundation::HINSTANCE) {
+    unsafe {
+        let style = WS_CHILD | WINDOW_STYLE(ES_AUTOHSCROLL as u32);
+        let Ok(e) = CreateWindowExW(WINDOW_EX_STYLE(0), w!("EDIT"), w!(""), style, 0, 0, 0, 0, Some(page), None, Some(inst), None) else {
+            return warn!("settings page: no text box for the popup words");
+        };
+        // Windows counts UTF-16 units, as the parser does (AC-9).
+        SendMessageW(e, EM_SETLIMITTEXT, Some(WPARAM(settings::ATTENTION_MAX)), Some(LPARAM(0)));
+        WORDS_PROC.set(SetWindowLongPtrW(e, GWLP_WNDPROC, words_proc as *const () as isize));
+        uia::name_control(e, "Popup words");
+        WORDS_EDIT.set(Some(e));
+    }
+}
+
+fn edit_text(e: HWND) -> String {
+    let mut buf = [0u16; settings::ATTENTION_MAX + 1];
+    let n = unsafe { GetWindowTextW(e, &mut buf) };
+    String::from_utf16_lossy(&buf[..n.max(0) as usize])
+}
+
+/// Puts `text` in the box with the caret at its end.
+fn set_edit(e: HWND, text: &str) {
+    unsafe {
+        let _ = SetWindowTextW(e, &windows::core::HSTRING::from(text));
+        let end = GetWindowTextLengthW(e) as usize;
+        SendMessageW(e, EM_SETSEL, Some(WPARAM(end)), Some(LPARAM(end as isize)));
+    }
+}
+
+/// Shows the box over its field while it has the page's focus and can be typed in, and moves
+/// Windows' keyboard focus to match. It takes the file's words only while it has no focus, so a
+/// reload never overwrites what you are typing.
+fn place_words() {
+    let Some(e) = WORDS_EDIT.get() else { return };
+    let Some((page, at, font)) = get(|w| {
+        let open = w.menu.is_some() || w.pick.is_some() || w.chooser.is_some();
+        let can = settings::parse_error().is_none() && settings::get().attention_enabled && !open;
+        let at = w.hits.iter().find(|h| h.ctl == Ctl::Words && h.group == 1).map(|h| h.at);
+        let at = at.filter(|b| can && w.focus == Some(Ctl::Words) && b.1 >= w.fixed && b.1 + b.3 <= w.vh);
+        let s = w.scale;
+        let px = |(x, y, bw, bh): Bx| ((x * s).round() as i32, (y * s).round() as i32, (bw * s).round() as i32, (bh * s).round() as i32);
+        (w.hwnd, at.map(|b| px((b.0 + 12.0, b.1 + 6.0, b.2 - 24.0, 20.0))), w.fonts.get(F::Body))
+    }) else {
+        return;
+    };
+    unsafe {
+        let has = GetFocus() == e;
+        let Some((x, y, bw, bh)) = at else {
+            let _ = ShowWindow(e, SW_HIDE);
+            if has {
+                let _ = SetFocus(Some(page)); // leaving the box saves it
+            }
+            return;
+        };
+        if !has {
+            let saved = settings::get().attention_text.clone();
+            if edit_text(e) != saved {
+                set_edit(e, &saved);
+            }
+        }
+        // A new font (the page's dpi changed) sets the margins back to the font's own.
+        if WORDS_FONT.replace(font.0 as isize) != font.0 as isize {
+            SendMessageW(e, WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(0)));
+            SendMessageW(e, EM_SETMARGINS, Some(WPARAM((EC_LEFTMARGIN | EC_RIGHTMARGIN) as usize)), Some(LPARAM(0)));
+        }
+        let _ = SetWindowPos(e, None, x, y, bw, bh, SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        if !has && GetFocus() == page {
+            let _ = SetFocus(Some(e));
+            let end = GetWindowTextLengthW(e) as usize;
+            SendMessageW(e, EM_SETSEL, Some(WPARAM(end)), Some(LPARAM(end as isize)));
+        }
+    }
+}
+
+/// Saves the box's words: empty or the default removes the key (AC-10), anything else is
+/// written as typed, and unchanged words write nothing.
+fn save_words(text: &str) {
+    let saved = settings::get().attention_text.clone();
+    if text.trim().is_empty() || text == settings::ATTENTION_TEXT {
+        if saved != settings::ATTENTION_TEXT {
+            commit(Edit::Remove(path_of(WORDS)), "Popup words");
+        }
+    } else if text != saved {
+        commit(Edit::Value(WORDS, text.into()), "Popup words");
+    }
+}
+
+unsafe extern "system" fn words_proc(e: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    unsafe {
+        let own: WNDPROC = std::mem::transmute(WORDS_PROC.get());
+        let page = GetParent(e).unwrap_or_default();
+        match m {
+            WM_KEYDOWN => match VIRTUAL_KEY(wp.0 as u16) {
+                // The page's own keys: Tab, Up and Down move on, as from any stop.
+                VK_TAB | VK_UP | VK_DOWN => {
+                    let _ = PostMessageW(Some(page), m, wp, lp);
+                    return LRESULT(0);
+                }
+                VK_RETURN => {
+                    save_words(&edit_text(e));
+                    let now = settings::get().attention_text.clone();
+                    if edit_text(e) != now {
+                        set_edit(e, &now);
+                    }
+                    return LRESULT(0);
+                }
+                // Esc puts back the saved words; with nothing changed it is the page's Esc.
+                VK_ESCAPE => {
+                    let saved = settings::get().attention_text.clone();
+                    if edit_text(e) == saved {
+                        let _ = PostMessageW(Some(page), m, wp, lp);
+                    } else {
+                        set_edit(e, &saved);
+                    }
+                    return LRESULT(0);
+                }
+                _ => {}
+            },
+            // Their characters would only beep.
+            WM_CHAR if matches!(wp.0, 0x09 | 0x0D | 0x1B) => return LRESULT(0),
+            WM_MOUSEWHEEL => return SendMessageW(page, m, Some(wp), Some(lp)),
+            WM_KILLFOCUS => {
+                let r = CallWindowProcW(own, e, m, wp, lp);
+                let text = edit_text(e);
+                let _ = set(|w| w.words = None);
+                save_words(&text);
+                layout();
+                return r;
+            }
+            _ => {}
+        }
+        CallWindowProcW(own, e, m, wp, lp)
+    }
+}
+
 /// The theme the page paints with: the color picker's preview while it shows a color the
 /// file doesn't hold (spec 0021 AC-5).
 fn painted(w: &Win) -> Theme {
@@ -3872,6 +4119,7 @@ fn layout() {
         Some(Fit::Gone) => return pick_close(How::Quiet),
         _ => {}
     }
+    place_words();
     repaint();
 }
 
@@ -4351,7 +4599,8 @@ fn act(ctl: Ctl) {
         Ctl::Plus(key) if is_place(key) => step_place(key, true),
         Ctl::Reset(key) if key == ACCENT || ws_index(key).is_some() => reset_color(key),
         Ctl::Reset(key) if is_place(key) => reset_place(key),
-        Ctl::Hex(_) | Ctl::Picture | Ctl::ScreenItem(usize::MAX) => {}
+        Ctl::Reset(WORDS) => commit(Edit::Remove(path_of(WORDS)), "Popup words"),
+        Ctl::Hex(_) | Ctl::Words | Ctl::Picture | Ctl::ScreenItem(usize::MAX) => {}
         Ctl::Spot(i) => set_place(SPOT, i as f64),
         Ctl::Screens => open_chooser(),
         Ctl::ScreenItem(i) => choose_screen(i),
@@ -5701,6 +5950,7 @@ fn focus_on(c: Ctl) {
         }
         _ => reveal(),
     }
+    place_words();
 }
 
 /// Where the keyboard goes next, as in Windows Settings: Tab between the side list and the
@@ -5942,7 +6192,9 @@ pub fn open(section: Option<Section>) {
             geo: Geo::default(),
             ease: None,
             down_at: (0, 0),
+            words: None,
         }));
+        make_words(h, inst.into());
         // Shorter than H when the screen is (1366 × 768 at 125%); WM_SIZE sets vw and vh.
         let (ww, wh) = size(h, W, H);
         let wh = wh.min(work.bottom - work.top);
@@ -5995,6 +6247,24 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                 LRESULT(0)
             }
             WM_ERASEBKGND => LRESULT(1),
+            // The popup words' box: the page's colors, and the preview follows each key typed.
+            WM_CTLCOLOREDIT => {
+                let (dc, b) = (HDC(wp.0 as *mut _), get(|w| painted(w).b).unwrap_or(theme().b));
+                SetTextColor(dc, ui::cref(b.tx));
+                SetBkColor(dc, ui::cref(b.card));
+                LRESULT(crate::finder::edit_brush(b.card).0 as isize)
+            }
+            WM_COMMAND if (wp.0 >> 16) as u32 == EN_CHANGE => {
+                if let Some(e) = WORDS_EDIT.get()
+                    && e.0 as isize == lp.0
+                    && GetFocus() == e
+                {
+                    let text = edit_text(e);
+                    let _ = set(|w| w.words = Some(text));
+                    layout();
+                }
+                LRESULT(0)
+            }
             WM_KEYDOWN => {
                 let (vk, repeat) = (VIRTUAL_KEY(wp.0 as u16), lp.0 >> 30 & 1 == 1);
                 ease_finish();
@@ -6113,6 +6383,7 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                     let x = get(|w| point(lp, w.scale).0).unwrap_or(0.0);
                     enter_hex(k, Some(caret_at(at, x)));
                 }
+                place_words();
                 let _ = PostMessageW(Some(h), WM_MOUSEMOVE, wp, lp);
                 repaint();
                 LRESULT(0)
@@ -6237,6 +6508,8 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                 let _ = KillTimer(Some(h), EASE_TIMER);
                 RING.set(None);
                 SQUARE.set(None);
+                WORDS_EDIT.set(None);
+                WORDS_FONT.set(0);
                 crate::keys::record(h, false);
                 let _ = UiaReturnRawElementProvider(h, WPARAM(0), LPARAM(0), None);
                 drop(PAGE.with_borrow_mut(Option::take));
@@ -6566,7 +6839,7 @@ mod tests {
             hwnd: HWND::default(), scale, theme, fonts: Fonts::new(scale), scroll: 0.0, height: 0.0, fixed: 0.0, tops: vec![], hits: vec![],
             focus: None, kb: true, hover: None, press: None, drag: None, vw: W, vh: H, error: None, rec: None, refused: None, prompt: None, menu: None,
             pics: fake_pics(), edited: None, tree: Arc::new(Mutex::new(Node::default())),
-            hexes: vec![], own: None, screen: None, chooser: None, dragging: None, pick: None, geo: Geo::default(), ease: None, down_at: (0, 0),
+            hexes: vec![], own: None, screen: None, chooser: None, dragging: None, pick: None, geo: Geo::default(), ease: None, down_at: (0, 0), words: None,
         }
     }
 
@@ -6824,7 +7097,7 @@ mod tests {
         let runs: Vec<(&str, Theme, f32)> = vec![("light", ui::LIGHT, 1.0), ("dark", ui::DARK, 1.0), ("hc", night_sky, 1.0), ("light-150", ui::LIGHT, 1.5), ("rose", ui::tests::rose(true), 1.0), ("rose-dark", ui::tests::rose(false), 1.0)];
         // Name, section to scroll to, what to set up.
         type Setup = fn(&mut Win);
-        let states: [(&str, Option<Section>, Setup); 24] = [
+        let states: [(&str, Option<Section>, Setup); 27] = [
             ("colors", Some(Section::Colors), |_| {}),
             ("colors-own", Some(Section::Colors), |w| {
                 settings::use_for_test("[colors]\naccent = \"#E0457B\"\nws2 = \"#FFF4B0\"\nws3 = \"blue\"\n");
@@ -6857,6 +7130,12 @@ mod tests {
             ("menu", Some(Section::Touchpad), |_| {}),
             ("keys", Some(Section::Shortcuts), |_| {}),
             ("indicator", Some(Section::Indicator), |_| {}),
+            ("attention", Some(Section::Attention), |_| {}),
+            ("attention-own", Some(Section::Attention), |w| {
+                settings::use_for_test("[attention]\ntext = \"{{AppName}} has something for you\"\n[indicator]\nstyle = \"dots\"\n");
+                w.focus = Some(Ctl::Words);
+            }),
+            ("attention-off", Some(Section::Attention), |_| settings::use_for_test("[attention]\nenabled = false\n")),
             ("overview", Some(Section::Overview), |w| w.focus = Some(Ctl::Stepper("overview.fade_ms"))),
             ("motion", Some(Section::Motion), |w| w.focus = Some(Ctl::Toggle("fastest"))),
             ("touchpad", Some(Section::Touchpad), |_| {}),

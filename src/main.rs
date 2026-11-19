@@ -236,6 +236,19 @@ fn main() -> windows::core::Result<()> {
             keys::WM_JUMP => ws::jump(msg.wParam.0),
             keys::WM_SEND_TO => ws::send(ws::To::Index(msg.wParam.0), msg.lParam.0 != 0),
             keys::WM_PIN => ws::pin(),
+            indicator::WM_ATTENTION => {
+                let p = ws::attention(HWND(msg.wParam.0 as *mut _));
+                overview::wants_changed();
+                // The mark is set either way; only the popup waits (spec 0022 AC-3, AC-7).
+                if let Some(p) = p
+                    && !overview::is_open()
+                    && !indicator::busy(p.mon)
+                {
+                    // Never the title: it often carries the message itself (spec 0022 AC-9).
+                    let text = settings::attention_line(&finder::app_name(p.hwnd).unwrap_or_default());
+                    indicator::show(p.mon, p.card.with(indicator::Line::Wants { text, ws: p.ws }));
+                }
+            }
             keys::WM_FINDER => {
                 overview::close(true);
                 finder::toggle();
