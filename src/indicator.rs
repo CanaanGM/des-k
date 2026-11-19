@@ -22,6 +22,9 @@ use crate::ui::{self, Canvas, F, Theme, mix, op};
 pub const CLASS: windows::core::PCWSTR = w!("des-k-indicator");
 /// Posted to the main loop on WM_DISPLAYCHANGE (handled there, never inside a sent message).
 pub const WM_DISPLAY_CHANGED: u32 = WM_APP + 1;
+/// Posted to the main loop when a window flashes (spec 0022): wParam is the window.
+pub const WM_ATTENTION: u32 = WM_APP + 16;
+const HSHELL_FLASH: usize = 0x8006; // HSHELL_REDRAW | HSHELL_HIGHBIT
 
 const FADE_TIMER: usize = 1;
 const FADE_STEP_MS: u32 = 16;
@@ -38,11 +41,13 @@ pub struct Card {
     /// The screen's id (spec 0016), for its own place (spec 0020 AC-9); empty uses the default.
     pub screen_id: String,
     pub lines: Vec<Line>,
+    /// This screen's workspaces with a window that flashed while hidden (spec 0022), 0 based.
+    pub wants: Vec<usize>,
 }
 
 impl Card {
     pub fn new(active: usize, count: usize, screen: Option<String>) -> Card {
-        Card { active, count, screen, screen_id: String::new(), lines: vec![] }
+        Card { active, count, screen, screen_id: String::new(), lines: vec![], wants: vec![] }
     }
 
     pub fn with(mut self, line: Line) -> Card {
@@ -68,11 +73,14 @@ pub enum Line {
     ScreenGone { name: String, moved: usize, to: Option<String> },
     /// A screen back; `here`: the card is on that screen.
     ScreenBack { name: String, moved: usize, left: usize, here: bool },
+    /// A window hidden on `ws` flashed (spec 0022): `text` is the filled attention text.
+    Wants { text: String, ws: usize },
 }
 
 impl Line {
     fn note(&self) -> bool {
-        matches!(self, Line::ScreenGone { .. } | Line::ScreenBack { .. })
+        // A popup comes unasked, like a screen note, so it holds as long.
+        matches!(self, Line::ScreenGone { .. } | Line::ScreenBack { .. } | Line::Wants { .. })
     }
 }
 
@@ -90,32 +98,43 @@ thread_local! {
     static SPOKEN: RefCell<String> = const { RefCell::new(String::new()) };
     static ALPHA: Cell<u8> = const { Cell::new(0) };
     static STEP: Cell<u8> = const { Cell::new(255) }; // alpha lost per fade tick
+    static SHELLHOOK: Cell<u32> = const { Cell::new(0) }; // 0 until registered
 }
 
 fn windows(n: usize) -> String {
     if n == 1 { "1 window".into() } else { format!("{n} windows") }
 }
 
-/// A line's icon (a Segoe Fluent Icons code), whether it warns, its title with the workspace
-/// chip that ends it, if any, and its grey second line.
+/// An icon's color: grey, the warning color, or the accent a mark is drawn in (spec 0022).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Ink {
+    Plain,
+    Warn,
+    Accent,
+}
+
+/// A line's icon (a Segoe Fluent Icons code) and its color, its title with the workspace chip
+/// that ends it, if any, and its grey second line with its own chip.
 struct Words {
     icon: char,
-    warn: bool,
+    ink: Ink,
     title: String,
     chip: Option<usize>,
     sub: String,
+    sub_chip: Option<usize>,
 }
 
 fn words(card: &Card, line: &Line, named: bool) -> Words {
     let on = card.active + 1;
-    let w = |icon: char, title: String, sub: String| Words { icon, warn: false, title, chip: None, sub };
+    let w = |icon: char, title: String, sub: String| Words { icon, ink: Ink::Plain, title, chip: None, sub, sub_chip: None };
     match line {
         Line::Sent { to, unpinned } => Words {
             icon: '\u{E724}',
-            warn: false,
+            ink: Ink::Plain,
             title: "Window sent to ".into(),
             chip: Some(*to),
             sub: if *unpinned { format!("Unpinned, you stay on {on}") } else { format!("You stay on {on}") },
+            sub_chip: None,
         },
         Line::SentBack => w('\u{E7A7}', format!("Window back on {on}"), String::new()),
         Line::Already => w('\u{E73E}', format!("Window already on {on}"), String::new()),
@@ -136,8 +155,11 @@ fn words(card: &Card, line: &Line, named: bool) -> Words {
                 (m, 0) => format!("{} returned", windows(*m)),
                 (m, l) => format!("{} returned, {l} could not be moved", windows(*m)),
             };
-            Words { icon: if *left > 0 { '\u{E7BA}' } else { '\u{E7F4}' }, warn: *left > 0, title, chip: None, sub }
+            let ink = if *left > 0 { Ink::Warn } else { Ink::Plain };
+            Words { icon: if *left > 0 { '\u{E7BA}' } else { '\u{E7F4}' }, ink, title, chip: None, sub, sub_chip: None }
         }
+        // The bell in the accent, the marks' color: the popup and the dots say the same thing.
+        Line::Wants { text, ws } => Words { icon: '\u{EA8F}', ink: Ink::Accent, title: text.clone(), chip: None, sub: "On workspace ".into(), sub_chip: Some(*ws) },
     }
 }
 
@@ -152,7 +174,7 @@ fn spoken(card: &Card, style: Style) -> String {
         let w = words(card, line, named);
         s += &format!(", {}{}", w.title, w.chip.map_or(String::new(), |n| (n + 1).to_string()));
         if !w.sub.is_empty() {
-            s += &format!(", {}", w.sub);
+            s += &format!(", {}{}", w.sub, w.sub_chip.map_or(String::new(), |n| (n + 1).to_string()));
         }
     }
     s
@@ -164,16 +186,38 @@ const PR: f32 = 12.0; // and its extra on the right (a media tile, not a symmetr
 const BLOCK: f32 = 60.0;
 const COL: f32 = 14.0; // between the block's column and the name's
 const MAX_W: f32 = 380.0;
+const WANT: f32 = 5.0; // a mark's dot (spec 0022)
+// Marks hang on one line under the bars' 12 dip row or the 8 dip dots, clear of a send
+// target's ring (1.5 dip out), so they line up whatever the bar above them is.
+const WANT_BAR: f32 = 14.0; // from the bars' row top
+const WANT_DOT: f32 = 13.0; // from the dots' top
 
 /// The chip a line's title ends with: its width.
 fn chip_w(c: &Canvas, n: usize) -> f32 {
     (c.width(&(n + 1).to_string(), F::SmallBold) + 10.0).max(20.0)
 }
 
+/// Workspace `n`'s chip, `h` tall, at x, y.
+fn chip(c: &Canvas, x: f32, y: f32, h: f32, n: usize) {
+    let t = &c.t.b;
+    let (color, cw) = (t.ws[n % 9], chip_w(c, n));
+    let edge = (t.ws_edge > 0.0).then(|| mix(color, 0, t.ws_edge));
+    c.boxed((x, y, cw, h), 4.0, color, edge);
+    let num = (n + 1).to_string();
+    c.text(x + (cw - c.width(&num, F::SmallBold)) / 2.0, y, h, &num, F::SmallBold, t.on_ws[n % 9]);
+}
+
 /// A line's widest unwrapped run.
 fn natural(c: &Canvas, w: &Words) -> f32 {
     let title = c.width(&w.title, F::Bold) + w.chip.map_or(0.0, |n| 2.0 + chip_w(c, n));
-    title.max(c.width(&w.sub, F::Small))
+    title.max(c.width(&w.sub, F::Small) + w.sub_chip.map_or(0.0, |n| 2.0 + chip_w(c, n)))
+}
+
+/// The mark under workspace `i`'s bar or dot, centered on `cx` from `top`, when it has one.
+fn want(c: &Canvas, card: &Card, i: usize, cx: f32, top: f32) {
+    if card.wants.contains(&i) {
+        c.fill_rr((cx - WANT / 2.0, top, WANT, WANT), WANT / 2.0, op(c.t.b.acc));
+    }
 }
 
 /// The lines under the rule from `y`: icons centered in a column `icon_w` wide at `x`, the text
@@ -187,21 +231,29 @@ fn lines(c: &Canvas, x: f32, y: f32, icon_w: f32, gap: f32, text_w: f32, all: &[
         }
         let (top, xt) = (y + h, x + icon_w + gap);
         let glyph = w.icon.to_string();
-        c.text(x + (icon_w - c.width(&glyph, F::Icon)) / 2.0, top, 20.0, &glyph, F::Icon, if w.warn { t.warn } else { t.tx2 });
+        let ink = match w.ink {
+            Ink::Plain => t.tx2,
+            Ink::Warn => t.warn,
+            Ink::Accent => t.acc,
+        };
+        c.text(x + (icon_w - c.width(&glyph, F::Icon)) / 2.0, top, 20.0, &glyph, F::Icon, ink);
         let title_h = match w.chip {
             Some(n) => {
                 c.text(xt, top, 20.0, &w.title, F::Bold, t.tx);
-                let (cx, cw) = (xt + c.width(&w.title, F::Bold) + 2.0, chip_w(c, n));
-                let color = t.ws[n % 9];
-                let edge = (t.ws_edge > 0.0).then(|| mix(color, 0, t.ws_edge));
-                c.boxed((cx, top + 1.0, cw, 18.0), 4.0, color, edge);
-                let num = (n + 1).to_string();
-                c.text(cx + (cw - c.width(&num, F::SmallBold)) / 2.0, top + 1.0, 18.0, &num, F::SmallBold, t.on_ws[n % 9]);
+                chip(c, xt + c.width(&w.title, F::Bold) + 2.0, top + 1.0, 18.0, n);
                 20.0
             }
             None => c.para(xt, top, text_w, 20.0, &[(&w.title, F::Bold, t.tx)]),
         };
-        let sub_h = if w.sub.is_empty() { 0.0 } else { c.para(xt, top + title_h, text_w, 16.0, &[(&w.sub, F::Small, t.tx2)]) };
+        let sub_h = match w.sub_chip {
+            _ if w.sub.is_empty() => 0.0,
+            Some(n) => {
+                c.text(xt, top + title_h + 2.0, 16.0, &w.sub, F::Small, t.tx2);
+                chip(c, xt + c.width(&w.sub, F::Small) + 2.0, top + title_h + 2.0, 16.0, n);
+                20.0
+            }
+            None => c.para(xt, top + title_h, text_w, 16.0, &[(&w.sub, F::Small, t.tx2)]),
+        };
         h += (title_h + sub_h).max(20.0);
     }
     h
@@ -232,6 +284,8 @@ fn draw(c: &Canvas, x: f32, y: f32, style: Style, card: &Card, edge: bool) -> (f
     let lit = |i: usize| i == card.active || pinned || target == Some(i);
     let text_nat = all.iter().map(|w| natural(c, w)).fold(0.0, f32::max);
     let rule_px = c.s.floor().max(1.0) / c.s;
+    // A row of marks under the bars or dots grows the card by their reach below the row.
+    let marked = card.wants.iter().any(|&i| i < card.count);
 
     // Card: block, name and bars; lines in the block's and the name's columns.
     // Dots: a pill; lines in a 16 wide icon column.
@@ -244,7 +298,8 @@ fn draw(c: &Canvas, x: f32, y: f32, style: Style, card: &Card, edge: bool) -> (f
         Style::Dots => {
             let dots: f32 = (0..card.count).map(|i| if i == card.active { 24.0 } else { 8.0 }).sum::<f32>() + 8.0 * card.count.saturating_sub(1) as f32;
             let pad = if all.is_empty() { 16.0 } else { 12.0 };
-            ((pad + dots.max(if all.is_empty() { 0.0 } else { 26.0 + text_nat }) + pad).ceil().min(MAX_W), pad, 16.0, 10.0, 12.0 + 8.0)
+            let reach = if marked { WANT_DOT + WANT - 8.0 } else { 0.0 };
+            ((pad + dots.max(if all.is_empty() { 0.0 } else { 26.0 + text_nat }) + pad).ceil().min(MAX_W), pad, 16.0, 10.0, 12.0 + 8.0 + reach)
         }
     };
     let text_w = match style {
@@ -267,7 +322,7 @@ fn draw(c: &Canvas, x: f32, y: f32, style: Style, card: &Card, edge: bool) -> (f
         return (w, h);
     }
 
-    let radius = if style == Style::Dots && all.is_empty() { 16.0 } else { 8.0 };
+    let radius = if style == Style::Dots && all.is_empty() { h / 2.0 } else { 8.0 };
     c.boxed((x, y, w, h), radius, t.card, edge.then_some(t.edge));
     match style {
         Style::Card => {
@@ -277,7 +332,7 @@ fn draw(c: &Canvas, x: f32, y: f32, style: Style, card: &Card, edge: bool) -> (f
             let num = (card.active + 1).to_string();
             c.text(x + P + (BLOCK - c.width(&num, F::Number)) / 2.0, y + P, BLOCK, &num, F::Number, t.on_ws[card.active % 9]);
             let side = x + P + BLOCK + COL;
-            let side_h = if named { 20.0 + 10.0 + 12.0 } else { 12.0 };
+            let side_h = if named { 20.0 + 10.0 + 12.0 } else { 12.0 } + if marked { WANT_BAR + WANT - 12.0 } else { 0.0 };
             let mut row = y + P + (BLOCK - side_h) / 2.0;
             if let (true, Some(name)) = (named, &card.screen) {
                 c.text(side, row, 20.0, &c.fit(name, F::Bold, text_w), F::Bold, t.tx);
@@ -287,6 +342,7 @@ fn draw(c: &Canvas, x: f32, y: f32, style: Style, card: &Card, edge: bool) -> (f
             for i in 0..card.count {
                 let (bw, bh) = if i == card.active { (28.0, 8.0) } else if lit(i) { (14.0, 6.0) } else { (14.0, 4.0) };
                 mark(c, (bx, row + (12.0 - bh) / 2.0, bw, bh), bh / 2.0, i, lit(i), target == Some(i));
+                want(c, card, i, bx + bw / 2.0, row + WANT_BAR);
                 bx += bw + 6.0;
             }
         }
@@ -295,6 +351,7 @@ fn draw(c: &Canvas, x: f32, y: f32, style: Style, card: &Card, edge: bool) -> (f
             for i in 0..card.count {
                 let dw = if i == card.active { 24.0 } else { 8.0 };
                 mark(c, (dx, dy, dw, 8.0), 4.0, i, lit(i), target == Some(i));
+                want(c, card, i, dx + dw / 2.0, dy + WANT_DOT);
                 dx += dw + 8.0;
             }
         }
@@ -370,6 +427,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 let _ = PostMessageW(Some(hwnd), WM_DISPLAY_CHANGED, WPARAM(0), LPARAM(0));
                 LRESULT(0)
             }
+            // Only posts: the main loop owns `ws` (spec 0022). Each blink sends one, and a stop
+            // sends none (tried 2026-11-19).
+            m if m != 0 && m == SHELLHOOK.get() => {
+                if wp.0 == HSHELL_FLASH {
+                    let _ = PostMessageW(Some(hwnd), WM_ATTENTION, WPARAM(lp.0 as usize), LPARAM(0));
+                }
+                LRESULT(0)
+            }
             _ => DefWindowProcW(hwnd, msg, wp, lp),
         }
     }
@@ -391,14 +456,37 @@ fn window() -> Option<HWND> {
     if let Err(e) = unsafe { ChangeWindowMessageFilterEx(h, WM_CLOSE, MSGFLT_ALLOW, None) } {
         warn!("indicator: WM_CLOSE not let in from normal programs: {e}");
     }
+    // How the taskbar hears a window flash (spec 0022). No message filter on purpose: one would
+    // let any program fake a flash.
+    let id = unsafe { RegisterWindowMessageW(w!("SHELLHOOK")) };
+    if id != 0 && unsafe { RegisterShellHookWindow(h) }.as_bool() {
+        SHELLHOOK.set(id);
+    } else {
+        error!("indicator: no shell hook, so a window flashing on a hidden workspace will show nothing");
+    }
     WND.set(Some(h));
     Some(h)
+}
+
+/// Whether a popup on `mon` would get in your way (spec 0022 AC-7): presentation mode on any
+/// screen, or a full screen app in front on `mon` itself, so a video on another screen does not
+/// silence it.
+pub fn busy(mon: HMONITOR) -> bool {
+    use windows::Win32::UI::Shell::{QUNS_APP, QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN, SHQueryUserNotificationState};
+    let Ok(state) = (unsafe { SHQueryUserNotificationState() }) else { return false };
+    if state == QUNS_PRESENTATION_MODE {
+        return true;
+    }
+    let full = [QUNS_BUSY, QUNS_RUNNING_D3D_FULL_SCREEN, QUNS_APP].contains(&state);
+    full && unsafe { MonitorFromWindow(GetForegroundWindow(), MONITOR_DEFAULTTONEAREST) } == mon
 }
 
 /// Show `card` centered on `mon`'s work area, replacing whatever the indicator shows.
 pub fn show(mon: HMONITOR, card: Card) {
     let st = settings::get();
-    if !st.indicator_enabled {
+    // A window that wants you has its own switch, `[attention] enabled` (spec 0022 AC-8).
+    let wants = card.lines.iter().any(|l| matches!(l, Line::Wants { .. }));
+    if !st.indicator_enabled && !wants {
         return;
     }
     let Some(h) = window() else { return };
@@ -542,7 +630,7 @@ mod tests {
         assert_eq!(words(&c, &back, true).title, "Back");
         assert_eq!(words(&c, &back, false).title, "DELL U2720Q is back"); // the dots name no screen
         assert_eq!(words(&c, &back, true).sub, "3 windows returned, 2 could not be moved");
-        assert!(words(&c, &back, true).warn);
+        assert_eq!(words(&c, &back, true).ink, Ink::Warn);
         let none = Line::ScreenBack { name: "X".into(), moved: 0, left: 2, here: true };
         assert_eq!(words(&c, &none, true).sub, "2 windows could not be moved");
         let gone = Line::ScreenGone { name: "LG HDR 4K".into(), moved: 1, to: Some("Built-in display".into()) };
@@ -565,6 +653,7 @@ mod tests {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("indicator");
         std::fs::create_dir_all(&dir).unwrap();
         let dell = || Some("DELL U2720Q".to_string());
+        let wants = |c: Card, ws: &[usize]| Card { wants: ws.to_vec(), ..c };
         let sent = |stay| Line::Sent { to: 2, unpinned: stay };
         let gone = |to: Option<&str>| Line::ScreenGone { name: "DELL U2720Q".into(), moved: 5, to: to.map(Into::into) };
         let states: Vec<(&str, Card)> = vec![
@@ -598,6 +687,18 @@ mod tests {
                 "long-line",
                 Card::new(0, 4, Some("Built-in display".into())).with(Line::ScreenGone { name: "LG ULTRAGEAR 27GR95QE OLED Gaming Monitor".into(), moved: 2, to: None }),
             ),
+            // Spec 0022: the popup, and the marks every later card carries.
+            ("wants", wants(Card::new(0, 4, dell()), &[2]).with(Line::Wants { text: "Slack misses you".into(), ws: 2 })),
+            ("wants-one-screen", wants(Card::new(0, 4, None), &[2]).with(Line::Wants { text: "Slack misses you".into(), ws: 2 })),
+            ("wants-two", wants(Card::new(0, 4, dell()), &[1, 3]).with(Line::Wants { text: "Outlook misses you".into(), ws: 3 })),
+            (
+                "wants-long",
+                wants(Card::new(1, 6, dell()), &[4]).with(Line::Wants { text: "Microsoft Teams (work or school) wants you back on that call right now".into(), ws: 4 }),
+            ),
+            ("marked-switch", wants(Card::new(1, 4, dell()), &[2])),
+            ("marked-one-screen", wants(Card::new(0, 4, None), &[2, 3])),
+            ("marked-sent", wants(Card::new(1, 4, dell()), &[2]).with(sent(false))),
+            ("marked-nine", wants(Card::new(6, 9, dell()), &[0, 4, 8])),
         ];
         let aquatic = ui::high_contrast([0x202020, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);
         let desert = ui::high_contrast([0xFFFAEF, 0x3D3D3D, 0x903909, 0xFFF5E3, 0x6D6D6D]);

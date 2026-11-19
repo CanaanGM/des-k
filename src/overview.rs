@@ -64,6 +64,8 @@ const SLOT_GAP: f32 = 32.0;
 const RING: f32 = 2.0; // a chosen or pointed at window's ring
 const RING_OFF: f32 = 3.0; // its gap from the window
 const TILE_RING_OFF: f32 = 2.0;
+const WANT: f32 = 6.0; // a mark's dot under a tile's chip (spec 0022)
+const WANT_GAP: f32 = 4.0;
 const LABEL: f32 = 22.0; // the band under each spread window
 const LABEL_PAD: f32 = 4.0;
 const ICON: f32 = 16.0;
@@ -140,6 +142,7 @@ struct Screen {
     note: Option<Note>,
     painted: bool, // its first full paint is done (spec 0017 AC-8)
     tree: Tree,
+    wants: Vec<(usize, HWND)>, // marked windows here, by workspace (spec 0022)
 }
 
 /// What a note says (AC-OVR-8).
@@ -927,10 +930,11 @@ fn open() {
             warn!("overview: close button for {device} not created");
             HWND::default()
         });
-        let mut sc = Screen { device, popup, rect, scale, shown: 0, tiles: Vec::new(), slots: Vec::new(), cell_w: 0, labels: Labels::Hover, face: Face::Card, close_btn, note: None, painted: false, tree: Tree::default() };
+        let mut sc = Screen { device, popup, rect, scale, shown: 0, tiles: Vec::new(), slots: Vec::new(), cell_w: 0, labels: Labels::Hover, face: Face::Card, close_btn, note: None, painted: false, tree: Tree::default(), wants: Vec::new() };
         sc.build(&places);
         screens.push(sc);
     }
+    take_wants(&mut screens, &ws::wanted());
     let start = screens.iter().position(|s| s.device == mouse).unwrap_or(0);
     let Some(sc) = screens.get(start) else {
         return warn!("overview: no screen to open on");
@@ -1140,6 +1144,28 @@ pub fn key(msg: &MSG) -> bool {
     true
 }
 
+/// Each screen's marks from `ws::wanted` (spec 0022). Paint reads only these, never the layout,
+/// so a new mark shows without moving a tile or a window.
+fn take_wants(screens: &mut [Screen], wanted: &[(String, usize, HWND)]) {
+    for sc in screens {
+        sc.wants = wanted.iter().filter(|w| w.0 == sc.device).map(|w| (w.1, w.2)).collect();
+    }
+}
+
+/// A window got a mark (spec 0022 AC-3): it shows at once in an open overview.
+pub fn wants_changed() {
+    if !is_open() {
+        return;
+    }
+    let wanted = ws::wanted();
+    let popups = SESSION.with_borrow_mut(|s| {
+        let Some(s) = s.as_mut() else { return Vec::new() };
+        take_wants(&mut s.screens, &wanted);
+        s.screens.iter().map(|sc| sc.popup).collect::<Vec<_>>()
+    });
+    invalidate(popups);
+}
+
 fn invalidate(popups: impl IntoIterator<Item = HWND>) {
     for p in popups {
         unsafe { let _ = InvalidateRect(Some(p), None, false); }
@@ -1237,6 +1263,7 @@ fn go(hwnd: HWND) {
 /// one may sit in a tile on one screen and in the spread on another.
 fn rebuild() {
     let mut places = ws::windows();
+    let wanted = ws::wanted();
     let (popups, old) = SESSION.with_borrow_mut(|s| {
         let Some(s) = s.as_mut() else { return (Vec::new(), None) };
         // Seen with the closing windows, so the refresh does not take them for a change.
@@ -1245,6 +1272,7 @@ fn rebuild() {
         for sc in &mut s.screens {
             sc.build(&places);
         }
+        take_wants(&mut s.screens, &wanted);
         s.fix_selection();
         s.tile_hover = None;
         (s.screens.iter().map(|sc| sc.popup).collect(), s.hover.take())
@@ -1950,6 +1978,12 @@ fn draw(c: &Canvas, sc: &Screen, m: &Marks) {
             }
         }
         chip(c, r.0 + r.2 / 2.0, r.1 + r.3 + CHIP_GAP, i, i == sc.shown);
+        // The indicator's mark, under the workspace (design attention-r2): a ring around a mini
+        // would read as a chosen window or a drop target, purple's only meanings here.
+        if sc.wants.iter().any(|w| w.0 == i) {
+            let (cx, top) = (r.0 + r.2 / 2.0, r.1 + r.3 + CHIP_GAP + CHIP_H + WANT_GAP);
+            c.fill_rr((cx - WANT / 2.0, top, WANT, WANT), WANT / 2.0, op(b.acc));
+        }
     }
     for sl in &sc.slots {
         let r = bx(sl.rect);
@@ -2356,7 +2390,7 @@ mod tests {
     fn screen(w: i32, h: i32, scale: f32, shown: usize, workspaces: usize) -> Screen {
         let rect = RECT { left: 0, top: 0, right: w, bottom: h };
         let tiles = strip(w, h, workspaces, scale).into_iter().map(|rect| Tile { rect, minis: Vec::new() }).collect();
-        Screen { device: "D".into(), popup: HWND::default(), rect, scale, shown, tiles, slots: Vec::new(), cell_w: 0, labels: Labels::Hover, face: Face::Card, close_btn: HWND::default(), note: None, painted: false, tree: Tree::default() }
+        Screen { device: "D".into(), popup: HWND::default(), rect, scale, shown, tiles, slots: Vec::new(), cell_w: 0, labels: Labels::Hover, face: Face::Card, close_btn: HWND::default(), note: None, painted: false, tree: Tree::default(), wants: Vec::new() }
     }
 
     // AC-7: a drop lands where you let go: on a tile, that workspace; anywhere in the spread,
@@ -2646,7 +2680,11 @@ mod tests {
             ("cant-close-admin", (design_windows(), 1, 4, Labels::Hover, &[]), Marks { selected: Some(code), bar: Some(Bar::Note(Note::CantCloseAdmin)), ..Marks::default() }),
             ("cant-close", (design_windows(), 1, 4, Labels::Hover, &[]), Marks { selected: Some(code), bar: Some(Bar::Note(Note::CantClose)), ..Marks::default() }),
             ("didnt-close", (design_windows(), 1, 4, Labels::Hover, &[]), Marks { selected: Some(note), bar: Some(Bar::Note(Note::DidntClose)), ..Marks::default() }),
+            // Spec 0022: Outlook on 3 and the full screen PowerShell on 1 want you.
+            ("wants", (design_windows(), 1, 4, Labels::Hover, &[]), Marks { selected: Some(code), bar: Some(Bar::Keys), ..Marks::default() }),
+            ("wants-drag", (design_windows(), 1, 4, Labels::Hover, &[]), Marks { src: Some(note), aim: Some(Aim::Tile(2)), bar: Some(Bar::Drag), ..Marks::default() }),
         ];
+        let marked = |name: &str| if name.starts_with("wants") { vec![(0, HWND(std::ptr::without_provenance_mut(10))), (2, HWND(std::ptr::without_provenance_mut(17)))] } else { vec![] };
         let aquatic = ui::high_contrast([0x202020, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);
         let desert = ui::high_contrast([0xFFFAEF, 0x3D3D3D, 0x903909, 0xFFF5E3, 0x6D6D6D]);
         let themes: [(&str, Theme, f32, u32); 5] = [("light", LIGHT, 1.0, 0xCFD9EE), ("dark", DARK, 1.0, 0x1A2030), ("hc", aquatic, 1.0, 0x000000), ("desert", desert, 1.0, 0xFFFAEF), ("light-150", LIGHT, 1.5, 0xCFD9EE)];
@@ -2654,6 +2692,7 @@ mod tests {
             for (name, (wins, shown, n, labels, cards), m) in &states {
                 let mut sc = laid_out(scale, *shown, *n, wins, cards, *labels);
                 sc.face = Face::Color(wall);
+                sc.wants = marked(name);
                 let (w, h) = sc.size();
                 let path = dir.join(format!("{name}-{tname}.png"));
                 ui::tests::save_png(w, h, &path, |dc| {

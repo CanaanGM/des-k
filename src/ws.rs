@@ -194,6 +194,8 @@ struct State {
     pinned: HashSet<isize>,
     // Each saved window's app by (hwnd, pid), which never changes: a save opens no process twice.
     apps: HashMap<(isize, u32), String>,
+    // Hidden windows that flashed since they were hidden (spec 0022); memory only.
+    wants: HashSet<isize>,
 }
 
 /// Matching reopened windows to saved entries after a new sign in (spec 0003).
@@ -261,7 +263,11 @@ fn label(s: &State, id: &str) -> String {
 /// The indicator's card for screen `id`: named only when two or more screens are plugged in,
 /// and carrying the id so the indicator finds that screen's own place (spec 0020 AC-9).
 fn card(s: &State, id: &str, active: usize, count: usize) -> Card {
-    Card { screen_id: id.to_string(), ..Card::new(active, count, (s.present.len() > 1).then(|| label(s, id))) }
+    let on = settings::get().attention_enabled;
+    let wants = s.monitors.get(id).filter(|_| on).map_or_else(Vec::new, |m| {
+        (0..m.hidden.len()).filter(|&i| m.hidden[i].iter().any(|h| s.wants.contains(h))).collect()
+    });
+    Card { screen_id: id.to_string(), wants, ..Card::new(active, count, (s.present.len() > 1).then(|| label(s, id))) }
 }
 
 /// The indicator on `mon` as it is now: the settings page's Show (spec 0012 AC-19).
@@ -364,6 +370,12 @@ fn pid_of(hwnd: HWND) -> u32 {
 /// While a restore runs, its pending entries are written too (hwnd 0), so another restart
 /// still has them.
 fn save(s: &mut State) {
+    // Every change to where windows live ends here, so a mark leaves with its window on any path
+    // (spec 0022 AC-4).
+    let wants = std::mem::take(&mut s.wants);
+    if settings::get().attention_enabled {
+        s.wants = wants.into_iter().filter(|&h| hidden_on(s, h).is_some()).collect();
+    }
     save_lines(s, true);
 }
 
@@ -1535,6 +1547,56 @@ pub fn app_previous() {
     }
     focus(next);
     info!("app_previous: {} on {name}", who(next));
+}
+
+/// Where a window that wants you is, for its popup (spec 0022).
+pub struct Popup {
+    pub mon: HMONITOR,
+    pub card: Card,
+    pub hwnd: HWND,
+    pub ws: usize,
+}
+
+/// `h` flashed: mark it if des-k hides it (or its owner, as a follow does), the first time only.
+/// A popup for its screen unless that screen is unplugged (spec 0022 AC-1, AC-5 to AC-7).
+pub fn attention(h: HWND) -> Option<Popup> {
+    if !settings::get().attention_enabled {
+        return None;
+    }
+    let mut s = state();
+    let root = unsafe { GetAncestor(h, GA_ROOTOWNER) };
+    let (raw, (id, ws)) = [h, root].into_iter().filter(|w| !w.is_invalid()).find_map(|w| Some((w.0 as isize, hidden_on(&s, w.0 as isize)?)))?;
+    if !s.wants.insert(raw) {
+        return None;
+    }
+    let hwnd = HWND(raw as *mut _);
+    info!("attention: {} wants you on {id}, workspace {}", who(hwnd), ws + 1);
+    let mon = mon_of(&s, &id)?;
+    let active = s.monitors.get(&id).map_or(0, |m| m.active);
+    Some(Popup { mon, card: card(&s, &id, active, settings::get().workspaces), hwnd, ws })
+}
+
+/// Marked windows on present screens, by device, workspace and window: the overview's dots
+/// (spec 0022 AC-3).
+pub fn wanted() -> Vec<(String, usize, HWND)> {
+    if !settings::get().attention_enabled {
+        return vec![];
+    }
+    let s = state();
+    s.wants
+        .iter()
+        .filter_map(|&h| {
+            let (id, ws) = hidden_on(&s, h)?;
+            let p = s.present.iter().find(|p| p.id == id)?;
+            Some((p.device.clone(), ws, HWND(h as *mut _)))
+        })
+        .collect()
+}
+
+/// `[attention] enabled` went off: every mark goes, so turning it on again brings none back
+/// (spec 0022 AC-8).
+pub fn forget_wants() {
+    state().wants.clear();
 }
 
 fn hidden_on(s: &State, raw: isize) -> Option<(String, usize)> {
