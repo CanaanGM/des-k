@@ -221,14 +221,14 @@ fn main() -> windows::core::Result<()> {
 
     let mut msg = MSG::default();
     while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
-        // Any switch, jump, send, pin, hints key or screen change closes the finder, the overview
-        // and the tray menu first, focus back (specs 0007, 0010, 0017).
-        if matches!(msg.message, WM_APP | indicator::WM_DISPLAY_CHANGED | keys::WM_SEND | keys::WM_JUMP | keys::WM_SEND_TO | keys::WM_PIN | keys::WM_HINTS) {
+        // Any switch, jump, back, send, pin, hints key or screen change closes the finder, the
+        // overview and the tray menu first, focus back (specs 0007, 0010, 0017, 0024).
+        if matches!(msg.message, WM_APP | indicator::WM_DISPLAY_CHANGED | keys::WM_SEND | keys::WM_JUMP | keys::WM_BACK | keys::WM_SEND_TO | keys::WM_PIN | keys::WM_HINTS) {
             finder::close(true);
             overview::close(true);
         }
         // The tray menu also closes for a gesture, a follow, the finder and the overview (AC-TRY-9).
-        if matches!(msg.message, WM_APP | indicator::WM_DISPLAY_CHANGED | keys::WM_SEND | keys::WM_JUMP | keys::WM_SEND_TO | keys::WM_PIN | keys::WM_HINTS | keys::WM_FINDER | keys::WM_OVERVIEW | touchpad::WM_GESTURE | WM_FOLLOW) {
+        if matches!(msg.message, WM_APP | indicator::WM_DISPLAY_CHANGED | keys::WM_SEND | keys::WM_JUMP | keys::WM_BACK | keys::WM_SEND_TO | keys::WM_PIN | keys::WM_HINTS | keys::WM_FINDER | keys::WM_OVERVIEW | touchpad::WM_GESTURE | WM_FOLLOW) {
             tray_menu::close(msg.message != WM_FOLLOW); // a follow already moved focus
         }
         match msg.message {
@@ -250,6 +250,7 @@ fn main() -> windows::core::Result<()> {
             }
             keys::WM_SEND => ws::send(ws::To::Step(msg.wParam.0 as isize), msg.lParam.0 != 0),
             keys::WM_JUMP => ws::jump(msg.wParam.0),
+            keys::WM_BACK => ws::back(),
             keys::WM_SEND_TO => ws::send(ws::To::Index(msg.wParam.0), msg.lParam.0 != 0),
             keys::WM_PIN => ws::pin(),
             apps::WM_OPENED => {

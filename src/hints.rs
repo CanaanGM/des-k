@@ -195,6 +195,7 @@ fn pair(previous: &[Combo], next: &[Combo], (both, prev_title, next_title): (&st
 pub(crate) fn name(a: Action) -> String {
     match a {
         Action::Switch(d) => if d < 0 { "Previous workspace" } else { "Next workspace" }.into(),
+        Action::Back => "Back to the last workspace".into(),
         Action::Send(d, follow) => format!("Send window to {} workspace{}", if d < 0 { "previous" } else { "next" }, if follow { "" } else { " and stay" }),
         Action::Jump(i) => format!("Go to workspace {}", i + 1),
         Action::SendTo(i, follow) => format!("Send window to {}{}", i + 1, if follow { "" } else { " and stay" }),
@@ -237,7 +238,7 @@ fn pad(st: &State, back: Option<GaveBack>) -> Pad {
 fn read(s: &Settings, st: &State, back: Option<GaveBack>) -> View {
     let row = |title: &str, keys| KeyRow { title: title.into(), keys };
     let mut around = pair(&s.previous, &s.next, ("Switch workspace", "Previous workspace", "Next workspace"));
-    around.extend([row("Go to workspace 1–9", digits(s.jump)), row("Open overview", list(&s.overview)), row("Find a window", list(&s.finder))]);
+    around.extend([row("Go to workspace 1–9", digits(s.jump)), row("Back to the last workspace", list(&s.back)), row("Open overview", list(&s.overview)), row("Find a window", list(&s.finder))]);
     let mut windows = pair(&s.send_previous, &s.send_next, ("Send window to next or previous", "Send window to previous workspace", "Send window to next workspace"));
     windows.extend(pair(&s.send_previous_stay, &s.send_next_stay, ("Send window to next or previous and stay", "Send window to previous workspace and stay", "Send window to next workspace and stay")));
     windows.extend([row("Send window to 1–9", digits(s.send_to)), row("Send window to 1–9 and stay", digits(s.send_to_stay)), row("Pin window to all workspaces", list(&s.pin))]);
@@ -315,6 +316,7 @@ fn owner_name(list: &str) -> (&'static str, &'static str) {
         "overview" => ("Open overview", "shortcuts.overview"),
         "pin" => ("Pin window to all workspaces", "shortcuts.pin"),
         "jump" => ("Go to workspace 1–9", "shortcuts.jump"),
+        "back" => ("Back to the last workspace", "shortcuts.back"),
         "send_to" => ("Send window to 1–9", "shortcuts.send_to"),
         "send_to_stay" => ("Send window to 1–9 and stay", "shortcuts.send_to_stay"),
         _ => ("", ""),
@@ -1242,11 +1244,12 @@ mod tests {
         let d = read(&Settings::default(), &st(), None);
         assert_eq!(d.around[0], KeyRow { title: "Switch workspace".into(), keys: vec![vec!["Win".into(), "Ctrl".into(), "Left".into(), "Right".into()]] });
         assert_eq!(d.around[1].keys, [["Win", "1–9"]]);
+        assert_eq!(d.around[2], KeyRow { title: "Back to the last workspace".into(), keys: vec![vec!["Win".into(), "Backspace".into()]] }, "right after Go to workspace (spec 0024 AC-6)");
         assert_eq!(d.windows.len(), 5);
         let v = read(&mine(), &st(), None);
         assert_eq!(v.around[0].keys.len(), 2, "both switch combos");
         assert!(v.around[1].keys.is_empty(), "Win 1–9 given back: No key");
-        assert_eq!(v.around[3].keys, [["Win", "Alt", "F"]]);
+        assert_eq!(v.around[4].keys, [["Win", "Alt", "F"]]);
         let titles: Vec<&str> = v.windows.iter().map(|r| r.title.as_str()).collect();
         assert_eq!(titles[..2], ["Send window to next workspace", "Send window to previous workspace"]);
         assert!(v.windows[1].keys.is_empty());

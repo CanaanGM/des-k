@@ -9,6 +9,7 @@
 // - The overview shortcut: posted as WM_OVERVIEW, once per press (spec 0010).
 // - The pin shortcut: posted as WM_PIN, once per press (spec 0014).
 // - The hints shortcut: posted as WM_HINTS, once per press (spec 0017).
+// - The back shortcut: posted as WM_BACK, once per press (spec 0024).
 // - Copilot key (sends LWin, LShift, F23): turned into Right Ctrl, unless settings turn it off.
 // - The keys and clicks touchpad gestures type (spec 0011).
 // - Recording for the settings page or the hints window: while on, every key is swallowed and
@@ -52,6 +53,9 @@ pub const WM_RECORDED: u32 = WM_APP + 10;
 pub const WM_PIN: u32 = WM_APP + 12;
 /// Thread message: open, move or close the Shortcut hints window (spec 0017).
 pub const WM_HINTS: u32 = WM_APP + 14;
+/// Thread message: flip the screen under the mouse to the workspace it showed before (spec 0024).
+/// 17 and 18 are taken by `apps` (spec 0027).
+pub const WM_BACK: u32 = WM_APP + 19;
 
 static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
 static RECORDING: AtomicBool = AtomicBool::new(false);
@@ -250,9 +254,10 @@ fn digit(vk: u16) -> Option<usize> {
 /// list holding one of a set's digits keeps it (spec 0012 AC-8). Modifiers must match exactly.
 fn decide(st: &settings::Settings, combo: Combo) -> Option<(u32, isize, isize)> {
     // (list, message, wparam direction, lparam follow)
-    let all: [(&[Combo], u32, isize, isize); 10] = [
+    let all: [(&[Combo], u32, isize, isize); 11] = [
         (&st.previous, WM_APP, -1, 0),
         (&st.next, WM_APP, 1, 0),
+        (&st.back, WM_BACK, 0, 0),
         (&st.send_previous, WM_SEND, -1, 1),
         (&st.send_next, WM_SEND, 1, 1),
         (&st.send_previous_stay, WM_SEND, -1, 0),
@@ -297,8 +302,9 @@ fn shortcut(vk: u16, up: bool) -> bool {
         if combo.mods & (WIN | ALT) != 0 {
             send(&[(VK_MASK, false), (VK_MASK, true)]);
         }
-        // A held finder, overview, pin or hints key would toggle it over and over.
-        if matches!(msg, WM_SEND | WM_SEND_TO | WM_FINDER | WM_OVERVIEW | WM_PIN | WM_HINTS) {
+        // A held finder, overview, pin or hints key would toggle it over and over, and a held back
+        // key would flicker the screen between two workspaces (spec 0024 AC-5).
+        if matches!(msg, WM_SEND | WM_SEND_TO | WM_FINDER | WM_OVERVIEW | WM_PIN | WM_HINTS | WM_BACK) {
             SEND_HELD.set(Some(vk));
         }
         unsafe {
@@ -506,6 +512,17 @@ mod tests {
         assert_eq!(decide(&s, c(WIN | SHIFT, VK_NUMPAD9.0)), Some((WM_SEND_TO, 8, 1)));
         assert_eq!(decide(&s, c(WIN | CTRL, b'1' as u16)), Some((WM_SEND_TO, 0, 0)));
         assert_eq!(decide(&s, c(WIN | CTRL, b'U' as u16)), Some((WM_PIN, 0, 0)));
+        assert_eq!(decide(&s, c(WIN, VK_BACK.0)), Some((WM_BACK, 0, 0)));
+    }
+
+    // Back is a key of its own: Ctrl+Backspace deletes a word in every text box and must reach it,
+    // and the hook's quick skip must not drop Backspace before the lists are asked (spec 0024 AC-6).
+    #[test]
+    fn only_win_backspace_goes_back() {
+        let s = Settings::default();
+        assert_eq!(decide(&s, c(CTRL, VK_BACK.0)), None);
+        assert_eq!(decide(&s, c(WIN | SHIFT, VK_BACK.0)), None);
+        assert!(settings::LISTS.iter().any(|l| s.list(l).iter().any(|k| k.vk == VK_BACK.0)));
     }
 
     // Everything des-k does not own must reach Windows and the apps: an extra modifier is

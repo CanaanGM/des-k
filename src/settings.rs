@@ -141,6 +141,7 @@ impl Motion {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
     Switch(isize),       // -1 previous, +1 next
+    Back,                // the workspace the screen showed before (spec 0024)
     Send(isize, bool),   // step, and follow
     Jump(usize),         // 0 based
     SendTo(usize, bool), // 0 based, and follow
@@ -159,6 +160,7 @@ pub enum Action {
 const ACTIONS: &[(&str, Action)] = &[
     ("previous", Action::Switch(-1)),
     ("next", Action::Switch(1)),
+    ("back", Action::Back),
     ("send_previous", Action::Send(-1, true)),
     ("send_next", Action::Send(1, true)),
     ("send_previous_stay", Action::Send(-1, false)),
@@ -185,6 +187,7 @@ const ACTIONS: &[(&str, Action)] = &[
 const ACTION_LABELS: &[(&str, &str)] = &[
     ("previous", "previous workspace"),
     ("next", "next workspace"),
+    ("back", "last workspace"),
     ("send_previous", "send window to previous"),
     ("send_next", "send window to next"),
     ("send_previous_stay", "send window to previous, stay"),
@@ -221,6 +224,7 @@ pub struct Settings {
     pub workspaces: usize,
     pub copilot_as_right_ctrl: bool,
     pub follow_activation: bool,
+    pub jump_back: bool, // a jump to the shown workspace goes back to the last one (spec 0024)
     pub fastest: bool, // every des-k fade and move instant (spec 0017)
     // Read at start only (spec 0017 AC-9). None: the file lacks the key, as an upgrader's does.
     pub first_run_seen: Option<bool>,
@@ -234,6 +238,7 @@ pub struct Settings {
     pub jump: Option<u8>,
     pub send_to: Option<u8>, // and follow
     pub send_to_stay: Option<u8>,
+    pub back: Vec<Combo>,   // flips the screen to the workspace it showed before (spec 0024)
     pub finder: Vec<Combo>, // opens the window finder (spec 0007)
     pub overview: Vec<Combo>, // opens the workspace overview (spec 0010)
     pub pin: Vec<Combo>,      // keeps the focused window on every workspace (spec 0014)
@@ -309,6 +314,7 @@ impl Default for Settings {
             workspaces: 4,
             copilot_as_right_ctrl: true,
             follow_activation: true,
+            jump_back: true,
             fastest: false,
             first_run_seen: Some(false),
             previous: vec![Combo { mods: WIN | CTRL, vk: VK_LEFT.0 }],
@@ -320,6 +326,7 @@ impl Default for Settings {
             jump: Some(WIN),
             send_to: Some(WIN | SHIFT),
             send_to_stay: Some(WIN | CTRL),
+            back: vec![Combo { mods: WIN, vk: VK_BACK.0 }],
             finder: vec![Combo { mods: WIN, vk: b'F' as u16 }],
             overview: vec![Combo { mods: WIN, vk: VK_TAB.0 }],
             pin: vec![Combo { mods: WIN | CTRL, vk: b'U' as u16 }],
@@ -358,6 +365,7 @@ const DEFAULT_FILE: &str = r##"# des-k settings. A saved change applies within t
 workspaces = 4              # 2 to 9, every screen
 copilot_as_right_ctrl = true
 follow_activation = true    # switch to a hidden window's workspace when it comes to the front
+jump_back = true            # Win+N on the workspace you're on goes back to the last one
 fastest = false             # true: every des-k fade and move is instant
 first_run_seen = false      # false: the first run opens at the next start
 
@@ -374,6 +382,8 @@ send_next_stay     = ["Win+Ctrl+Alt+Right"]
 jump         = "Win"         # "" turns a set off
 send_to      = "Win+Shift"   # and follow it there
 send_to_stay = "Win+Ctrl"    # and stay where you are
+# Flip this screen between its workspace and the one before.
+back = ["Win+Backspace"]
 # Search every window on every screen and workspace; Enter goes there.
 finder = ["Win+F"]
 # Every workspace of every screen at once, like Task View (which it replaces on Win+Tab).
@@ -440,7 +450,7 @@ twice_ms = 300              # how long a gesture with a "times = 2" rule waits f
 
 # One block per gesture. fingers = 3 or 4; swipe = "left", "right", "up" or "down", or tap = true;
 # times = 1 or 2 (optional); do = an action below, or a key combo like "Ctrl+Shift+T".
-# Actions: previous, next, send_previous, send_next, send_previous_stay, send_next_stay,
+# Actions: previous, next, back, send_previous, send_next, send_previous_stay, send_next_stay,
 # jump_1 to jump_9, send_to_1 to send_to_9, send_to_stay_1 to send_to_stay_9, finder, overview,
 # show_desktop, app_next, app_previous, pin, search, notifications, middle_click, play_pause,
 # next_track, previous_track, volume_up, volume_down, mute, none.
@@ -496,8 +506,8 @@ tap = true
 do = "notifications"
 "##;
 
-const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activation", "fastest", "first_run_seen", "shortcuts", "indicator", "attention", "colors", "names", "apps", "restore", "overview", "touchpad", "gesture"];
-const SHORTCUT_KEYS: &[&str] = &["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "jump", "send_to", "send_to_stay", "finder", "overview", "pin", "hints"];
+const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activation", "jump_back", "fastest", "first_run_seen", "shortcuts", "indicator", "attention", "colors", "names", "apps", "restore", "overview", "touchpad", "gesture"];
+const SHORTCUT_KEYS: &[&str] = &["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "jump", "send_to", "send_to_stay", "back", "finder", "overview", "pin", "hints"];
 const INDICATOR_KEYS: &[&str] = &["enabled", "style", "screen_name", "spot", "gap", "x", "y", "hold_ms", "fade_ms", "screens"];
 const SCREEN_KEYS: &[&str] = &["spot", "gap", "x", "y"];
 const ATTENTION_KEYS: &[&str] = &["enabled", "text"];
@@ -993,6 +1003,7 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
     s.workspaces = int(&top, "workspaces", "workspaces", 2, 9, s.workspaces as i64, &mut warn) as usize;
     s.copilot_as_right_ctrl = boolean(&top, "copilot_as_right_ctrl", "copilot_as_right_ctrl", s.copilot_as_right_ctrl, &mut warn);
     s.follow_activation = boolean(&top, "follow_activation", "follow_activation", s.follow_activation, &mut warn);
+    s.jump_back = boolean(&top, "jump_back", "jump_back", s.jump_back, &mut warn);
     s.fastest = boolean(&top, "fastest", "fastest", s.fastest, &mut warn);
     s.first_run_seen = top.contains_key("first_run_seen").then(|| boolean(&top, "first_run_seen", "first_run_seen", false, &mut warn));
 
@@ -1006,11 +1017,12 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
         } else {
             (s.previous, s.next) = (previous, next);
         }
-        // Switch keys always win: a send list (or the finder, the overview, pin, hints) sharing a combo
-        // with them, or with an earlier list still on, is turned off (an empty list never matches)
-        // (specs 0004, 0007, 0010, 0014, 0017).
+        // Switch keys always win: a send list (or back, the finder, the overview, pin, hints) sharing
+        // a combo with them, or with an earlier list still on, is turned off (an empty list never
+        // matches) (specs 0004, 0007, 0010, 0014, 0017, 0024).
         let mut taken = vec![("previous", s.previous.clone()), ("next", s.next.clone())];
         let sends = [
+            ("back", &mut s.back),
             ("send_previous", &mut s.send_previous),
             ("send_next", &mut s.send_next),
             ("send_previous_stay", &mut s.send_previous_stay),
@@ -1172,7 +1184,7 @@ pub fn savable(vk: u16) -> bool {
 }
 
 /// The shortcut lists in the order the hook tries them, then the digit sets (keys::shortcut).
-pub const LISTS: [&str; 10] = ["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "finder", "overview", "pin", "hints"];
+pub const LISTS: [&str; 11] = ["previous", "next", "back", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "finder", "overview", "pin", "hints"];
 pub const SETS: [&str; 3] = ["jump", "send_to", "send_to_stay"];
 
 /// Who already uses a combo the page is about to save (spec 0012 AC-9).
@@ -1194,6 +1206,7 @@ impl Settings {
         match name {
             "previous" => &self.previous,
             "next" => &self.next,
+            "back" => &self.back,
             "send_previous" => &self.send_previous,
             "send_next" => &self.send_next,
             "send_previous_stay" => &self.send_previous_stay,
@@ -1728,7 +1741,7 @@ const NAMED_KEYS: &[(&str, VIRTUAL_KEY)] = &[
     ("Left", VK_LEFT), ("Right", VK_RIGHT), ("Up", VK_UP), ("Down", VK_DOWN),
     ("Home", VK_HOME), ("End", VK_END), ("PageUp", VK_PRIOR), ("PageDown", VK_NEXT),
     ("Insert", VK_INSERT), ("Delete", VK_DELETE), ("Space", VK_SPACE), ("Enter", VK_RETURN),
-    ("Tab", VK_TAB), ("Escape", VK_ESCAPE),
+    ("Tab", VK_TAB), ("Escape", VK_ESCAPE), ("Backspace", VK_BACK),
 ];
 
 /// Named keys, A to Z, 0 to 9 (their vk is the ASCII code), F1 to F24.
@@ -1828,6 +1841,7 @@ impl Settings {
             ("workspaces", self.workspaces.to_string()),
             ("copilot_as_right_ctrl", self.copilot_as_right_ctrl.to_string()),
             ("follow_activation", self.follow_activation.to_string()),
+            ("jump_back", self.jump_back.to_string()),
             ("fastest", self.fastest.to_string()),
             ("first_run_seen", self.first_run_seen.map_or(String::new(), |b| b.to_string())),
             ("shortcuts.previous", list(&self.previous)),
@@ -1839,6 +1853,7 @@ impl Settings {
             ("shortcuts.jump", mods_text(self.jump).to_string()),
             ("shortcuts.send_to", mods_text(self.send_to).to_string()),
             ("shortcuts.send_to_stay", mods_text(self.send_to_stay).to_string()),
+            ("shortcuts.back", list(&self.back)),
             ("shortcuts.finder", list(&self.finder)),
             ("shortcuts.overview", list(&self.overview)),
             ("shortcuts.pin", list(&self.pin)),
@@ -2171,6 +2186,16 @@ hints = [\"Win+F\"]
 
     // follow_activation = false is the escape from an app that keeps stealing focus, so it must stick.
     #[test]
+    fn jump_back_can_be_turned_off() {
+        let (s, warn) = parse("jump_back = false\n");
+        assert!(!s.jump_back, "off must give back spec 0005's jump, which only shows the card");
+        assert!(warn.is_empty(), "{warn:?}");
+        let (s, warn) = parse("jump_back = \"no\"\n");
+        assert!(s.jump_back, "a bad value keeps the default");
+        assert_eq!(warn.len(), 1, "{warn:?}");
+    }
+
+    #[test]
     fn follow_activation_can_be_turned_off() {
         let (s, warn) = parse("follow_activation = false\n");
         assert!(!s.follow_activation);
@@ -2411,6 +2436,7 @@ do = "previous"
     #[test]
     fn do_takes_a_name_or_a_combo() {
         assert_eq!(action("NEXT"), Ok(Action::Switch(1)));
+        assert_eq!(action("back"), Ok(Action::Back));
         assert_eq!(action("send_to_stay_3"), Ok(Action::SendTo(2, false)));
         assert_eq!(action("send_to_9"), Ok(Action::SendTo(8, true)));
         assert_eq!(action("jump_1"), Ok(Action::Jump(0)));
@@ -2582,6 +2608,16 @@ do = "previous"
         assert!(!savable(VK_NUMPAD3.0) && !savable(VK_OEM_1.0) && !savable(VK_VOLUME_UP.0) && !savable(VK_LWIN.0));
     }
 
+    // Back's default key must be one the file can name, read in any case and written back the
+    // same way, or the page's recorder could never save it again (spec 0024 AC-6).
+    #[test]
+    fn backspace_is_a_key_name() {
+        let combo = Combo { mods: WIN, vk: VK_BACK.0 };
+        assert_eq!(parse_combo("win+BACKSPACE"), Ok(combo));
+        assert_eq!(combo.to_string(), "Win+Backspace");
+        assert!(savable(VK_BACK.0));
+    }
+
     // The change log compares these one by one, so each must name its setting once.
     #[test]
     fn every_setting_is_logged_by_name() {
@@ -2589,7 +2625,7 @@ do = "previous"
         let mut unique = names.clone();
         unique.sort();
         unique.dedup();
-        assert_eq!((names.len(), unique.len()), (52, 52));
+        assert_eq!((names.len(), unique.len()), (54, 54));
     }
 
     // Spec 0027 AC-10: one bad rule never costs the others, each problem is one line, and a key

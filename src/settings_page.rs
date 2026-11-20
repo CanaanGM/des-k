@@ -133,7 +133,7 @@ impl Section {
 /// Which section a problem belongs to, by its key; None: no one setting (the Notes section).
 fn home(key: &str) -> Option<Section> {
     Some(match key.split('.').next().unwrap_or("") {
-        "workspaces" | "follow_activation" | "names" => Section::Workspaces,
+        "workspaces" | "follow_activation" | "jump_back" | "names" => Section::Workspaces,
         "apps" => Section::Apps,
         "shortcuts" | "copilot_as_right_ctrl" => Section::Shortcuts,
         "indicator" => Section::Indicator,
@@ -181,6 +181,7 @@ const fn step(lo: i64, hi: i64, by: i64, unit: &'static str) -> Kind {
 /// Every plain setting.
 pub(crate) const ROWS: &[Row] = &[
     row("follow_activation", "Follow a window", "When a hidden window comes to the front (an app reuses it, a dialog pops up), go to its workspace.", Kind::Toggle),
+    row("jump_back", "Same number goes back", "Pressing the number of the workspace you're on takes you back to the one before.", Kind::Toggle),
     row("copilot_as_right_ctrl", "Copilot key as Right Ctrl", "", Kind::Pair("des-k", "Windows")),
     row("indicator.enabled", "Workspace indicator", "", Kind::Toggle),
     row("indicator.style", "Style", "", Kind::Choice(STYLE_WORDS)),
@@ -219,6 +220,7 @@ pub(crate) fn value(s: &Settings, key: &str) -> i64 {
     match key {
         "workspaces" => s.workspaces as i64,
         "follow_activation" => s.follow_activation as i64,
+        "jump_back" => s.jump_back as i64,
         "copilot_as_right_ctrl" => s.copilot_as_right_ctrl as i64,
         "fastest" => s.fastest as i64,
         "indicator.enabled" => s.indicator_enabled as i64,
@@ -325,6 +327,7 @@ pub(crate) const MOVE: &[Short] = &[
     short("shortcuts.previous", "Previous workspace", Some((combo(WIN | CTRL, 0x25), "switches desktops"))),
     short("shortcuts.next", "Next workspace", Some((combo(WIN | CTRL, 0x27), "switches desktops"))),
     short("shortcuts.jump", "Go to workspace 1–9", Some((WinKey::Digits(WIN), "opens taskbar app 1–9"))),
+    short("shortcuts.back", "Back to the last workspace", None),
     short("shortcuts.overview", "Open overview", Some((combo(WIN, 0x09), "opens Task View"))),
     short("shortcuts.finder", "Find a window", Some((combo(WIN, 0x46), "opens Feedback Hub"))),
     short("shortcuts.hints", "Open shortcut hints", None),
@@ -987,7 +990,7 @@ fn menu_name(a: Action) -> String {
 }
 
 fn is_desk(a: Action) -> bool {
-    matches!(a, Action::Switch(_) | Action::Send(..) | Action::Jump(_) | Action::SendTo(..) | Action::Finder | Action::Overview | Action::Pin)
+    matches!(a, Action::Switch(_) | Action::Back | Action::Send(..) | Action::Jump(_) | Action::SendTo(..) | Action::Finder | Action::Overview | Action::Pin)
 }
 
 /// The open menu's lines, in keyboard order.
@@ -1007,7 +1010,7 @@ pub(crate) fn menu_lines(m: &Menu, s: &Settings) -> Vec<Line> {
     }
     let named: Vec<Action> = settings::actions().filter(|a| *a != Action::Nothing).collect();
     // The design's order: moving first, then the finder and overview, then sending.
-    let desk = [Action::Switch(1), Action::Switch(-1), Action::Overview, Action::Finder, Action::Send(1, true), Action::Send(-1, true), Action::Send(1, false), Action::Send(-1, false), Action::Pin];
+    let desk = [Action::Switch(1), Action::Switch(-1), Action::Back, Action::Overview, Action::Finder, Action::Send(1, true), Action::Send(-1, true), Action::Send(1, false), Action::Send(-1, false), Action::Pin];
     for a in desk {
         out.push(line(menu_name(a), 0, Does::Set(Some(a)), Some(a)));
     }
@@ -1888,7 +1891,9 @@ impl Ctx<'_, '_> {
         }
         h += self.row(y + h, "Workspaces per screen", &cap, (0.0, 0.0), |_, _, _| {}, note.as_ref());
         self.sep(y + h);
-        h + self.setting("follow_activation", y + h)
+        h += self.setting("follow_activation", y + h);
+        self.sep(y + h);
+        h + self.setting("jump_back", y + h)
     }
 
     // ---- Names (spec 0023 AC-12, AC-13) ----
@@ -8086,6 +8091,18 @@ mod tests {
         ws[5] = 0x92BF4F;
         assert_eq!(dup_of(0x92BF4F, 1, &ws, 9), Some((2, true)), "the lowest");
         assert_eq!(dup_of(0xF97676, 1, &ws, 8), None, "workspace 9 isn't in use");
+    }
+
+    // Back's key given to another action asks first and names back by its row, like every clash,
+    // so a recorded key never silently turns back off (spec 0024 AC-6).
+    #[test]
+    fn a_key_back_has_gets_the_clash_prompt() {
+        let _one = SETTINGS.lock();
+        settings::use_for_test("workspaces = 4\n");
+        let combo = settings::Combo { mods: settings::WIN, vk: 0x08 };
+        let Plan::Ask(p) = plan_combo("shortcuts.finder", Some(0), combo) else { panic!("took back's key without asking") };
+        assert_eq!(p.title, "Win Backspace is already in use");
+        assert!(p.sub.contains("“Back to the last workspace” uses it"), "{}", p.sub);
     }
 
     // AC-1: a click on the part of the last tile's × box inside the tile opens the picker; only

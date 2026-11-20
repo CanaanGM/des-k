@@ -96,6 +96,12 @@ impl Monitor {
         }
     }
 
+    /// Where back goes: the workspace the last switch left, if it still exists and is not the
+    /// one shown (spec 0024 AC-4). Back and jump both ask this, so they never disagree.
+    fn back_target(&self, count: usize) -> Option<usize> {
+        self.last_switch.map(|(_, ws)| ws).filter(|&ws| ws < count && ws != self.active)
+    }
+
     /// A present screen's, with nothing hidden yet.
     fn of(p: &Screen) -> Self {
         Monitor { device: Some(p.device.clone()), area: p.area, name: p.name.clone(), ..Self::new() }
@@ -1066,7 +1072,8 @@ pub fn switch(dir: isize) {
 }
 
 /// Show workspace `index` (0 based) on the monitor under the mouse. Past the count, or
-/// already shown: only the indicator, so you see where you are (spec 0005).
+/// already shown: only the indicator, so you see where you are (spec 0005). Already shown with
+/// `jump_back` on, it goes back to the last workspace when there is one (spec 0024 AC-8).
 pub fn jump(index: usize) {
     let (mon, dev) = under_mouse();
     let count = settings::get().workspaces;
@@ -1080,9 +1087,34 @@ pub fn jump(index: usize) {
         return indicator::show(mon, card(&s, &name, active, count).with(Says::NoWorkspace { n: index + 1 }));
     }
     if index == active {
-        return indicator::show(mon, card(&s, &name, active, count));
+        let back = settings::get().jump_back.then(|| mon_mut(&mut s, &name).back_target(count)).flatten();
+        let Some(target) = back else {
+            return indicator::show(mon, card(&s, &name, active, count));
+        };
+        if switch_to(&mut s, mon, &name, target, None, None) {
+            info!("jump: {name} already on workspace {}, back to {}/{count}", index + 1, target + 1);
+        }
+        return;
     }
     switch_to(&mut s, mon, &name, index, None, None);
+}
+
+/// Show the workspace the screen under the mouse showed before its last switch; pressed again,
+/// it comes back (spec 0024). Nothing to go back to: only the indicator, as jump does.
+pub fn back() {
+    let (mon, dev) = under_mouse();
+    let count = settings::get().workspaces;
+    let mut s = state();
+    let name = id_of(&mut s, &dev);
+    let m = mon_mut(&mut s, &name);
+    let active = m.active;
+    let Some(target) = m.back_target(count) else {
+        info!("back: {name} has no last workspace");
+        return indicator::show(mon, card(&s, &name, active, count));
+    };
+    if switch_to(&mut s, mon, &name, target, None, None) {
+        info!("back: {name} -> workspace {}/{count}", target + 1);
+    }
 }
 
 /// Jump a hidden window's screen to its workspace when the window comes to the front,
@@ -3144,6 +3176,32 @@ mod tests {
         assert_eq!(m.active, 1);
         assert_eq!(m.hidden, vec![vec![9], vec![]]);
         assert!(m.last_switch.is_none(), "a back jump to a removed workspace would index past the end");
+    }
+
+    // Back must land on a real workspace other than the shown one, or do nothing but the card:
+    // a fresh start, a workspace a smaller count removed, and a resize that moved the screen onto
+    // its own last workspace all have nowhere to go (spec 0024 AC-4).
+    #[test]
+    fn back_goes_only_to_a_workspace_that_still_exists() {
+        let mut m = with_hidden(2, &[&[], &[], &[], &[]]);
+        assert_eq!(m.back_target(4), None, "des-k just started: no switch yet");
+        m.last_switch = Some((Instant::now(), 0));
+        assert_eq!(m.back_target(4), Some(0));
+        m.last_switch = Some((Instant::now(), 3));
+        assert_eq!(m.back_target(3), None, "workspace 4 is gone");
+        m.last_switch = Some((Instant::now(), 2));
+        assert_eq!(m.back_target(4), None, "already shown");
+    }
+
+    // A smaller count that moves the screen onto its last workspace leaves back nowhere to go,
+    // never a jump to where you already are (spec 0024 state transitions).
+    #[test]
+    fn a_resize_onto_the_last_workspace_leaves_no_back() {
+        let mut m = with_hidden(3, &[&[], &[], &[], &[]]);
+        m.last_switch = Some((Instant::now(), 1));
+        m.resize(2);
+        assert_eq!(m.active, 1);
+        assert_eq!(m.back_target(2), None);
     }
 
     // Raising adds empty workspaces and leaves windows where an earlier lowering put them (AC-6).
