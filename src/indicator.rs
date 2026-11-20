@@ -77,6 +77,8 @@ pub enum Line {
     ScreenBack { name: String, moved: usize, left: usize, here: bool },
     /// A window hidden on `ws` flashed (spec 0022): `text` is the filled attention text.
     Wants { text: String, ws: usize },
+    /// A new window of `app` went hidden onto `to` by its rule (spec 0027 AC-5); you stay.
+    Opened { app: String, to: usize },
 }
 
 impl Line {
@@ -162,6 +164,14 @@ fn words(card: &Card, line: &Line, named: bool) -> Words {
         }
         // The bell in the accent, the marks' color: the popup and the dots say the same thing.
         Line::Wants { text, ws } => Words { icon: '\u{EA8F}', ink: Ink::Accent, title: text.clone(), chip: None, sub: "On workspace ".into(), sub_chip: Some(*ws) },
+        Line::Opened { app, to } => Words {
+            icon: '\u{E8A7}',
+            ink: Ink::Plain,
+            title: format!("{app} opened on "),
+            chip: Some(*to),
+            sub: format!("You stay on {on}"),
+            sub_chip: None,
+        },
     }
 }
 
@@ -330,7 +340,10 @@ fn draw(c: &Canvas, x: f32, y: f32, style: Style, card: &Card, edge: bool) -> (f
     let named = style == Style::Card && card.screen.is_some();
     let all: Vec<Words> = card.lines.iter().map(|l| words(card, l, named)).collect();
     let pinned = card.lines.contains(&Line::Pinned);
-    let target = card.lines.iter().find_map(|l| if let Line::Sent { to, .. } = l { Some(*to) } else { None });
+    let target = card.lines.iter().find_map(|l| match l {
+        Line::Sent { to, .. } | Line::Opened { to, .. } => Some(*to),
+        _ => None,
+    });
     let lit = |i: usize| i == card.active || pinned || target == Some(i);
     // Only the Card style shows names (spec 0023 AC-4); the dots' lines end at the chip.
     let names: &[String] = if style == Style::Card { &card.names } else { &[] };
@@ -702,6 +715,9 @@ mod tests {
         assert_eq!(words(&c, &none, true).sub, "2 windows could not be moved");
         let gone = Line::ScreenGone { name: "LG HDR 4K".into(), moved: 1, to: Some("Built-in display".into()) };
         assert_eq!(words(&c, &gone, true).sub, "1 window moved to Built-in display");
+        // A rule never switches a screen (spec 0027 AC-5): the note names where it opened, and that you stay.
+        let opened = words(&c, &Line::Opened { app: "Notepad".into(), to: 2 }, true);
+        assert_eq!((opened.title.as_str(), opened.chip, opened.sub.as_str()), ("Notepad opened on ", Some(2), "You stay on 2"));
     }
 
     #[test]
@@ -855,6 +871,10 @@ mod tests {
                 "names-rtl",
                 Card { names: vec!["מסמכים".into(), String::new(), String::new(), "البريد الوارد".into()], ..Card::new(3, 4, dell()) }.with(Line::Sent { to: 0, unpinned: false }),
             ),
+            // Spec 0027 AC-5: a rule hid a new window; its chip shows the workspace's name, else its number.
+            ("opened", Card::new(1, 4, dell()).with(Line::Opened { app: "Notepad".into(), to: 2 })),
+            ("names-opened", named(Card::new(1, 4, dell())).with(Line::Opened { app: "Slack".into(), to: 0 })),
+            ("opened-long", named(Card::new(1, 4, dell())).with(Line::Opened { app: "Microsoft Teams (work or school)".into(), to: 2 })),
         ];
         let aquatic = ui::high_contrast([0x202020, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);
         let desert = ui::high_contrast([0xFFFAEF, 0x3D3D3D, 0x903909, 0xFFF5E3, 0x6D6D6D]);

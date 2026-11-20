@@ -2988,6 +2988,7 @@ mod tests {
             ]],
             waiting: vec![],
             present: vec![],
+            open: vec![],
         };
         let (n, o) = (PadRow::Nothing, PadRow::StillOn);
         let pad = |rows: [PadRow; 4], saved| Some(PadState { pad: true, enabled: true, rows, off: rows == [n; 4], saved });

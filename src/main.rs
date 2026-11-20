@@ -15,6 +15,7 @@
 
 #[macro_use]
 mod log; // first: its info!, warn! and error! macros reach only the modules after it
+mod apps;
 mod cloak;
 mod finder;
 mod gestures;
@@ -107,6 +108,13 @@ fn start_task() {
     }
 }
 
+/// Starts a thread timer of `ms` into `timer` when `on` and none runs yet.
+fn timer_on(timer: &mut usize, on: bool, ms: u32) {
+    if *timer == 0 && on {
+        *timer = unsafe { SetTimer(None, 0, ms, None) };
+    }
+}
+
 fn main() -> windows::core::Result<()> {
     let running = unsafe { FindWindowW(indicator::CLASS, None) }.ok();
     if std::env::args().nth(1).as_deref() == Some("--start") {
@@ -149,6 +157,7 @@ fn main() -> windows::core::Result<()> {
     indicator::init();
     settings::load(); // before anything that reads it: ws, keys, the indicator
     let restoring = ws::load();
+    apps::sync(); // after ws::load, so the windows it adopted count as already open (spec 0027 AC-3)
     // Always on: the finder's recency needs it even with follow_activation off (spec 0007).
     // Skipping our own process keeps des-k's own focus changes from triggering a follow.
     // Never unhooked: the hook dies with the process.
@@ -190,7 +199,14 @@ fn main() -> windows::core::Result<()> {
     // Only now, with every exit path in place, may restore hide anything. The first tick
     // runs at once, so windows already open are matched like later ones (spec 0003).
     let mut restore_timer = 0;
-    if restoring {
+    // While a window a rule moved to another screen is watched (spec 0027 AC-6), and while a
+    // ruled app's window waits for its title or app id (AC-16).
+    let (mut settle_timer, mut pending_timer) = (0, 0);
+    if restoring == ws::Restoring::NewSignIn {
+        apps::place_open(); // restore leaves ruled apps to their rule (spec 0027 AC-11)
+        timer_on(&mut settle_timer, ws::settling(), 250);
+    }
+    if restoring != ws::Restoring::No {
         restore_timer = unsafe { SetTimer(None, 0, 500, None) };
         if !ws::restore_tick() && restore_timer != 0 {
             unsafe { let _ = KillTimer(None, restore_timer); }
@@ -236,6 +252,17 @@ fn main() -> windows::core::Result<()> {
             keys::WM_JUMP => ws::jump(msg.wParam.0),
             keys::WM_SEND_TO => ws::send(ws::To::Index(msg.wParam.0), msg.lParam.0 != 0),
             keys::WM_PIN => ws::pin(),
+            apps::WM_OPENED => {
+                apps::opened(HWND(msg.wParam.0 as *mut _), msg.lParam.0 as u32);
+                timer_on(&mut settle_timer, ws::settling(), 250);
+                timer_on(&mut pending_timer, apps::waiting(), 15);
+            }
+            apps::WM_UNCLOAKED => {
+                let h = HWND(msg.wParam.0 as *mut _);
+                ws::recloak(h);
+                apps::uncloaked(h);
+                timer_on(&mut settle_timer, ws::settling(), 250);
+            }
             indicator::WM_ATTENTION => {
                 let p = ws::attention(HWND(msg.wParam.0 as *mut _));
                 overview::wants_changed();
@@ -278,6 +305,19 @@ fn main() -> windows::core::Result<()> {
                     unsafe { let _ = KillTimer(None, restore_timer); }
                     restore_timer = 0;
                 }
+            }
+            WM_TIMER if msg.hwnd.is_invalid() && settle_timer != 0 && msg.wParam.0 == settle_timer => {
+                if !ws::settle_tick() {
+                    unsafe { let _ = KillTimer(None, settle_timer); }
+                    settle_timer = 0;
+                }
+            }
+            WM_TIMER if msg.hwnd.is_invalid() && pending_timer != 0 && msg.wParam.0 == pending_timer => {
+                if !apps::pending_tick() {
+                    unsafe { let _ = KillTimer(None, pending_timer); }
+                    pending_timer = 0;
+                }
+                timer_on(&mut settle_timer, ws::settling(), 250);
             }
             WM_TIMER if msg.hwnd.is_invalid() && watch_timer != 0 && msg.wParam.0 == watch_timer => {
                 // The theme broadcast may never reach an admin des-k (spec 0017 AC-2).

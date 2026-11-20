@@ -45,6 +45,8 @@ const X0: f32 = 248.0; // the column's left edge
 const PAD_R: f32 = 32.0;
 const COL_MAX: f32 = 1000.0; // the column stops growing here
 const ROW: f32 = 52.0; // a row's least height
+const APP_WS_W: f32 = 184.0; // an Apps rule's workspace menu (spec 0027)
+const APP_SCREEN_W: f32 = 204.0; // and its screen menu
 const KT_KEYS: f32 = 326.0; // a shortcut row's key column
 const KT_SIDE: f32 = 112.0; // and its des-k or Windows column
 
@@ -61,10 +63,14 @@ const I_OUT: &str = "\u{E8A7}";
 const I_CHEV: &str = "\u{E70D}";
 const I_MORE: &str = "\u{E76C}";
 const I_SETUP: &str = "\u{E713}";
+const I_APPS: &str = "\u{E71D}";
+const I_APP: &str = "\u{E737}";
+const I_SCREEN: &str = "\u{E7F4}";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Section {
     Workspaces,
+    Apps,
     Shortcuts,
     Indicator,
     Attention,
@@ -75,12 +81,13 @@ pub enum Section {
     Touchpad,
 }
 
-const SECTIONS: [Section; 9] = [Section::Workspaces, Section::Shortcuts, Section::Indicator, Section::Attention, Section::Restore, Section::Overview, Section::Colors, Section::Motion, Section::Touchpad];
+const SECTIONS: [Section; 10] = [Section::Workspaces, Section::Apps, Section::Shortcuts, Section::Indicator, Section::Attention, Section::Restore, Section::Overview, Section::Colors, Section::Motion, Section::Touchpad];
 
 impl Section {
     fn name(self) -> &'static str {
         match self {
             Section::Workspaces => "Workspaces",
+            Section::Apps => "Apps",
             Section::Shortcuts => "Shortcuts",
             Section::Indicator => "Indicator",
             Section::Attention => "Attention",
@@ -95,6 +102,7 @@ impl Section {
     fn icon(self) -> &'static str {
         match self {
             Section::Workspaces => "\u{E8A9}",
+            Section::Apps => I_APPS,
             Section::Shortcuts => "\u{E765}",
             Section::Indicator => "\u{E712}",
             Section::Attention => "\u{EA8F}",
@@ -109,6 +117,7 @@ impl Section {
     fn line(self) -> &'static str {
         match self {
             Section::Workspaces => "Every screen has its own workspaces, all the same count.",
+            Section::Apps => "Open an app's new windows on its own workspace and screen. Your screens stay where they are, and a note on the indicator tells you where the window went.",
             Section::Shortcuts => "Click a key to change it, × to remove it, + to add another. An action with no key is off. Choosing Windows gives that Windows key back.",
             Section::Indicator => "Shows the workspace for a moment after a switch, a send or a pin, and when a screen comes or goes.",
             Section::Attention => "When a window on a workspace you can't see flashes for you, like a chat with a new message, its screen tells you.",
@@ -125,6 +134,7 @@ impl Section {
 fn home(key: &str) -> Option<Section> {
     Some(match key.split('.').next().unwrap_or("") {
         "workspaces" | "follow_activation" | "names" => Section::Workspaces,
+        "apps" => Section::Apps,
         "shortcuts" | "copilot_as_right_ctrl" => Section::Shortcuts,
         "indicator" => Section::Indicator,
         "attention" => Section::Attention,
@@ -847,6 +857,12 @@ enum Ctl {
     NameScreens,       // the Names card's screen chooser (spec 0023)
     Name(Nm),          // a name box
     NameSame(usize),   // a workspace row's Same as all screens: takes out the screen's key
+    // The Apps section (spec 0027): Add, and a rule row's two menus and remove, by its place in
+    // Settings::apps.
+    AppAdd,
+    AppWs(usize),
+    AppScreen(usize),
+    AppX(usize),
     Picture,           // focus only: the place picture is one stop; Left and Right move
     Spot(usize),       // a third of the picture across and down, 0 to 8 in reading order
     ShowThere,         // Show it there: the real indicator on the chosen screen
@@ -882,6 +898,7 @@ impl Ctl {
             Ctl::Toggle(_) | Ctl::Minus(_) | Ctl::Plus(_) | Ctl::Choice(..) | Ctl::Reset(_) | Ctl::WsTile(..) | Ctl::TileAdd | Ctl::TileRemove | Ctl::Forget(_)
                 | Ctl::KeyRow(_) | Ctl::Key(..) | Ctl::KeyX(..) | Ctl::AddKey(_) | Ctl::WinSide(..) | Ctl::Move(_) | Ctl::Picker(_) | Ctl::Item(_) | Ctl::Pad(Pad::ReadOn | Pad::GiveBack)
                 | Ctl::Hex(_) | Ctl::SameAll | Ctl::Picture | Ctl::Spot(_) | Ctl::ShowTile(..) | Ctl::Swatch(_) | Ctl::Words | Ctl::Name(_) | Ctl::NameSame(_)
+                | Ctl::AppAdd | Ctl::AppWs(_) | Ctl::AppScreen(_) | Ctl::AppX(_)
         )
     }
 
@@ -1026,6 +1043,7 @@ struct Pics {
     pad: Option<PadState>,
     back: Option<GaveBack>,
     here: Option<String>, // the device the page is on, for the indicator preview
+    apps: Vec<crate::apps::Seen>, // apps with a window open now (spec 0027 AC-13)
 }
 
 /// The pictures' data now, or None while ws is busy (the next tick tries again).
@@ -1038,7 +1056,8 @@ fn pictures(h: Option<HWND>) -> Option<Pics> {
         let mut mi = MONITORINFOEXW { monitorInfo: MONITORINFO { cbSize: size_of::<MONITORINFOEXW>() as u32, ..Default::default() }, ..Default::default() };
         unsafe { GetMonitorInfoW(mon, &mut mi.monitorInfo).as_bool() }.then(|| String::from_utf16_lossy(&mi.szDevice).trim_end_matches('\0').trim_start_matches(r"\\.\").to_string())
     });
-    Some(Pics { screens, view, pad: Some(setup::state()), back: crate::welcome::gave_back(), here })
+    let apps = crate::apps::seen(&view.open);
+    Some(Pics { screens, view, pad: Some(setup::state()), back: crate::welcome::gave_back(), here, apps })
 }
 
 /// Takes a new copy of the pictures' data; lays the page out again only if it changed.
@@ -1805,6 +1824,10 @@ impl Ctx<'_, '_> {
                 let first = self.card(y + h, |c, y| c.workspaces(y)) + 12.0;
                 first + self.card(y + h + first, |c, y| c.names(y))
             }
+            Section::Apps => {
+                let first = self.card(y + h, |c, y| c.app_add(y)) + 12.0;
+                first + self.card(y + h + first, |c, y| c.app_rules(y))
+            }
             Section::Shortcuts => self.shortcuts(y + h),
             Section::Restore => self.card(y + h, |c, y| c.restore(y)),
             Section::Indicator => {
@@ -1982,14 +2005,7 @@ impl Ctx<'_, '_> {
     /// Screen `id` as des-k names it: plugged in or remembered, as `ws::label` gave it, else your
     /// rename, else the id.
     fn screen_called(&self, id: &str) -> String {
-        let v = &self.w.pics.view;
-        v.present
-            .iter()
-            .find(|p| p.id == id)
-            .map(|p| p.name.clone())
-            .or_else(|| v.waiting.iter().find(|w| w.id == id).map(|w| w.name.clone()))
-            .or_else(|| self.s.screen_rename(id).map(String::from))
-            .unwrap_or_else(|| id.to_string())
+        screen_called(&self.w.pics.view, self.s, id)
     }
 
     fn ws_chip_w(&self, k: usize) -> f32 {
@@ -2004,6 +2020,171 @@ impl Ctx<'_, '_> {
         let label = (k + 1).to_string();
         let tw = self.c.width(&label, F::SmallBold);
         self.c.text(x + (w - tw) / 2.0, y, 18.0, &label, F::SmallBold, b.on_ws[k.min(8)]);
+    }
+
+    // ---- Apps (spec 0027 AC-13): an Add card, then the rules, as approved in
+    // pdesk-design/apps/apps-design.html r1 ----
+
+    fn app_add(&mut self, y: f32) -> f32 {
+        let bw = self.btn_w("Add app", Some(I_ADD));
+        self.row(y, "Add an app", &[t("Pick an app that's open now. Its rule starts where its window is now.")], (bw, 32.0), |c, x, y| {
+            c.button(Ctl::AppAdd, x, y, "Add app", Some(I_ADD), false, 1);
+        }, None)
+    }
+
+    /// Where a rule row's parts sit: the icon at `x`, then the name, the two menus and remove.
+    fn app_cols(&self) -> (f32, f32, f32, f32, f32) {
+        let (x, w) = (X0 + 16.0, self.cw - 32.0);
+        let remove = x + w - 32.0;
+        let screen = remove - 12.0 - APP_SCREEN_W;
+        let ws = screen - 12.0 - APP_WS_W;
+        (x, x + 40.0, (ws - 16.0 - x - 40.0).max(40.0), ws, screen)
+    }
+
+    fn app_rules(&mut self, y: f32) -> f32 {
+        let b = self.c.t.b;
+        let n = self.s.apps.len();
+        self.header(y, "Rules", Some(n.min(99) as u8), "");
+        let (plain, bold) = ("New windows only · ", "your screens stay");
+        let rw = self.c.width(plain, F::Small) + self.c.width(bold, F::SmallBold);
+        self.c.para(X0 + self.cw - 16.0 - rw, y + 11.0, rw + 1.0, 16.0, &[(plain, F::Small, b.tx2), (bold, F::SmallBold, b.tx)]);
+        let mut h = 38.0;
+        if n == 0 {
+            return h + self.apps_empty(y + h);
+        }
+        let (_, name, _, ws, screen) = self.app_cols();
+        for (text, x) in [("App", name), ("Workspace", ws), ("Screen", screen)] {
+            self.c.text(x, y + h, 33.0, text, F::Small, b.tx2);
+        }
+        h += 33.0;
+        for i in 0..n {
+            self.sep(y + h);
+            h += self.app_row(y + h, i);
+        }
+        h
+    }
+
+    /// One rule: the app's icon and name while it runs, else its key; under the name its note,
+    /// or its key, or Not running; then its workspace and screen menus and remove.
+    fn app_row(&mut self, y: f32, i: usize) -> f32 {
+        let b = self.c.t.b;
+        let (key, rule) = &self.s.apps[i];
+        let (x, nx, nw, wx, sx) = self.app_cols();
+        let seen = self.w.pics.apps.iter().find(|a| a.key == *key).cloned();
+        let name = seen.as_ref().map_or_else(|| key.clone(), |a| a.name.clone());
+        let note = app_note(&self.w.pics.view, self.s, rule);
+        let note_ink = |warn: bool| if warn { b.warn } else { b.tx2 };
+        let sub_h = match &note {
+            Some((text, warn)) => self.measured(|c| c.c.para(nx + 18.0, 0.0, nw - 18.0, 16.0, &[(text, F::Small, note_ink(*warn))])),
+            None => 16.0,
+        };
+        let h = (10.0 + 20.0 + 2.0 + sub_h + 10.0).max(60.0);
+        let ty = y + (h - 22.0 - sub_h) / 2.0;
+        let iy = y + (h - 24.0) / 2.0;
+        match &seen {
+            Some(a) => self.c.icon(x, iy, 24.0, a.icon),
+            None => {
+                self.c.stroke_rr((x + 0.5, iy + 0.5, 23.0, 23.0), 6.0, 1.0, op(b.tx3));
+                let gw = self.c.width(I_APP, F::IconSmall);
+                self.icon(x + (24.0 - gw) / 2.0, iy, 24.0, I_APP, F::IconSmall, b.tx3);
+            }
+        }
+        let shown = self.c.fit(&name, F::Bold, nw);
+        self.c.text(nx, ty, 20.0, &shown, F::Bold, b.tx);
+        match &note {
+            Some((text, warn)) => {
+                self.icon(nx, ty + 22.0, 16.0, if *warn { I_WARN } else { I_INFO }, F::IconTiny, note_ink(*warn));
+                self.c.para(nx + 18.0, ty + 22.0, nw - 18.0, 16.0, &[(text, F::Small, note_ink(*warn))]);
+            }
+            None if seen.is_none() => self.c.text(nx, ty + 22.0, 16.0, "Not running", F::Small, b.tx2),
+            None => {
+                // A Store app's id is long and spelled as the file holds it.
+                let f = if key.contains('!') { F::Mono } else { F::Small };
+                let k = self.c.fit(key, f, nw);
+                self.c.text(nx, ty + 22.0, 16.0, &k, f, b.tx2);
+            }
+        }
+        let my = y + (h - 32.0) / 2.0;
+        let (ws, grey) = ws_label(self.s, rule.screen.as_deref(), rule.workspace);
+        let screen = rule.screen.as_deref().map_or_else(|| "Any screen".to_string(), |id| self.screen_called(id));
+        let help = note.as_ref().map_or(String::new(), |(text, _)| text.clone());
+        self.say(Ctl::AppWs(i), UIA_ComboBoxControlTypeId, &format!("Workspace for {name}"), &help, self.ro, (None, Some(ws.clone())));
+        self.app_picker(Ctl::AppWs(i), (wx, my, APP_WS_W), Some(rule.workspace), &ws, grey);
+        self.say(Ctl::AppScreen(i), UIA_ComboBoxControlTypeId, &format!("Screen for {name}"), "", self.ro, (None, Some(screen.clone())));
+        self.app_picker(Ctl::AppScreen(i), (sx, my, APP_SCREEN_W), None, &screen, false);
+        self.app_x(i, sx + APP_SCREEN_W + 12.0, my, &name);
+        h
+    }
+
+    /// A rule's menu button, as the screen chooser draws one: a workspace's chip and name, or a
+    /// screen's mark and name.
+    fn app_picker(&mut self, ctl: Ctl, (x, y, w): (f32, f32, f32), chip: Option<usize>, label: &str, grey: bool) {
+        let b = self.c.t.b;
+        if matches!(self.w.chooser, Some((from, ..)) if from == ctl) {
+            self.field((x, y, w, 32.0), b.card, Some(b.acc));
+        } else {
+            let fill = if self.hovered(ctl) && !self.ro { mix(b.track, b.tx, 0.05) } else { b.track };
+            self.field((x, y, w, 32.0), fill, None);
+        }
+        let mut tx = x + 10.0;
+        match chip {
+            Some(k) => {
+                self.ws_chip(tx, y + 7.0, k);
+                tx += self.ws_chip_w(k) + 8.0;
+            }
+            None => {
+                self.icon(tx, y, 32.0, I_SCREEN, F::Icon, b.tx2);
+                tx += 26.0;
+            }
+        }
+        let cw = self.c.width(I_CHEV, F::IconTiny);
+        let shown = self.c.fit(label, F::Body, x + w - 18.0 - cw - tx);
+        self.c.text(tx, y, 32.0, &shown, F::Body, if grey || self.ro { b.tx2 } else { b.tx });
+        self.icon(x + w - 10.0 - cw, y, 32.0, I_CHEV, F::IconTiny, b.tx2);
+        self.ring((x, y, w, 32.0), 6.0, ctl);
+        self.hit(ctl, (x, y, w, 32.0), 1);
+    }
+
+    /// A rule's remove button: an × that shows its square under the pointer.
+    fn app_x(&mut self, i: usize, x: f32, y: f32, name: &str) {
+        let b = self.c.t.b;
+        let ctl = Ctl::AppX(i);
+        let hot = self.hovered(ctl) && !self.ro;
+        if hot {
+            self.c.boxed((x, y, 32.0, 32.0), 4.0, mix(b.card, b.tx, 0.06), Some(b.line));
+        }
+        let iw = self.c.width(I_X, F::IconTiny);
+        let ink = match () {
+            _ if self.ro => b.tx3,
+            _ if hot => b.tx,
+            _ => b.tx2,
+        };
+        self.icon(x + (32.0 - iw) / 2.0, y, 32.0, I_X, F::IconTiny, ink);
+        self.ring((x, y, 32.0, 32.0), 6.0, ctl);
+        self.hit(ctl, (x, y, 32.0, 32.0), 1);
+        self.say(ctl, UIA_ButtonControlTypeId, &format!("Remove {name}"), "Takes this app's rule out of settings.toml.", self.ro, (None, None));
+    }
+
+    /// No rules yet: what a rule does, and where else you can write one.
+    fn apps_empty(&mut self, y: f32) -> f32 {
+        let b = self.c.t.b;
+        let hc = self.c.t.hc;
+        let cx = X0 + self.cw / 2.0;
+        let tile = if hc { b.card } else { mix(b.card, b.acc_a, 0.09) };
+        self.c.boxed((cx - 24.0, y + 28.0, 48.0, 48.0), 12.0, tile, hc.then_some(b.line));
+        let gw = self.c.width(I_APPS, F::Icon);
+        self.icon(cx - gw / 2.0, y + 28.0, 48.0, I_APPS, F::Icon, if hc { b.tx } else { b.acc });
+        let mut ly = y + 86.0;
+        for (text, f, ink, lh) in [
+            ("No rules yet", F::Bold, b.tx, 20.0),
+            ("Add an app and its new windows open on the workspace you pick, wherever you are.", F::Small, b.tx2, 16.0),
+            ("You can also write rules under [apps] in settings.toml.", F::Small, b.tx2, 16.0),
+        ] {
+            let tw = self.c.width(text, f);
+            self.c.text(cx - tw / 2.0, ly, lh, text, f, ink);
+            ly += lh + 2.0;
+        }
+        ly - y + 26.0
     }
 
     /// A name box, drawn as the popup words' box: an empty one shows its hint. On a read only
@@ -3841,18 +4022,34 @@ impl Ctx<'_, '_> {
         let t = self.c.t;
         let b = t.b;
         let (choices, cur) = chooser_lines(self.w, self.s, from);
-        let mw = at.2.max(320.0);
-        let mh = 4.0 + 24.0 + choices.len() as f32 * 28.0 + 4.0;
-        let my = (at.1 - 28.0 - cur as f32 * 28.0).clamp(8.0, (self.w.vh - mh - 8.0).max(8.0));
-        let mx = at.0.min(self.w.vw - mw - 16.0).max(NAV);
+        let add = from == Ctl::AppAdd;
+        // Lines that don't fit the window's height go on in another column, so every open app
+        // can be picked however many there are.
+        let fit = (((self.w.vh - 16.0 - 32.0) / 28.0).floor() as usize).max(1);
+        let cols = choices.len().div_ceil(fit).max(1);
+        let rows = choices.len().div_ceil(cols);
+        let col_w = if add { 420.0f32.min((self.w.vw - NAV - 32.0) / cols as f32) } else { at.2.max(320.0) };
+        let mw = col_w * cols as f32;
+        let mh = 4.0 + 24.0 + rows as f32 * 28.0 + 4.0;
+        // The chosen line over the chooser; Add, with none chosen, opens under its button.
+        let my = cur.map_or(at.1 + at.3 + 4.0, |c| at.1 - 28.0 - c as f32 * 28.0).clamp(8.0, (self.w.vh - mh - 8.0).max(8.0));
+        let left = if add { at.0 + at.2 - mw } else { at.0 };
+        let mx = left.min(self.w.vw - mw - 16.0).max(NAV);
+        let cur = cur.unwrap_or(usize::MAX);
+        let title = match from {
+            Ctl::AppWs(_) => "Workspace",
+            Ctl::AppAdd => "Apps open now",
+            _ => "Screen",
+        };
         self.c.fill_rr((mx - 1.0, my - 1.0, mw + 2.0, mh + 2.0), 9.0, op(if t.hc { b.tx } else { mix(b.bg, b.tx, 0.10) }));
         if !t.hc {
             self.c.fill_rr((mx, my + 4.0, mw, mh), 8.0, ui::alpha(0, 0.08));
         }
         self.c.fill_rr((mx, my, mw, mh), 8.0, op(b.card));
-        self.c.text(mx + 14.0, my + 4.0, 24.0, "Screen", F::SmallBold, b.tx2);
-        for (i, (name, side)) in choices.iter().enumerate() {
-            let (x, y, w) = (mx + 4.0, my + 28.0 + i as f32 * 28.0, mw - 8.0);
+        self.c.text(mx + 14.0, my + 4.0, 24.0, title, F::SmallBold, b.tx2);
+        for (i, line) in choices.iter().enumerate() {
+            let (name, side) = (&line.name, &line.side);
+            let (x, y, w) = (mx + 4.0 + (i / rows) as f32 * col_w, my + 28.0 + (i % rows) as f32 * 28.0, col_w - 8.0);
             let ctl = Ctl::ScreenItem(i);
             let on = i == cur;
             let hot = self.hovered(ctl) || (self.w.kb && focus == i);
@@ -3868,9 +4065,25 @@ impl Ctx<'_, '_> {
             if on {
                 self.icon(x + 10.0, y, 28.0, I_OK, F::IconSmall, check);
             }
+            // Add's lines: the app's icon first, and the chip of where it starts before the side words.
+            let mut nx = x + 30.0;
+            if let Some(icon) = line.icon {
+                self.c.icon(x + 8.0, y + 6.0, 16.0, icon);
+                nx = x + 32.0;
+            }
+            let side_chip = line.chip.filter(|_| add);
+            if let Some(k) = line.chip.filter(|_| !add) {
+                self.ws_chip(nx, y + 5.0, k);
+                nx += self.ws_chip_w(k) + 8.0;
+            }
             let sw = if side.is_empty() { 0.0 } else { self.c.width(side, F::Small) + 10.0 };
-            let shown = self.c.fit(name, F::Body, w - 30.0 - 6.0 - sw);
-            self.c.text(x + 30.0, y, 28.0, &shown, F::Body, ink);
+            let cw = side_chip.map_or(0.0, |k| self.ws_chip_w(k) + 6.0);
+            let shown = self.c.fit(name, F::Body, x + w - nx - 6.0 - sw - cw);
+            let ink = if line.grey && !(on && t.hc) { if add { b.tx3 } else { b.tx2 } } else { ink };
+            self.c.text(nx, y, 28.0, &shown, F::Body, ink);
+            if let Some(k) = side_chip {
+                self.ws_chip(x + w - sw - cw, y + 5.0, k);
+            }
             if !side.is_empty() {
                 self.c.text(x + w - sw, y, 28.0, side, F::Small, if on && t.hc { b.on_acc } else { b.tx2 });
             }
@@ -4066,15 +4279,176 @@ fn names_chosen(w: &Win) -> (Vec<NameChoice>, usize) {
     (list, i)
 }
 
-/// The open screen menu's lines, each a name and its side words, and the chosen one: Where it
-/// shows' chooser, or the Names card's.
-fn chooser_lines(w: &Win, s: &Settings, from: Ctl) -> (Vec<(String, String)>, usize) {
-    if from == Ctl::NameScreens {
-        let (list, i) = names_chosen(w);
-        return (list.into_iter().map(|c| (c.name, c.side)).collect(), i);
+/// A line of the open screen menu: its name and the words on its right, and for the Apps
+/// section's menus an app's icon, a workspace chip, or a grey name.
+#[derive(Clone, Default)]
+struct Choice {
+    name: String,
+    side: String,
+    icon: Option<HICON>,
+    chip: Option<usize>,
+    grey: bool,
+}
+
+impl Choice {
+    fn new(name: &str, side: &str) -> Choice {
+        Choice { name: name.into(), side: side.into(), ..Choice::default() }
     }
-    let (list, i) = chosen(w, s);
-    (list.into_iter().map(|c| (c.name, c.side.to_string())).collect(), i)
+}
+
+/// The open screen menu's lines and the chosen one, if any: Where it shows' chooser, the
+/// Names card's, or an Apps menu (spec 0027 AC-13).
+fn chooser_lines(w: &Win, s: &Settings, from: Ctl) -> (Vec<Choice>, Option<usize>) {
+    match from {
+        Ctl::NameScreens => {
+            let (list, i) = names_chosen(w);
+            (list.into_iter().map(|c| Choice::new(&c.name, &c.side)).collect(), Some(i))
+        }
+        Ctl::AppWs(r) => {
+            let Some((_, rule)) = s.apps.get(r) else { return (vec![], None) };
+            let lines = (0..s.workspaces)
+                .map(|k| {
+                    let (name, grey) = ws_label(s, rule.screen.as_deref(), k);
+                    Choice { name, chip: Some(k), grey, ..Choice::default() }
+                })
+                .collect();
+            (lines, (rule.workspace < s.workspaces).then_some(rule.workspace))
+        }
+        Ctl::AppScreen(r) => {
+            let Some((_, rule)) = s.apps.get(r) else { return (vec![], None) };
+            let list = app_screens(&w.pics.view, rule);
+            let i = list.iter().position(|(id, _)| *id == rule.screen);
+            (list.into_iter().map(|(_, c)| c).collect(), i)
+        }
+        Ctl::AppAdd => {
+            let list = addable(w, s);
+            if list.is_empty() {
+                return (vec![Choice { name: "Every open app has a rule".into(), grey: true, ..Choice::default() }], None);
+            }
+            let lines = list
+                .into_iter()
+                .map(|a| {
+                    let screen = w.pics.view.present.iter().find(|p| p.device == a.device);
+                    let side = format!("{} · {}", ws_label(s, screen.map(|p| p.id.as_str()), a.ws).0, screen.map_or("", |p| p.name.as_str()));
+                    Choice { name: a.name.clone(), side, icon: Some(a.icon), chip: Some(a.ws), grey: false }
+                })
+                .collect();
+            (lines, None)
+        }
+        _ => {
+            let (list, i) = chosen(w, s);
+            (list.into_iter().map(|c| Choice::new(&c.name, c.side)).collect(), Some(i))
+        }
+    }
+}
+
+// ---- Apps (spec 0027 AC-13, AC-14) ----
+
+/// Screen `id` as des-k names it: plugged in or remembered, as `ws::label` gave it, else your
+/// rename, else the id.
+fn screen_called(v: &crate::ws::View, s: &Settings, id: &str) -> String {
+    v.present
+        .iter()
+        .find(|p| p.id == id)
+        .map(|p| p.name.clone())
+        .or_else(|| v.waiting.iter().find(|w| w.id == id).map(|w| w.name.clone()))
+        .or_else(|| s.screen_rename(id).map(String::from))
+        .unwrap_or_else(|| id.to_string())
+}
+
+/// Workspace `k` as a rule for `screen` (None: any) shows it: that screen's name for it, else
+/// every screen's, else "Workspace N" in grey (true).
+fn ws_label(s: &Settings, screen: Option<&str>, k: usize) -> (String, bool) {
+    let name = match screen {
+        Some(id) => s.ws_name(id, k).map(String::from),
+        None => s.names.get(k).filter(|n| !n.is_empty() && k < s.workspaces).cloned(),
+    };
+    name.map_or_else(|| (format!("Workspace {}", k + 1), true), |n| (n, false))
+}
+
+/// A rule's screen menu, each line with the id it writes: Any screen, the screens plugged in,
+/// remembered ones, then the rule's own id if des-k never saw that screen.
+fn app_screens(v: &crate::ws::View, rule: &settings::Rule) -> Vec<(Option<String>, Choice)> {
+    let mut out = vec![(None, Choice::new("Any screen", "Where it opens"))];
+    for p in &v.present {
+        out.push((Some(p.id.clone()), Choice::new(&p.name, "")));
+    }
+    for w in v.waiting.iter().filter(|w| !v.present.iter().any(|p| p.id == w.id)) {
+        out.push((Some(w.id.clone()), Choice::new(&w.name, "Not plugged in")));
+    }
+    if let Some(id) = rule.screen.as_ref().filter(|id| !out.iter().any(|(o, _)| o.as_ref() == Some(*id))) {
+        out.push((Some(id.clone()), Choice::new(id, "Not seen yet")));
+    }
+    out
+}
+
+/// The Add menu's apps: open now, and with no rule yet.
+fn addable<'a>(w: &'a Win, s: &Settings) -> Vec<&'a crate::apps::Seen> {
+    w.pics.apps.iter().filter(|a| !s.apps.iter().any(|(k, _)| *k == a.key)).collect()
+}
+
+/// A rule row's note, if one applies, and whether it is a warning: a rule past your count or
+/// for an unplugged screen still works; one for a screen des-k never saw is skipped (AC-7, AC-9).
+fn app_note(v: &crate::ws::View, s: &Settings, rule: &settings::Rule) -> Option<(String, bool)> {
+    if rule.workspace >= s.workspaces {
+        return Some((format!("Waits: you have {} workspaces", s.workspaces), false));
+    }
+    let id = rule.screen.as_deref()?;
+    match () {
+        _ if v.present.iter().any(|p| p.id == id) => None,
+        _ if v.waiting.iter().any(|w| w.id == id) => Some(("Screen not plugged in, windows wait on the main display".into(), false)),
+        _ => Some(("des-k hasn't seen this screen yet".into(), true)),
+    }
+}
+
+/// What a change to an app's rule writes, its key as the file spells it (AC-14): Add one
+/// inline table, a menu that rule's one key, Any screen takes `screen` out, remove the rule.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) enum AppChange {
+    Add(usize, Option<String>), // the workspace (0 based) and screen id where its window is
+    Ws(usize),
+    Screen(Option<String>), // None: Any screen
+    Remove,
+}
+
+pub(crate) fn app_edit(key: &str, change: AppChange) -> Edit {
+    let path = |leaf: Option<&str>| [Some("apps"), Some(key), leaf].into_iter().flatten().map(String::from).collect::<Vec<_>>();
+    match change {
+        AppChange::Add(ws, screen) => {
+            let mut t = toml_edit::InlineTable::new();
+            t.insert("workspace", (ws as i64 + 1).into());
+            if let Some(id) = screen {
+                t.insert("screen", id.into());
+            }
+            t.fmt();
+            Edit::At(path(None), t.into())
+        }
+        AppChange::Ws(ws) => Edit::At(path(Some("workspace")), (ws as i64 + 1).into()),
+        AppChange::Screen(Some(id)) => Edit::At(path(Some("screen")), id.into()),
+        AppChange::Screen(None) => Edit::Remove(path(Some("screen"))),
+        AppChange::Remove => Edit::Remove(path(None)),
+    }
+}
+
+/// What choosing line `i` of an open Apps menu writes, if it changes anything.
+fn app_choice(w: &Win, s: &Settings, from: Ctl, i: usize) -> Option<Edit> {
+    match from {
+        Ctl::AppAdd => {
+            let a = *addable(w, s).get(i)?;
+            let screen = w.pics.view.present.iter().find(|p| p.device == a.device).map(|p| p.id.clone());
+            Some(app_edit(&a.key, AppChange::Add(a.ws, screen)))
+        }
+        Ctl::AppWs(r) => {
+            let (key, rule) = s.apps.get(r)?;
+            (i != rule.workspace && i < s.workspaces).then(|| app_edit(&settings::app_key_in_file(key), AppChange::Ws(i)))
+        }
+        Ctl::AppScreen(r) => {
+            let (key, rule) = s.apps.get(r)?;
+            let id = app_screens(&w.pics.view, rule).into_iter().nth(i)?.0;
+            (id != rule.screen).then(|| app_edit(&settings::app_key_in_file(key), AppChange::Screen(id)))
+        }
+        _ => None,
+    }
 }
 
 /// The digits a hex box shows when no one is typing: the color in use, None in high contrast.
@@ -5062,7 +5436,12 @@ fn act(ctl: Ctl) {
         Ctl::Hex(_) | Ctl::Words | Ctl::Name(_) | Ctl::Picture | Ctl::ScreenItem(usize::MAX) => {}
         Ctl::NameSame(k) => same_name(k),
         Ctl::Spot(i) => set_place(SPOT, i as f64),
-        Ctl::Screens | Ctl::NameScreens => open_chooser(ctl),
+        Ctl::Screens | Ctl::NameScreens | Ctl::AppAdd | Ctl::AppWs(_) | Ctl::AppScreen(_) => open_chooser(ctl),
+        Ctl::AppX(r) => {
+            if let Some((key, _)) = s.apps.get(r) {
+                commit(app_edit(&settings::app_key_in_file(key), AppChange::Remove), "Apps");
+            }
+        }
         Ctl::ScreenItem(i) => choose_screen(i),
         Ctl::SameAll => same_as_all(),
         Ctl::ShowThere => show_there(),
@@ -6306,7 +6685,7 @@ fn open_chooser(from: Ctl) {
     let Some(at) = get(|w| w.hits.iter().find(|h| h.ctl == from).map(|h| h.at)).flatten() else { return };
     let _ = set(|w| {
         let (_, i) = chooser_lines(w, settings::get(), from);
-        w.chooser = Some((from, at, i));
+        w.chooser = Some((from, at, i.unwrap_or(0)));
     });
     layout();
 }
@@ -6314,6 +6693,19 @@ fn open_chooser(from: Ctl) {
 /// A line of the open screen menu chosen. A new screen on the Names card drops the text of
 /// boxes that failed to save (spec 0023 AC-13).
 fn choose_screen(i: usize) {
+    let apps = |c: Ctl| matches!(c, Ctl::AppAdd | Ctl::AppWs(_) | Ctl::AppScreen(_));
+    if let Some((from, edit)) = get(|w| w.chooser.filter(|(from, ..)| apps(*from)).map(|(from, ..)| (from, app_choice(w, settings::get(), from, i)))).flatten() {
+        let _ = set(|w| {
+            w.chooser = None;
+            w.focus = Some(from);
+        });
+        layout();
+        // After the menu closes: a write reloads, and the reload lays the page out again.
+        if let Some(edit) = edit {
+            commit(edit, "Apps");
+        }
+        return;
+    }
     let _ = set(|w| {
         let Some((from, ..)) = w.chooser else { return };
         if from == Ctl::NameScreens {
@@ -7408,11 +7800,77 @@ mod tests {
                     vec![],
                 ],
                 waiting: vec![],
+                open: vec![],
             },
             pad: Some(PadState { pad: true, enabled: true, rows: [PadRow::Nothing; 4], off: true, saved: true }),
             back: None,
             here: Some("DISPLAY2".into()),
+            apps: vec![],
         }
+    }
+
+    /// Apps with a window open, as the Apps render states show them: the three ruled ones
+    /// running (Spotify isn't), and, unless `ruled_only`, three more for the Add menu.
+    fn fake_apps(w: &mut Win, ruled_only: bool) {
+        let icon = unsafe { LoadIconW(None, IDI_APPLICATION) }.unwrap_or_default();
+        let seen = |key: &str, name: &str, device: &str, ws: usize| crate::apps::Seen { key: key.into(), name: name.into(), icon, device: device.into(), ws };
+        w.pics.apps = vec![
+            seen("slack.exe", "Slack", "DISPLAY2", 1),
+            seen("olk.exe", "Outlook", "DISPLAY1", 0),
+            seen("microsoft.windowscalculator_8wekyb3d8bbwe!app", "Calculator", "DISPLAY1", 0),
+        ];
+        if !ruled_only {
+            w.pics.apps.insert(1, seen("msedge.exe", "Microsoft Edge", "DISPLAY1", 0));
+            w.pics.apps.push(seen("windowsterminal.exe", "Terminal", "DISPLAY2", 1));
+            w.pics.apps.push(seen("code.exe", "Visual Studio Code", "DISPLAY2", 1));
+        }
+    }
+
+    // Spec 0027 AC-14: Add writes one inline table where the app's window is, a menu writes its
+    // rule's one key, Any screen takes the screen out, and remove takes the rule out, the last
+    // one leaving [apps] for the next. Each reads back as the rule the page showed.
+    #[test]
+    fn app_rules_write_one_thing_each() {
+        let file = "[apps]\n# mine\n";
+        let added = settings::apply_for_test(file, &app_edit("slack.exe", AppChange::Add(2, Some("DEL-1".into()))));
+        // It goes in right under [apps]; the comment stays where it was, after it.
+        assert_eq!(added, "[apps]\n\"slack.exe\" = { workspace = 3, screen = \"DEL-1\" }\n# mine\n");
+        let rule = |text: &str| settings::parse_for_test(text).0.apps;
+        let moved = settings::apply_for_test(&added, &app_edit("slack.exe", AppChange::Ws(0)));
+        assert_eq!(rule(&moved), vec![("slack.exe".to_string(), settings::Rule { workspace: 0, screen: Some("DEL-1".into()) })]);
+        let other = settings::apply_for_test(&moved, &app_edit("slack.exe", AppChange::Screen(Some("internal".into()))));
+        assert!(other.contains("screen = \"internal\""), "{other}");
+        let any = settings::apply_for_test(&other, &app_edit("slack.exe", AppChange::Screen(None)));
+        assert_eq!(rule(&any), vec![("slack.exe".to_string(), settings::Rule { workspace: 0, screen: None })]);
+        let gone = settings::apply_for_test(&any, &app_edit("slack.exe", AppChange::Remove));
+        assert_eq!(gone, file);
+        // Added with no screen when its window's screen isn't plugged in.
+        let bare = settings::apply_for_test(file, &app_edit("spotify.exe", AppChange::Add(0, None)));
+        assert!(bare.contains("\"spotify.exe\" = { workspace = 1 }\n"), "{bare}");
+    }
+
+    // Spec 0027 AC-13: a row says why its rule waits or is skipped; Add lists only apps with no
+    // rule; a workspace past the count is never offered, and nothing is chosen in that menu.
+    #[test]
+    fn app_rows_say_what_waits() {
+        let mut w = fake_win(ui::LIGHT, 1.0);
+        w.pics.view.waiting = vec![crate::ws::Waiting { id: "LG-2".into(), name: "LG 27UL850".into(), windows_name: "LG 27UL850".into(), windows: vec![] }];
+        let s = loaded("[apps]\n\"slack.exe\" = { workspace = 6 }\n\"olk.exe\" = { workspace = 1, screen = \"LG-2\" }\n\"code.exe\" = { workspace = 1, screen = \"GSM-9\" }\n\"msedge.exe\" = { workspace = 2, screen = \"internal\" }\n");
+        let notes: Vec<Option<(String, bool)>> = s.apps.iter().map(|(_, r)| app_note(&w.pics.view, s, r)).collect();
+        assert_eq!(notes, vec![
+            Some(("Waits: you have 4 workspaces".to_string(), false)),
+            Some(("Screen not plugged in, windows wait on the main display".to_string(), false)),
+            Some(("des-k hasn't seen this screen yet".to_string(), true)),
+            None,
+        ]);
+        fake_apps(&mut w, false);
+        let add: Vec<String> = chooser_lines(&w, s, Ctl::AppAdd).0.into_iter().map(|c| c.name).collect();
+        assert_eq!(add, ["Calculator", "Terminal"]);
+        let (lines, cur) = chooser_lines(&w, s, Ctl::AppWs(0));
+        assert_eq!((lines.len(), cur), (4, None));
+        let screens: Vec<(String, String)> = chooser_lines(&w, s, Ctl::AppScreen(2)).0.into_iter().map(|c| (c.name, c.side)).collect();
+        let want = [("Any screen", "Where it opens"), ("Built-in display", ""), ("DELL U2720Q", ""), ("LG 27UL850", "Not plugged in"), ("GSM-9", "Not seen yet")];
+        assert_eq!(screens, want.map(|(a, b)| (a.to_string(), b.to_string())));
     }
 
     fn fake_win(theme: Theme, scale: f32) -> Win {
@@ -7732,7 +8190,57 @@ ws2 = \"Notes\"
 ws3 = \"\"
 ";
         const DOWN_TO_NAMES: f32 = 380.0;
-        let states: [(&str, Option<Section>, Setup); 43] = [
+        // Spec 0027: four rules, as the approved design shows them.
+        const APPS: &str = "[names]
+ws1 = \"Mail\"
+ws2 = \"Code\"
+ws3 = \"Research\"
+[apps]
+\"slack.exe\" = { workspace = 3, screen = \"DEL-A0F5-1234\" }
+\"olk.exe\" = { workspace = 1, screen = \"internal\" }
+\"microsoft.windowscalculator_8wekyb3d8bbwe!app\" = { workspace = 4 }
+\"spotify.exe\" = { workspace = 2 }
+";
+        let states: [(&str, Option<Section>, Setup); 51] = [
+            ("apps-add-many", Some(Section::Apps), |w| {
+                settings::use_for_test(APPS);
+                fake_apps(w, false);
+                let more: Vec<crate::apps::Seen> = (1..=27).map(|i| crate::apps::Seen { key: format!("app{i}.exe"), name: format!("App number {i}"), ..w.pics.apps[1].clone() }).collect();
+                w.pics.apps.extend(more);
+            }),
+            ("apps", Some(Section::Apps), |w| {
+                settings::use_for_test(APPS);
+                fake_apps(w, false);
+            }),
+            ("apps-notes", Some(Section::Apps), |w| {
+                settings::use_for_test("[apps]
+\"spotify.exe\" = { workspace = 6 }
+\"ms-teams.exe\" = { workspace = 2, screen = \"LG-2\" }
+\"notepad.exe\" = { workspace = 1, screen = \"GSM-5B7F-12345\" }
+\"olk.exe\" = { workspace = 1, screen = \"internal\" }
+");
+                fake_apps(w, false);
+                w.pics.view.waiting = vec![crate::ws::Waiting { id: "LG-2".into(), name: "LG 27UL850".into(), windows_name: "LG 27UL850".into(), windows: vec![] }];
+                w.hover = Some(Ctl::AppX(3));
+            }),
+            ("apps-add", Some(Section::Apps), |w| {
+                settings::use_for_test(APPS);
+                fake_apps(w, false);
+            }),
+            ("apps-add-none", Some(Section::Apps), |w| {
+                settings::use_for_test(APPS);
+                fake_apps(w, true);
+            }),
+            ("apps-ws", Some(Section::Apps), |w| {
+                settings::use_for_test(APPS);
+                fake_apps(w, false);
+            }),
+            ("apps-screen", Some(Section::Apps), |w| {
+                settings::use_for_test(APPS);
+                fake_apps(w, false);
+                w.pics.view.waiting = vec![crate::ws::Waiting { id: "LG-2".into(), name: "LG 27UL850".into(), windows_name: "LG 27UL850".into(), windows: vec![] }];
+            }),
+            ("apps-empty", Some(Section::Apps), |w| fake_apps(w, false)),
             ("colors", Some(Section::Colors), |_| {}),
             ("colors-own", Some(Section::Colors), |w| {
                 settings::use_for_test("[colors]\naccent = \"#E0457B\"\nws2 = \"#FFF4B0\"\nws3 = \"blue\"\n");
@@ -7944,6 +8452,17 @@ enabled = false
                     && let Some(at) = win.hits.iter().find(|h| h.ctl == Ctl::NameScreens).map(|h| h.at)
                 {
                     win.chooser = Some((Ctl::NameScreens, at, 2));
+                }
+                let apps_menu = match *sname {
+                    "apps-add" | "apps-add-none" | "apps-add-many" => Some((Ctl::AppAdd, 0)),
+                    "apps-ws" => Some((Ctl::AppWs(0), 1)),
+                    "apps-screen" => Some((Ctl::AppScreen(0), 3)),
+                    _ => None,
+                };
+                if let Some((from, focus)) = apps_menu
+                    && let Some(at) = win.hits.iter().find(|h| h.ctl == from).map(|h| h.at)
+                {
+                    win.chooser = Some((from, at, focus));
                 }
                 // An open picker: placed as on open, the page scrolled at once, the preview in place.
                 if let Some((anchor, levels, beside)) = win.pick.as_ref().and_then(|p| levels_of(&p.anchor, &win.geo).map(|(a, l)| (a, l, !matches!(p.anchor, Anchor::Swatch(_))))) {

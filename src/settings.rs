@@ -266,6 +266,15 @@ pub struct Settings {
     // Spec 0023. Read only through ws_name and screen_rename, which own the fallback rules.
     pub names: [String; 9], // every screen's; empty = no name
     pub names_screens: BTreeMap<String, ScreenNames>, // by screen id (spec 0016)
+    // Spec 0027: rules for where new windows open, in file order, keys lowercased.
+    pub apps: Vec<(String, Rule)>,
+}
+
+/// One `[apps]` rule (spec 0027): where an app's new main windows open.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Rule {
+    pub workspace: usize,       // 0 based; past the count, the rule waits (AC-9)
+    pub screen: Option<String>, // a screen id (spec 0016); None: the screen it opens on
 }
 
 /// One `[names.screens."<id>"]` table (spec 0023 AC-1, AC-11).
@@ -338,6 +347,7 @@ impl Default for Settings {
             indicator_screen_name: true,
             names: Default::default(),
             names_screens: BTreeMap::new(),
+            apps: Vec::new(),
         }
     }
 }
@@ -403,6 +413,12 @@ accent = "windows"          # "windows" follows your Windows accent color, or yo
 # [names.screens."DEL-A1B2-12345"]
 # screen = "Left"
 # ws2 = "Notes"             # "" is no name on this screen
+
+[apps]
+# One line per app. workspace is 1 to 9; screen is optional (a screen id, as in [names.screens]).
+# The settings page's Apps section writes these for you.
+# "slack.exe" = { workspace = 1, screen = "GSM-5B7F-12345" }
+# "spotify.exe" = { workspace = 4 }
 
 [restore]
 enabled = true              # after a reboot or sign in, hide reopened windows back into their workspaces
@@ -480,7 +496,7 @@ tap = true
 do = "notifications"
 "##;
 
-const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activation", "fastest", "first_run_seen", "shortcuts", "indicator", "attention", "colors", "names", "restore", "overview", "touchpad", "gesture"];
+const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activation", "fastest", "first_run_seen", "shortcuts", "indicator", "attention", "colors", "names", "apps", "restore", "overview", "touchpad", "gesture"];
 const SHORTCUT_KEYS: &[&str] = &["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "jump", "send_to", "send_to_stay", "finder", "overview", "pin", "hints"];
 const INDICATOR_KEYS: &[&str] = &["enabled", "style", "screen_name", "spot", "gap", "x", "y", "hold_ms", "fade_ms", "screens"];
 const SCREEN_KEYS: &[&str] = &["spot", "gap", "x", "y"];
@@ -491,6 +507,9 @@ const COLORS_KEYS: &[&str] = &["accent", "ws1", "ws2", "ws3", "ws4", "ws5", "ws6
 const NAMES_KEYS: &[&str] = &["ws1", "ws2", "ws3", "ws4", "ws5", "ws6", "ws7", "ws8", "ws9", "screens"];
 const SCREEN_NAMES_KEYS: &[&str] = &["screen", "ws1", "ws2", "ws3", "ws4", "ws5", "ws6", "ws7", "ws8", "ws9"];
 pub const NAME_MAX: usize = 32; // in UTF-16 units, after cleanup (spec 0023 AC-2)
+const RULE_KEYS: &[&str] = &["workspace", "screen"];
+pub const APPS_MAX: usize = 64; // spec 0027 AC-10
+const APP_KEY_MAX: usize = 260;
 const RESTORE_KEYS: &[&str] = &["enabled", "minutes"];
 const OVERVIEW_KEYS: &[&str] = &["animation", "labels", "live", "fade_ms"];
 const TOUCHPAD_KEYS: &[&str] = &["enabled", "swipe_mm", "twice_ms"];
@@ -704,6 +723,9 @@ fn apply(old: &Settings, changes: &[Change]) -> Vec<String> {
     if has("fastest") {
         crate::ui::transitions_all();
     }
+    if has("apps") {
+        crate::apps::sync();
+    }
     if has("attention.enabled") && !new.attention_enabled {
         crate::ws::forget_wants();
     }
@@ -753,6 +775,13 @@ pub fn write(edit: Edit) -> Result<(), String> {
         return Err(why);
     }
     reload(Source::Page).map(|_| ())
+}
+
+/// An `[apps]` rule's key as the file spells it, for a key the settings hold lowercased: an
+/// edit must name the file's own key (spec 0027 AC-14).
+pub fn app_key_in_file(lower: &str) -> String {
+    let text = std::fs::read_to_string(path()).unwrap_or_default();
+    file_order(&text, "apps").into_iter().find(|k| k.to_lowercase() == lower).unwrap_or_else(|| lower.to_string())
 }
 
 /// The value at a path of keys as the file holds it now, None when there is no such key: the
@@ -806,7 +835,8 @@ fn edit_doc(doc: &mut toml_edit::DocumentMut, edit: &Edit) -> Result<(), String>
 
 fn set_at(doc: &mut toml_edit::DocumentMut, path: &[String], value: toml_edit::Value) -> Result<(), String> {
     let Some((key, tables)) = path.split_last() else { return Ok(()) };
-    let mut table = doc.as_table_mut();
+    // Table like, so a key inside an [apps] rule's inline table is one edit too (spec 0027 AC-14).
+    let mut table: &mut dyn toml_edit::TableLike = doc.as_table_mut();
     for (i, name) in tables.iter().enumerate() {
         // A screen id is always a quoted key, whatever letters it has.
         let quoted = i > 0 && tables[i - 1] == "screens";
@@ -817,7 +847,7 @@ fn set_at(doc: &mut toml_edit::DocumentMut, path: &[String], value: toml_edit::V
             t.set_implicit(i + 1 < tables.len());
             toml_edit::Item::Table(t)
         });
-        table = item.as_table_mut().ok_or_else(|| format!("{}: expected a table", tables[..=i].join(".")))?;
+        table = item.as_table_like_mut().ok_or_else(|| format!("{}: expected a table", tables[..=i].join(".")))?;
     }
     match table.get_mut(key) {
         Some(item) => {
@@ -835,8 +865,8 @@ fn set_at(doc: &mut toml_edit::DocumentMut, path: &[String], value: toml_edit::V
 }
 
 fn remove_at(doc: &mut toml_edit::DocumentMut, path: &[String]) {
-    fn table_at<'a>(doc: &'a mut toml_edit::DocumentMut, path: &[String]) -> Option<&'a mut toml_edit::Table> {
-        path.iter().try_fold(doc.as_table_mut(), |t, name| t.get_mut(name)?.as_table_mut())
+    fn table_at<'a>(doc: &'a mut toml_edit::DocumentMut, path: &[String]) -> Option<&'a mut dyn toml_edit::TableLike> {
+        path.iter().try_fold(doc.as_table_mut() as &mut dyn toml_edit::TableLike, |t, name| t.get_mut(name)?.as_table_like_mut())
     }
     let Some((key, tables)) = path.split_last() else { return };
     let Some(t) = table_at(doc, tables) else { return };
@@ -1062,6 +1092,10 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
             *n = name(t, key, &format!("names.{key}"), &mut warn).unwrap_or_default();
         }
         s.names_screens = name_screens(t, &mut warn);
+    }
+
+    if let Some(t) = section(&top, "apps", &mut warn) {
+        s.apps = apps(t, &file_order(text, "apps"), &mut warn);
     }
 
     if let Some(t) = section(&top, "restore", &mut warn) {
@@ -1508,6 +1542,76 @@ fn name_screens(t: &Table, warn: &mut Vec<String>) -> BTreeMap<String, ScreenNam
     out
 }
 
+/// The `[apps]` rules (spec 0027 AC-10): a bad one is dropped alone, the first 64 kept, and of
+/// two keys that differ only in case the first wins. A key is only ever compared, never opened
+/// or run, and one with a path in it is never echoed: a log is safe to share.
+fn apps(t: &Table, order: &[String], warn: &mut Vec<String>) -> Vec<(String, Rule)> {
+    let mut out: Vec<(String, Rule)> = Vec::new();
+    let mut dropped = 0;
+    let rest = t.keys().filter(|k| !order.contains(k));
+    for (key, v) in order.iter().chain(rest).filter_map(|k| t.get_key_value(k)) {
+        let shown = if key.contains(['\\', '/', ':']) { "a key with a path in it".to_string() } else { format!("\"{key}\"") };
+        let full = format!("apps.{shown}");
+        if !app_key(key) {
+            warn.push(format!("apps: {shown} is not an exe file name (like \"slack.exe\") or a Store app id, ignored"));
+            continue;
+        }
+        let lower = key.to_lowercase();
+        if out.iter().any(|(k, _)| *k == lower) {
+            warn.push(format!("apps: {shown} differs from an earlier key only in case, ignored"));
+            continue;
+        }
+        let rule = match v {
+            Value::Table(r) => rule(r, &full),
+            v => Err(format!("{full}: expected {{ workspace = N }}, got a {}, ignored", v.type_str())),
+        };
+        match rule {
+            Err(why) => warn.push(why),
+            Ok(_) if out.len() == APPS_MAX => dropped += 1,
+            Ok(r) => out.push((lower, r)),
+        }
+    }
+    if dropped > 0 {
+        warn.push(format!("apps: more than {APPS_MAX} rules, the last {dropped} ignored"));
+    }
+    out
+}
+
+/// Table `name`'s keys as the file has them: toml's Table sorts its keys, and the first of two
+/// rules that differ only in case wins (spec 0027 AC-10).
+fn file_order(text: &str, name: &str) -> Vec<String> {
+    let doc = text.parse::<toml_edit::DocumentMut>().ok();
+    let t = doc.as_ref().and_then(|d| d.get(name)?.as_table_like());
+    t.map_or_else(Vec::new, |t| t.iter().map(|(k, _)| k.to_string()).collect())
+}
+
+/// An exe file name (`slack.exe`) or a Store app id (`Microsoft.WindowsCalculator_8wekyb3d8bbwe!App`).
+fn app_key(key: &str) -> bool {
+    let plain = !key.is_empty() && key.chars().count() <= APP_KEY_MAX && !key.contains(['\\', '/', ':']) && !key.chars().any(char::is_control);
+    plain && (key.contains('!') || (key.len() > 4 && key.to_lowercase().ends_with(".exe")))
+}
+
+/// One rule's table; any bad part drops the whole rule, since half a rule would put windows
+/// somewhere you did not ask for.
+fn rule(t: &Table, full: &str) -> Result<Rule, String> {
+    if let Some(k) = t.keys().find(|k| !RULE_KEYS.contains(&k.as_str())) {
+        return Err(format!("{full}: unknown key {k}, rule ignored"));
+    }
+    let workspace = match t.get("workspace") {
+        Some(Value::Integer(n)) if (1..=9).contains(n) => *n as usize - 1,
+        Some(Value::Integer(n)) => return Err(format!("{full}.workspace: {n} is not 1 to 9, rule ignored")),
+        Some(v) => return Err(format!("{full}.workspace: expected a whole number, got a {}, rule ignored", v.type_str())),
+        None => return Err(format!("{full}: no workspace, rule ignored")),
+    };
+    let screen = match t.get("screen") {
+        None => None,
+        Some(Value::String(id)) if !id.trim().is_empty() => Some(id.clone()),
+        Some(Value::String(_)) => return Err(format!("{full}.screen: empty, rule ignored")),
+        Some(v) => return Err(format!("{full}.screen: expected a screen id, got a {}, rule ignored", v.type_str())),
+    };
+    Ok(Rule { workspace, screen })
+}
+
 /// Bad entries are dropped one by one; a list left empty by that falls back to `default`.
 /// A list written empty, `[]`, is off: the settings page writes it when you remove the last
 /// combo (spec 0012 AC-8).
@@ -1774,6 +1878,8 @@ impl Settings {
         fields.splice(at..at, ws);
         let at = fields.iter().position(|(k, _)| *k == "restore.enabled").unwrap_or(fields.len());
         fields.insert(at, ("names", names_text(&self.names, &self.names_screens)));
+        let at = fields.iter().position(|(k, _)| *k == "restore.enabled").unwrap_or(fields.len());
+        fields.insert(at, ("apps", apps_text(&self.apps)));
         fields
     }
 }
@@ -1814,6 +1920,16 @@ fn names_text(names: &[String; 9], screens: &BTreeMap<String, ScreenNames>) -> S
     format!("[{}]", parts.join("; "))
 }
 
+/// Every rule by key, workspace and screen id, never a path (spec 0027 AC-15), like
+/// `[slack.exe: 1 on GSM-5B7F-12345, spotify.exe: 4]`.
+fn apps_text(apps: &[(String, Rule)]) -> String {
+    let one = |(k, r): &(String, Rule)| match &r.screen {
+        Some(id) => format!("{k}: {} on {id}", r.workspace + 1),
+        None => format!("{k}: {}", r.workspace + 1),
+    };
+    format!("[{}]", apps.iter().map(one).collect::<Vec<_>>().join(", "))
+}
+
 impl fmt::Display for Settings {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let fields: Vec<String> = self.fields().into_iter().map(|(k, v)| format!("{k}={v}")).collect();
@@ -1846,6 +1962,30 @@ spot = \"top-right\""), "{one}");
         assert_eq!(whole, DEFAULT_FILE);
         let colors = edit_text(DEFAULT_FILE, &Edit::At(vec!["colors".into(), "ws2".into()], "#123456".into())).unwrap();
         assert_eq!(parse(&colors).0.ws_colors[1], Some(0x123456));
+    }
+
+    // Spec 0027 AC-14: a rule is an inline table, and the page changes one key inside it, so
+    // whatever else you wrote on that line, and the comments around it, stay as they were.
+    #[test]
+    fn rule_keys_change_inside_their_inline_table() {
+        let file = "[apps]
+# mine
+\"Slack.exe\" = { workspace = 1, screen = \"GSM-1\" } # chat
+";
+        let at = |k: &str| vec!["apps".to_string(), "Slack.exe".into(), k.into()];
+        let moved = edit_text(file, &Edit::At(at("workspace"), 3.into())).unwrap();
+        assert_eq!(moved, "[apps]
+# mine
+\"Slack.exe\" = { workspace = 3, screen = \"GSM-1\" } # chat
+");
+        let any = edit_text(&moved, &Edit::Remove(at("screen"))).unwrap();
+        assert_eq!(parse(&any).0.apps, vec![("slack.exe".to_string(), Rule { workspace: 2, screen: None })]);
+        assert!(any.contains("# mine") && any.contains("# chat"), "{any}");
+        // The last rule out leaves [apps] itself for the next one.
+        let none = edit_text(&any, &Edit::Remove(at("screen")[..2].to_vec())).unwrap();
+        assert_eq!(none, "[apps]
+");
+        assert!(parse(&none).0.apps.is_empty());
     }
 
     // The file des-k writes for you and the values it falls back to are two copies of the
@@ -2449,7 +2589,54 @@ do = "previous"
         let mut unique = names.clone();
         unique.sort();
         unique.dedup();
-        assert_eq!((names.len(), unique.len()), (51, 51));
+        assert_eq!((names.len(), unique.len()), (52, 52));
+    }
+
+    // Spec 0027 AC-10: one bad rule never costs the others, each problem is one line, and a key
+    // with a path in it is never echoed, so a shared log can't leak where your files live.
+    #[test]
+    fn a_bad_app_rule_only_drops_itself() {
+        let file = r#"[apps]
+"Slack.exe" = { workspace = 1, screen = "GSM-5B7F-12345" }
+"C:\\x\\notepad.exe" = { workspace = 2 }
+"spotify" = { workspace = 2 }
+"zero.exe" = { workspace = 0 }
+"text.exe" = { workspace = "1" }
+"empty.exe" = { workspace = 1, screen = "" }
+"colour.exe" = { workspace = 1, colour = 1 }
+"plain.exe" = 3
+"slack.exe" = { workspace = 3 }
+"Microsoft.WindowsCalculator_8wekyb3d8bbwe!App" = { workspace = 4 }
+"spotify.exe" = { workspace = 4 }
+"#;
+        let (s, warn) = parse(file);
+        let rule = |w, sc: Option<&str>| Rule { workspace: w, screen: sc.map(str::to_string) };
+        assert_eq!(s.apps, vec![
+            ("slack.exe".to_string(), rule(0, Some("GSM-5B7F-12345"))),
+            ("microsoft.windowscalculator_8wekyb3d8bbwe!app".to_string(), rule(3, None)),
+            ("spotify.exe".to_string(), rule(3, None)),
+        ]);
+        assert_eq!(warn.len(), 8, "{warn:?}");
+        assert!(warn.iter().all(|w| !w.contains("C:") && !w.contains("\\x")), "{warn:?}");
+        assert!(warn.iter().any(|w| w.contains("\"slack.exe\" differs from an earlier key only in case")), "{warn:?}");
+    }
+
+    // Spec 0027 AC-10: past 64 rules the rest are dropped with one line, not one each.
+    #[test]
+    fn app_rules_stop_at_64() {
+        let file = (0..70).fold("[apps]\n".to_string(), |f, i| f + &format!("\"app{i}.exe\" = {{ workspace = 1 }}\n"));
+        let (s, warn) = parse(&file);
+        assert_eq!(s.apps.len(), APPS_MAX);
+        assert_eq!(s.apps.last().map(|(k, _)| k.as_str()), Some("app63.exe"));
+        assert_eq!(warn, vec!["apps: more than 64 rules, the last 6 ignored".to_string()]);
+    }
+
+    // Spec 0027 AC-15: the change log names rules by key, workspace and screen id only.
+    #[test]
+    fn app_rules_log_by_key() {
+        let (s, _) = parse("[apps]\n\"slack.exe\" = { workspace = 1, screen = \"GSM-1\" }\n\"spotify.exe\" = { workspace = 4 }\n");
+        let line = s.fields().into_iter().find(|(k, _)| *k == "apps").map(|(_, v)| v);
+        assert_eq!(line.as_deref(), Some("[slack.exe: 1 on GSM-1, spotify.exe: 4]"));
     }
 
     // Spec 0023 AC-1, AC-3: a screen's own name beats every screen's, "" there hides the name on
