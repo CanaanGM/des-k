@@ -15,7 +15,10 @@ use windows::Win32::{
             MonitorFromWindow,
         },
     },
-    System::Com::{CLSCTX_ALL, CoCreateInstance},
+    System::{
+        Com::{CLSCTX_ALL, CoCreateInstance},
+        SystemInformation::GetTickCount,
+    },
     UI::{
         Shell::{IVirtualDesktopManager, VirtualDesktopManager},
         WindowsAndMessaging::*,
@@ -26,7 +29,7 @@ use windows::core::BOOL;
 use crate::cloak::Shell;
 use crate::indicator::{self, Card, Line as Says};
 use crate::restore::{self, Entry, Fp, Pick};
-use crate::settings;
+use crate::{keys, settings};
 
 // A rate limit against apps that keep grabbing focus; the stale check and the bounce
 // guard in follow() carry correctness (spec 0002).
@@ -49,6 +52,18 @@ const RETURN_TRIES: u32 = 10;
 // A dock drops and brings back its screens one by one, and Windows moves windows after each:
 // spots are read and windows return only once the layout held this many checks (spec 0016).
 const SETTLE_CHECKS: u32 = 3;
+// How long a window a rule moved is watched for its app moving it back, and how many times it
+// is put back (spec 0027 AC-6).
+const SETTLE_FOR: Duration = Duration::from_secs(2);
+const SETTLE_PUTS: u8 = 3;
+// Windows' shell can show a window a rule just hid (spec 0027 AC-17): cloak it again this long
+// after the rule hid it, this many times at most.
+const HOLD_FOR: Duration = Duration::from_secs(10);
+const RECLOAKS: u8 = 3;
+// A brand new window has no shell view for a moment (0x8002802B): retry its cloak this often,
+// this many times (about 1 s).
+const NEW_RETRY: Duration = Duration::from_millis(15);
+const NEW_TRIES: u32 = 66;
 
 struct Monitor {
     active: usize,
@@ -79,6 +94,12 @@ impl Monitor {
             area: RECT::default(),
             name: String::new(),
         }
+    }
+
+    /// Where back goes: the workspace the last switch left, if it still exists and is not the
+    /// one shown (spec 0024 AC-4). Back and jump both ask this, so they never disagree.
+    fn back_target(&self, count: usize) -> Option<usize> {
+        self.last_switch.map(|(_, ws)| ws).filter(|&ws| ws < count && ws != self.active)
     }
 
     /// A present screen's, with nothing hidden yet.
@@ -155,6 +176,21 @@ struct Away {
     pid: u32,
 }
 
+/// A window a rule moved to another screen, watched for `SETTLE_FOR` (spec 0027 AC-6).
+struct Settle {
+    target: String, // screen id
+    spot: Spot,
+    until: Instant,
+    puts: u8,
+}
+
+/// A window a rule hid that has not been shown since (spec 0027 AC-5, AC-17).
+struct Ruled {
+    at: Instant,
+    recloaks: u8,
+    from: String, // the screen it opened on, whose top window takes focus off it
+}
+
 /// A line for the indicator on screen `id` (`device`), showing `active`: made under the lock,
 /// shown after it. `line` is the card's (spec 0017 AC-IND-4), `text` the tray balloon's.
 struct Note {
@@ -196,6 +232,23 @@ struct State {
     apps: HashMap<(isize, u32), String>,
     // Hidden windows that flashed since they were hidden (spec 0022); memory only.
     wants: HashSet<isize>,
+    // Every window that has shown once while app rules exist, by (hwnd, pid): a rule acts only
+    // the first time a window shows (spec 0027 AC-3). Memory only.
+    opened: HashSet<(isize, u32)>,
+    // Windows a rule just moved to another screen, by hwnd (spec 0027 AC-6).
+    settle: HashMap<isize, Settle>,
+    // Windows a rule hid, by hwnd, only while they stay in a hidden list: follow ignores them and
+    // a shell uncloak is undone (spec 0027 AC-5, AC-17). Memory only.
+    ruled: HashMap<isize, Ruled>,
+}
+
+/// Whether `load` started a restore, and why (spec 0003): after a new sign in, windows open
+/// before des-k started also go by their app's rule (spec 0027 AC-11).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Restoring {
+    No,
+    Resume,
+    NewSignIn,
 }
 
 /// Matching reopened windows to saved entries after a new sign in (spec 0003).
@@ -245,29 +298,55 @@ fn mon_of(s: &State, id: &str) -> Option<HMONITOR> {
     s.present.iter().find(|p| p.id == id).and_then(|p| monitor_named(&p.device))
 }
 
-/// The name des-k shows for a screen (spec 0017): Windows' friendly name, with " #1", " #2" left
-/// to right when two present screens share it. A screen that is not present keeps its last name.
+/// The name des-k shows for a screen (spec 0017): your rename as typed (spec 0023 AC-11), else
+/// Windows' friendly name, with " #1", " #2" left to right when two present screens not renamed
+/// share it. A screen that is not present keeps its last name. Never for a log line: the log
+/// names a screen by Windows' name and id, so no rename reaches it (AC-15).
 fn label(s: &State, id: &str) -> String {
+    label_by(settings::get(), s, id)
+}
+
+fn label_by(set: &settings::Settings, s: &State, id: &str) -> String {
+    if let Some(rename) = set.screen_rename(id) {
+        return rename.to_string();
+    }
     let Some(p) = s.present.iter().find(|p| p.id == id) else {
         return s.monitors.get(id).map_or_else(|| id.to_string(), |m| m.name.clone());
     };
-    let name = if p.name.is_empty() { p.device.trim_start_matches(r"\\.\").to_string() } else { p.name.clone() };
+    let name = windows_name(p);
     // present is sorted left to right.
-    let twins: Vec<&Screen> = s.present.iter().filter(|q| q.name == p.name).collect();
+    let twins: Vec<&Screen> = s.present.iter().filter(|q| q.name == p.name && set.screen_rename(&q.id).is_none()).collect();
     match twins.iter().position(|q| q.id == p.id) {
         Some(i) if twins.len() > 1 => format!("{name} #{}", i + 1),
         _ => name,
     }
 }
 
-/// The indicator's card for screen `id`: named only when two or more screens are plugged in,
-/// and carrying the id so the indicator finds that screen's own place (spec 0020 AC-9).
+/// The indicator's card for screen `id`: named only when two or more screens are plugged in and
+/// `[indicator] screen_name` is on (spec 0023 AC-5), with this screen's workspace names, and
+/// carrying the id so the indicator finds that screen's own place (spec 0020 AC-9).
 fn card(s: &State, id: &str, active: usize, count: usize) -> Card {
-    let on = settings::get().attention_enabled;
-    let wants = s.monitors.get(id).filter(|_| on).map_or_else(Vec::new, |m| {
+    let set = settings::get();
+    let wants = s.monitors.get(id).filter(|_| set.attention_enabled).map_or_else(Vec::new, |m| {
         (0..m.hidden.len()).filter(|&i| m.hidden[i].iter().any(|h| s.wants.contains(h))).collect()
     });
-    Card { screen_id: id.to_string(), wants, ..Card::new(active, count, (s.present.len() > 1).then(|| label(s, id))) }
+    let screen = (s.present.len() > 1 && set.indicator_screen_name).then(|| label(s, id));
+    Card { screen_id: id.to_string(), wants, names: names_of(id, count), ..Card::new(active, count, screen) }
+}
+
+/// Screen `id`'s workspace names, one per workspace in use, empty for none (spec 0023 AC-1).
+fn names_of(id: &str, count: usize) -> Vec<String> {
+    let set = settings::get();
+    (0..count).map(|i| set.ws_name(id, i).unwrap_or_default().to_string()).collect()
+}
+
+/// `device`'s workspace names, for the overview, which knows screens by device name (spec 0023
+/// AC-7). An unknown device has no names.
+pub fn names(device: &str) -> Vec<String> {
+    let count = settings::get().workspaces;
+    let mut s = state();
+    let id = id_of(&mut s, device);
+    if s.present.iter().any(|p| p.id == id) { names_of(&id, count) } else { vec![String::new(); count] }
 }
 
 /// The indicator on `mon` as it is now: the settings page's Show (spec 0012 AC-19).
@@ -284,6 +363,7 @@ pub fn show_indicator(mon: HMONITOR) {
 
 /// You moved an away window yourself (spec 0016 AC-6): it stays where you put it.
 fn claim(s: &mut State, raw: isize, why: &str) {
+    s.settle.remove(&raw);
     if let Some(a) = s.away.remove(&raw) {
         let name = s.monitors.get(&a.home).map_or(a.home.clone(), |m| m.name.clone());
         info!("{} stays where it is when {name} returns: {why}", who(HWND(raw as *mut _)));
@@ -376,6 +456,11 @@ fn save(s: &mut State) {
     if settings::get().attention_enabled {
         s.wants = wants.into_iter().filter(|&h| hidden_on(s, h).is_some()).collect();
     }
+    // Shown by a switch, the finder or the overview, or gone: the rule is done with it.
+    let ruled = std::mem::take(&mut s.ruled);
+    s.ruled = ruled.into_iter().filter(|&(h, _)| hidden_on(s, h).is_some()).collect();
+    // A closed window's handle can come back for a new window, which must count as new.
+    s.opened.retain(|&(h, pid)| unsafe { IsWindow(Some(HWND(h as *mut _))) }.as_bool() && pid_of(HWND(h as *mut _)) == pid);
     save_lines(s, true);
 }
 
@@ -694,31 +779,274 @@ fn app_windows_on(mon: HMONITOR) -> Vec<HWND> {
 }
 
 /// Visible, uncloaked app windows on every screen (Alt+Tab-like filter from spikes/listwin), top of z-order first.
-fn app_windows() -> Vec<HWND> {
+pub(crate) fn app_windows() -> Vec<HWND> {
+    top_level().into_iter().filter(|&h| app_window(h).is_ok()).collect()
+}
+
+/// Every top level window, shown or not, top of z order first.
+fn top_level() -> Vec<HWND> {
     unsafe extern "system" fn push(hwnd: HWND, out: LPARAM) -> BOOL {
         unsafe { (*(out.0 as *mut Vec<HWND>)).push(hwnd) };
         BOOL(1)
     }
     let mut all = Vec::new();
     unsafe { let _ = EnumWindows(Some(push), LPARAM(&mut all as *mut _ as isize)); }
-    let shell = unsafe { GetShellWindow() };
-    let me = std::process::id();
-    all.into_iter()
-        .filter(|&h| unsafe {
-            let ex = GetWindowLongPtrW(h, GWL_EXSTYLE) as u32;
-            IsWindowVisible(h).as_bool()
-                && GetWindow(h, GW_OWNER).map_or(true, |o| o.is_invalid())
-                && ex & WS_EX_TOOLWINDOW.0 == 0
-                && GetWindowTextLengthW(h) > 0
-                && cloaked(h) == 0
-                // Never hide the desktop or taskbars.
-                && h != shell
-                && !matches!(class_name(h).as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd")
-                // Never des-k's own settings page or welcome screen: a hidden one is one the
-                // tray's Settings would focus where you cannot see it.
-                && pid_of(h) != me
-        })
-        .collect()
+    all
+}
+
+/// Whether `h` is the kind of window app_windows lists, else what it lacks (an app rule logs
+/// that, spec 0027).
+pub(crate) fn app_window(h: HWND) -> Result<(), &'static str> {
+    let ex = unsafe { GetWindowLongPtrW(h, GWL_EXSTYLE) } as u32;
+    let why = match () {
+        _ if !unsafe { IsWindowVisible(h) }.as_bool() => "not visible",
+        _ if unsafe { GetWindow(h, GW_OWNER) }.is_ok_and(|o| !o.is_invalid()) => "owned by another window",
+        _ if ex & WS_EX_TOOLWINDOW.0 != 0 => "a tool window",
+        _ if unsafe { GetWindowTextLengthW(h) } == 0 => "no title",
+        _ if cloaked(h) != 0 => "cloaked",
+        // Never hide the desktop or taskbars.
+        _ if h == unsafe { GetShellWindow() } || matches!(class_name(h).as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd") => "the shell",
+        // Never des-k's own settings page or welcome screen: a hidden one is one the
+        // tray's Settings would focus where you cannot see it.
+        _ if pid_of(h) == std::process::id() => "des-k's own",
+        _ => return Ok(()),
+    };
+    Err(why)
+}
+
+/// Marks every top level window there is now as shown once: a rule then acts only on windows
+/// that show for the first time from here on (spec 0027 AC-3). Called as the show hook goes in.
+pub fn seed_opened() {
+    let all: Vec<(isize, u32)> = top_level().into_iter().map(|h| (h.0 as isize, pid_of(h))).collect();
+    state().opened.extend(all);
+}
+
+/// The show hook went out: nothing is watched any more.
+pub fn forget_opened() {
+    let mut s = state();
+    s.opened.clear();
+    s.settle.clear();
+}
+
+/// Whether `h` shows for the first time; it counts as shown from now on either way (AC-3).
+pub fn first_show(h: HWND) -> bool {
+    state().opened.insert((h.0 as isize, pid_of(h)))
+}
+
+/// Puts a new window of an app with a rule where the rule says (spec 0027): on the rule's
+/// screen (or the one it opened on), in the rule's workspace, hidden if that workspace is not
+/// showing. Never switches a screen. `name` is the app's name for the note, `shown` the tick
+/// count when Windows showed it, None for a window open before des-k started (AC-11).
+pub fn place_new(h: HWND, rule: &settings::Rule, name: String, shown: Option<u32>) {
+    let note = place_in(&mut state(), h, rule, name, shown);
+    if let Some((mon, card)) = note {
+        indicator::show(mon, card);
+    }
+}
+
+fn place_in(s: &mut State, h: HWND, rule: &settings::Rule, name: String, shown: Option<u32>) -> Option<(HMONITOR, Card)> {
+    let count = settings::get().workspaces;
+    let (app, k, raw) = (who(h), rule.workspace, h.0 as isize);
+    if k >= count {
+        info!("apps: {app} opened where Windows put it: its rule's workspace {} waits, you have {count}", k + 1);
+        return None;
+    }
+    let from_mon = unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) };
+    let from = id_of(s, &device_name(from_mon));
+    let target = rule.screen.clone().unwrap_or_else(|| from.clone());
+    // Where it lands now: the rule's screen, or the main display while that one is unplugged (AC-7).
+    let (land, away) = match s.present.iter().find(|p| p.id == target) {
+        Some(p) => (p.clone(), false),
+        None if !s.monitors.contains_key(&target) => {
+            warn!("apps: {app} opened where Windows put it: its rule's screen {target} is one des-k has never seen");
+            return None;
+        }
+        None => match s.present.iter().find(|p| p.primary) {
+            Some(p) => (p.clone(), true),
+            None => {
+                warn!("apps: {app} opened where Windows put it: no main display to wait on");
+                return None;
+            }
+        },
+    };
+    let now = spot_of(h);
+    let from_area = work_area(from_mon);
+    let spot = Spot { rect: remap(from_area, land.area, now.rect), state: now.state };
+    let was_fg = unsafe { GetForegroundWindow() } == h;
+    let m = s.monitors.entry(land.id.clone()).or_insert_with(|| Monitor::of(&land));
+    let hide = m.active != k;
+    let mut how = String::from("visible");
+    if hide {
+        let Ok(shell) = Shell::new() else {
+            warn!("apps: {app} opened where Windows put it: the shell is not available");
+            return None;
+        };
+        match hide_new(&shell, h) {
+            Ok(retries) => {
+                how = match shown {
+                    Some(t) => format!("hidden {} ms after it showed, {retries} retries", unsafe { GetTickCount() }.wrapping_sub(t)),
+                    None => format!("hidden, open since before des-k started, {retries} retries"),
+                }
+            }
+            Err(e) => {
+                warn!("apps: {app} opened where Windows put it: could not hide it ({e})");
+                return None;
+            }
+        }
+        // In a list straight away, so every exit path shows it again (AC-12). Front = top.
+        m.hidden[k].insert(0, raw);
+        s.ruled.insert(raw, Ruled { at: Instant::now(), recloaks: 0, from: from.clone() });
+        if was_fg {
+            focus_off(&app, from_mon);
+        }
+    }
+    // Hidden first, so it never crosses screens where you can see it.
+    if land.id != from {
+        if !hung(h)
+            && let Err(e) = put(h, spot)
+        {
+            warn!("apps: could not move {app} to {}: {e}", land.name);
+        }
+        s.settle.insert(raw, Settle { target: land.id.clone(), spot, until: Instant::now() + SETTLE_FOR, puts: 0 });
+    }
+    if away && let Some(home) = s.monitors.get(&target) {
+        let spot = Spot { rect: remap(from_area, home.area, now.rect), state: now.state };
+        s.away.insert(raw, Away { home: target.clone(), ws: k, spot, pinned: false, pid: pid_of(h) });
+    }
+    let waits = if away { format!(", waiting for {}", s.monitors.get(&target).map_or(target.as_str(), |m| m.name.as_str())) } else { String::new() };
+    info!("apps: {app} -> {} workspace {}/{count}, {how}{waits}", land.name, k + 1);
+    save(s);
+    let active = s.monitors.get(&land.id).map_or(0, |m| m.active);
+    let mon = monitor_named(&land.device)?;
+    hide.then(|| (mon, card(s, &land.id, active, count).with(Says::Opened { app: name, to: k })))
+}
+
+/// Moves focus off a window a rule hid to the top window on `mon`, the screen it opened on, or
+/// the desktop (AC-5). It is cloaked now, so `app_windows_on` skips it. Windows lets only the
+/// process that got the last input move focus, so des-k types its masked key first.
+fn focus_off(app: &str, mon: HMONITOR) {
+    let next = app_windows_on(mon).first().copied().unwrap_or(unsafe { GetShellWindow() });
+    keys::mask();
+    // Its return, not GetForegroundWindow: the other app's thread may take a moment to activate.
+    if !unsafe { SetForegroundWindow(next) }.as_bool() {
+        warn!("apps: could not move focus off {app}");
+    }
+}
+
+/// Holds a rule's hide (`WM_UNCLOAKED`, spec 0027 AC-17): a window a rule hid under `HOLD_FOR`
+/// ago that something else uncloaked while des-k still lists it hidden is cloaked again, up to
+/// `RECLOAKS` times. After that, or if the cloak fails, it stays visible and leaves its lists, so
+/// des-k never lists a visible window as hidden. des-k's own uncloaks take a window off its list
+/// first, under the lock, so this never undoes them.
+pub fn recloak(h: HWND) {
+    let mut guard = state();
+    let s = &mut *guard;
+    let raw = h.0 as isize;
+    let Some(r) = s.ruled.get(&raw) else { return };
+    if r.at.elapsed() >= HOLD_FOR || !unsafe { IsWindow(Some(h)) }.as_bool() || cloaked(h) != 0 {
+        return;
+    }
+    let Some((id, k)) = hidden_on(s, raw) else { return };
+    let (recloaks, from, app) = (r.recloaks, r.from.clone(), who(h));
+    let held = recloaks < RECLOAKS
+        && match Shell::new() {
+            Ok(shell) => hide_new(&shell, h).inspect_err(|e| warn!("apps: could not hide {app} again: {e}")).is_ok(),
+            Err(e) => {
+                warn!("apps: could not hide {app} again: {e}");
+                false
+            }
+        };
+    if !held {
+        // A window that may still be cloaked never leaves the lists (AGENTS.md).
+        if cloaked(h) != 0 {
+            return;
+        }
+        if let Some(m) = s.monitors.get_mut(&id) {
+            m.hidden[k].retain(|&w| w != raw);
+        }
+        s.ruled.remove(&raw);
+        s.away.remove(&raw);
+        if recloaks >= RECLOAKS {
+            warn!("apps: Windows showed {app} again a fourth time, left visible and off workspace {}", k + 1);
+        } else {
+            warn!("apps: {app} left visible and off workspace {}", k + 1);
+        }
+        return save(s);
+    }
+    if let Some(r) = s.ruled.get_mut(&raw) {
+        r.recloaks += 1;
+    }
+    let fg = unsafe { GetForegroundWindow() };
+    if fg == h || unsafe { GetAncestor(fg, GA_ROOTOWNER) } == h {
+        let mon = mon_of(s, &from).unwrap_or_else(|| unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) });
+        focus_off(&app, mon);
+    }
+    info!("apps: Windows showed {app} again, hidden again ({}/{RECLOAKS})", recloaks + 1);
+}
+
+/// Cloaks a window that just showed, retrying every `NEW_RETRY` while the shell has no view for
+/// it yet (AGENTS.md gotcha). Returns how many retries it took.
+fn hide_new(shell: &Shell, h: HWND) -> windows::core::Result<u32> {
+    const NO_VIEW: windows::core::HRESULT = windows::core::HRESULT(0x8002802Bu32 as i32);
+    let mut retries = 0;
+    loop {
+        match shell.hide(h, true) {
+            Ok(()) => return Ok(retries),
+            // The cloak can work and only the taskbar step fail: undo it, or nothing tracks it.
+            Err(e) if cloaked(h) != 0 => {
+                let _ = shell.hide(h, false);
+                return Err(e);
+            }
+            Err(e) if e.code() == NO_VIEW && retries < NEW_TRIES && unsafe { IsWindow(Some(h)) }.as_bool() => {
+                std::thread::sleep(NEW_RETRY);
+                retries += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Whether a window a rule moved is still watched, so main keeps its settle timer.
+pub fn settling() -> bool {
+    !state().settle.is_empty()
+}
+
+/// Puts a window a rule moved back on its screen when its app moves it off within
+/// `SETTLE_FOR`, `SETTLE_PUTS` times at most (AC-6). Returns whether any window is still watched.
+pub fn settle_tick() -> bool {
+    let mut guard = state();
+    let s = &mut *guard;
+    let raws: Vec<isize> = s.settle.keys().copied().collect();
+    for raw in raws {
+        let h = HWND(raw as *mut _);
+        let Some(st) = s.settle.get(&raw) else { continue };
+        let (target, spot, puts) = (st.target.clone(), st.spot, st.puts);
+        if Instant::now() >= st.until || !unsafe { IsWindow(Some(h)) }.as_bool() {
+            s.settle.remove(&raw);
+            continue;
+        }
+        let on = unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONULL) };
+        if on.is_invalid() || id_of(s, &device_name(on)) == target {
+            continue;
+        }
+        let app = who(h);
+        if puts == SETTLE_PUTS {
+            warn!("apps: {app} keeps moving itself off its rule's screen, left where it is");
+            s.settle.remove(&raw);
+            continue;
+        }
+        if hung(h) {
+            continue;
+        }
+        match put(h, spot) {
+            Ok(()) => info!("apps: {app} moved itself off its rule's screen, put back ({}/{SETTLE_PUTS})", puts + 1),
+            Err(e) => warn!("apps: could not put {app} back: {e}"),
+        }
+        if let Some(st) = s.settle.get_mut(&raw) {
+            st.puts += 1;
+        }
+    }
+    !s.settle.is_empty()
 }
 
 pub(crate) fn under_mouse() -> (HMONITOR, String) {
@@ -744,7 +1072,8 @@ pub fn switch(dir: isize) {
 }
 
 /// Show workspace `index` (0 based) on the monitor under the mouse. Past the count, or
-/// already shown: only the indicator, so you see where you are (spec 0005).
+/// already shown: only the indicator, so you see where you are (spec 0005). Already shown with
+/// `jump_back` on, it goes back to the last workspace when there is one (spec 0024 AC-8).
 pub fn jump(index: usize) {
     let (mon, dev) = under_mouse();
     let count = settings::get().workspaces;
@@ -758,9 +1087,34 @@ pub fn jump(index: usize) {
         return indicator::show(mon, card(&s, &name, active, count).with(Says::NoWorkspace { n: index + 1 }));
     }
     if index == active {
-        return indicator::show(mon, card(&s, &name, active, count));
+        let back = settings::get().jump_back.then(|| mon_mut(&mut s, &name).back_target(count)).flatten();
+        let Some(target) = back else {
+            return indicator::show(mon, card(&s, &name, active, count));
+        };
+        if switch_to(&mut s, mon, &name, target, None, None) {
+            info!("jump: {name} already on workspace {}, back to {}/{count}", index + 1, target + 1);
+        }
+        return;
     }
     switch_to(&mut s, mon, &name, index, None, None);
+}
+
+/// Show the workspace the screen under the mouse showed before its last switch; pressed again,
+/// it comes back (spec 0024). Nothing to go back to: only the indicator, as jump does.
+pub fn back() {
+    let (mon, dev) = under_mouse();
+    let count = settings::get().workspaces;
+    let mut s = state();
+    let name = id_of(&mut s, &dev);
+    let m = mon_mut(&mut s, &name);
+    let active = m.active;
+    let Some(target) = m.back_target(count) else {
+        info!("back: {name} has no last workspace");
+        return indicator::show(mon, card(&s, &name, active, count));
+    };
+    if switch_to(&mut s, mon, &name, target, None, None) {
+        info!("back: {name} -> workspace {}/{count}", target + 1);
+    }
 }
 
 /// Jump a hidden window's screen to its workspace when the window comes to the front,
@@ -777,6 +1131,17 @@ pub fn follow(hwnd: HWND) {
         s.monitors.iter().find_map(|(dev, m)| Some((h, dev.clone(), m.hidden.iter().position(|l| l.contains(&(h.0 as isize)))?)))
     });
     let Some((h, name, ws)) = found else { return };
+    // Apps take focus just after a rule hid them, or long after (Teams): your screen stays, and
+    // the keyboard leaves the hidden window (spec 0027 AC-5). Before the check below: a new
+    // Chrome window can carry its own cloak too, which reads 3, not 2.
+    if cloaked(h) != 0
+        && let Some(from) = [hwnd, owner].iter().find_map(|w| s.ruled.get(&(w.0 as isize))).map(|r| r.from.clone())
+    {
+        let app = who(hwnd);
+        info!("follow: a rule hid {app} and it has not been shown yet, ignored");
+        let mon = mon_of(&s, &from).unwrap_or_else(|| unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) });
+        return focus_off(&app, mon);
+    }
     if cloaked(h) != 2 {
         return;
     }
@@ -1047,6 +1412,7 @@ pub struct Place {
     pub screen: String, // its screen's name, as `label` gives it (spec 0017)
     pub pinned: bool,
     pub unplugged: bool, // hidden on a screen that left and has not folded yet
+    pub ws_name: String, // its workspace's name on its screen; empty for none, and when pinned (spec 0023)
 }
 
 /// Every listed window on screen (front to back), then every live window des-k hid, by
@@ -1062,7 +1428,9 @@ fn windows_in(s: &mut State) -> Vec<Place> {
             let device = device_name(unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) });
             let id = id_of(s, &device);
             let workspace = mon_mut(s, &id).active;
-            Place { hwnd: h, device, workspace, on_screen: true, screen: label(s, &id), pinned: s.pinned.contains(&(h.0 as isize)), unplugged: false }
+            let pinned = s.pinned.contains(&(h.0 as isize));
+            let ws_name = if pinned { String::new() } else { ws_name(&id, workspace) };
+            Place { hwnd: h, device, workspace, on_screen: true, screen: label(s, &id), pinned, unplugged: false, ws_name }
         })
         .collect();
     // By device name, as before screens had ids; a screen only just unplugged keeps its old one.
@@ -1074,12 +1442,16 @@ fn windows_in(s: &mut State) -> Vec<Place> {
             for &raw in list {
                 let h = HWND(raw as *mut _);
                 if unsafe { IsWindow(Some(h)) }.as_bool() {
-                    out.push(Place { hwnd: h, device: dev.clone(), workspace: ws, on_screen: false, screen: screen.clone(), pinned: false, unplugged });
+                    out.push(Place { hwnd: h, device: dev.clone(), workspace: ws, on_screen: false, screen: screen.clone(), pinned: false, unplugged, ws_name: ws_name(id, ws) });
                 }
             }
         }
     }
     out
+}
+
+fn ws_name(id: &str, ws: usize) -> String {
+    settings::get().ws_name(id, ws).unwrap_or_default().to_string()
 }
 
 /// How many screens are plugged in, and the main display's name: the finder's screen column
@@ -1097,6 +1469,7 @@ pub struct TrayScreen {
     pub rect: RECT,   // the whole screen, physical pixels
     pub active: usize, // the workspace it shows, 0 based
     pub main: bool,
+    pub ws_name: String, // the shown workspace's name; empty for none (spec 0023 AC-10)
 }
 
 /// Every present screen, left to right, copied out so the menu paints with no lock held.
@@ -1105,11 +1478,15 @@ pub fn tray_screens() -> Vec<TrayScreen> {
     let s = state();
     s.present
         .iter()
-        .map(|p| TrayScreen {
-            name: label(&s, &p.id),
-            rect: full.iter().find(|(d, _)| *d == p.device).map_or(p.area, |(_, r)| *r),
-            active: s.monitors.get(&p.id).map_or(0, |m| m.active),
-            main: p.primary,
+        .map(|p| {
+            let active = s.monitors.get(&p.id).map_or(0, |m| m.active);
+            TrayScreen {
+                name: label(&s, &p.id),
+                rect: full.iter().find(|(d, _)| *d == p.device).map_or(p.area, |(_, r)| *r),
+                active,
+                main: p.primary,
+                ws_name: ws_name(&p.id, active),
+            }
         })
         .collect()
 }
@@ -1149,7 +1526,8 @@ fn in_order(mut all: Vec<(String, RECT)>) -> Vec<String> {
 fn moves(s: &State, count: usize) -> Vec<String> {
     let order = screen_order();
     let mut out = Vec::new();
-    for m in moved(s, count).into_iter().filter(|m| m.windows > 0) {
+    // Logged (settings::apply), so a screen not plugged in goes by Windows' name, never a rename.
+    for m in moved(s, count, |s, id| s.monitors.get(id).map_or_else(|| id.to_string(), |m| m.name.clone())).into_iter().filter(|m| m.windows > 0) {
         let name = m.device.and_then(|d| order.iter().position(|o| *o == d)).map_or(m.name, |i| format!("Screen {}", i + 1));
         let from: Vec<String> = m.from.iter().map(|ws| (ws + 1).to_string()).collect();
         let (win, go) = if m.windows == 1 { ("window", "moves") } else { ("windows", "move") };
@@ -1163,14 +1541,14 @@ fn moves(s: &State, count: usize) -> Vec<String> {
 /// its away windows, which are hidden on another screen, so that screen leaves them out.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Moved {
-    pub name: String, // as `label` gives it
+    pub name: String, // as `label` gives it for the page; Windows' name for the log
     pub device: Option<String>,
     pub unplugged: bool,
     pub windows: usize,
     pub from: Vec<usize>, // the removed workspaces with windows, 0 based
 }
 
-fn moved(s: &State, count: usize) -> Vec<Moved> {
+fn moved(s: &State, count: usize, name: fn(&State, &str) -> String) -> Vec<Moved> {
     let order = screen_order();
     let at = |m: &Monitor| m.device.as_ref().and_then(|d| order.iter().position(|o| o == d));
     let mut ids: Vec<&String> = s.monitors.keys().collect();
@@ -1198,7 +1576,7 @@ fn moved(s: &State, count: usize) -> Vec<Moved> {
         }
         let from: Vec<usize> = (count..per.len()).filter(|&ws| per[ws] > 0).collect();
         let windows = from.iter().map(|&ws| per[ws]).sum();
-        out.push(Moved { name: label(s, id), device: m.device.clone(), unplugged, windows, from });
+        out.push(Moved { name: name(s, id), device: m.device.clone(), unplugged, windows, from });
     }
     out
 }
@@ -1250,6 +1628,9 @@ pub struct ScreenInfo {
 pub fn screen_info() -> Vec<ScreenInfo> {
     use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
     let names = display_names();
+    // By id, read without the ws lock: the settings page asks from inside a switch too.
+    let ids: HashMap<String, String> = screen_ids().into_iter().map(|p| (p.device, p.id)).collect();
+    let set = settings::get();
     let mut all = screens();
     all.sort_by_key(|(_, r)| (r.left, r.top));
     all.into_iter()
@@ -1259,7 +1640,8 @@ pub fn screen_info() -> Vec<ScreenInfo> {
             if let Some(mon) = monitor_named(&device) {
                 unsafe { let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy); }
             }
-            let name = names.get(&device).filter(|n| !n.is_empty()).cloned().unwrap_or_else(|| device.clone());
+            let rename = ids.get(&device).and_then(|id| set.screen_rename(id));
+            let name = rename.or(names.get(&device).map(String::as_str).filter(|n| !n.is_empty())).unwrap_or(&device).to_string();
             ScreenInfo { device, number: i + 1, name, rect, scale: dx * 100 / 96 }
         })
         .collect()
@@ -1335,6 +1717,9 @@ pub struct View {
     pub removals: Vec<Vec<Moved>>,          // what each screen moves, one list per count asked
     pub waiting: Vec<Waiting>,              // screens not plugged in (spec 0016 AC-9)
     pub present: Vec<Present>,              // screens plugged in, left to right (spec 0020)
+    /// Every listed window, front first: its hwnd, its screen's device, and the workspace that
+    /// screen shows. The Apps section reads their apps with no lock held (spec 0027 AC-13).
+    pub open: Vec<(isize, String, usize)>,
 }
 
 /// A screen plugged in, for the settings page's Where it shows: its id keys its own place.
@@ -1343,6 +1728,7 @@ pub struct Present {
     pub id: String,
     pub device: String,
     pub name: String, // as `label` gives it, so twins read #1, #2 from the left
+    pub windows_name: String, // Windows' own, no rename: the settings page's Screen name hint (spec 0023)
     pub full: RECT,
     pub work: RECT,
 }
@@ -1352,6 +1738,7 @@ pub struct Present {
 pub struct Waiting {
     pub id: String,
     pub name: String,
+    pub windows_name: String, // Windows' own, as remembered, no rename (spec 0023)
     pub windows: Vec<usize>, // per workspace, 0 based
 }
 
@@ -1363,12 +1750,20 @@ pub fn view(counts: &[usize]) -> Option<View> {
         Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
         Err(std::sync::TryLockError::WouldBlock) => return None,
     };
-    let windows = windows_in(&mut s).into_iter().map(|p| (p.device, p.workspace, real_rect(p.hwnd))).collect();
+    let places = windows_in(&mut s);
+    let windows = places.iter().map(|p| (p.device.clone(), p.workspace, real_rect(p.hwnd))).collect();
+    let shows = |device: &str| s.monitors.values().find(|m| m.device.as_deref() == Some(device)).map_or(0, |m| m.active);
+    let open = places.iter().map(|p| (p.hwnd.0 as isize, p.device.clone(), shows(&p.device))).collect();
     let active = s.monitors.values().filter_map(|m| Some((m.device.clone()?, m.active))).collect();
     let names = s.present.iter().map(|p| (p.device.clone(), label(&s, &p.id))).collect();
-    let removals = counts.iter().map(|&n| moved(&s, n)).collect();
-    let present = s.present.iter().map(|p| Present { id: p.id.clone(), device: p.device.clone(), name: label(&s, &p.id), full: p.full, work: p.area }).collect();
-    Some(View { active, windows, names, removals, waiting: waiting(&s), present })
+    let removals = counts.iter().map(|&n| moved(&s, n, label)).collect();
+    let present = s.present.iter().map(|p| Present { id: p.id.clone(), device: p.device.clone(), name: label(&s, &p.id), windows_name: windows_name(p), full: p.full, work: p.area }).collect();
+    Some(View { active, windows, names, removals, waiting: waiting(&s), present, open })
+}
+
+/// A plugged in screen's name as Windows gives it, before any rename or twin number.
+fn windows_name(p: &Screen) -> String {
+    if p.name.is_empty() { p.device.trim_start_matches(r"\\.\").to_string() } else { p.name.clone() }
 }
 
 /// Every remembered screen not plugged in, by name, with how many windows wait for it on each workspace.
@@ -1385,7 +1780,7 @@ fn waiting(s: &State) -> Vec<Waiting> {
                 }
                 windows[a.ws] += 1;
             }
-            Waiting { id: id.clone(), name: m.name.clone(), windows }
+            Waiting { id: id.clone(), name: label(s, id), windows_name: m.name.clone(), windows }
         })
         .collect();
     out.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
@@ -1898,8 +2293,8 @@ pub fn restore_after_panic() {
 ///
 /// After a new sign in every handle is new, so instead the saved windows become the
 /// entries a restore matches reopened windows against (spec 0003). Returns whether a
-/// restore runs; main then drives it with `restore_tick`.
-pub fn load() -> bool {
+/// restore runs, and for a new sign in; main then drives it with `restore_tick`.
+pub fn load() -> Restoring {
     let mut guard = state();
     let s = &mut *guard;
     s.logon = restore::logon();
@@ -1909,7 +2304,7 @@ pub fn load() -> bool {
     s.layout = layout_of(&s.present);
     s.calm = SETTLE_CHECKS;
     log_screens(&s.present);
-    let Ok(text) = std::fs::read_to_string(state_file()) else { return false };
+    let Ok(text) = std::fs::read_to_string(state_file()) else { return Restoring::No };
     let present = s.seen.clone();
     let st = settings::get();
     let count = st.workspaces;
@@ -1972,7 +2367,11 @@ pub fn load() -> bool {
     if st.restore_enabled && new_sign_in && late {
         info!("restore: signed in {} min ago, skipped", since / 60);
     }
-    let restoring = st.restore_enabled && if new_sign_in { !late } else { cut_short };
+    let restoring = match st.restore_enabled && if new_sign_in { !late } else { cut_short } {
+        false => Restoring::No,
+        true if new_sign_in => Restoring::NewSignIn,
+        true => Restoring::Resume,
+    };
     // A restart in the same sign in: the same window, same pid, is still pinned.
     if !new_sign_in {
         let same = |&(raw, pid): &(isize, u32)| unsafe { IsWindow(Some(HWND(raw as *mut _))) }.as_bool() && pid_of(HWND(raw as *mut _)) == pid;
@@ -1989,15 +2388,17 @@ pub fn load() -> bool {
             }
         }
     }
-    if restoring {
+    if restoring != Restoring::No {
         // A new sign in: every saved handle is dead. A resume: only the cut entries are left.
         if new_sign_in {
             adopt.clear();
         }
         let cut = |(e, cut): (Entry, bool)| (new_sign_in || cut).then_some(e);
-        let saved: Vec<Entry> =
-            hidden.into_iter().filter_map(cut).chain(visible).chain(pinned.into_iter().filter_map(cut)).chain(aways.into_iter().filter_map(cut)).collect();
-        info!("restore: {} {} saved window(s), matching for {} min", if new_sign_in { "new sign in," } else { "resuming," }, saved.len(), st.restore_minutes);
+        let all = hidden.into_iter().filter_map(cut).chain(visible).chain(pinned.into_iter().filter_map(cut)).chain(aways.into_iter().filter_map(cut));
+        // An app with a rule goes by its rule, not by restore (spec 0027 AC-11).
+        let (ruled, saved): (Vec<Entry>, Vec<Entry>) = all.partition(|e| crate::apps::key_from(&e.fp.app).is_some_and(|key| st.apps.iter().any(|(k, _)| *k == key)));
+        let by_rule = if ruled.is_empty() { String::new() } else { format!(" ({} more left to their app's rule)", ruled.len()) };
+        info!("restore: {} {} saved window(s){by_rule}, matching for {} min", if new_sign_in { "new sign in," } else { "resuming," }, saved.len(), st.restore_minutes);
         s.restore = Some(Restore {
             pending: (0..saved.len()).collect(),
             saved,
@@ -2567,8 +2968,8 @@ fn fold(s: &mut State, id: &str, notes: &mut Vec<Note>) {
             device: main.device.clone(),
             id: main.id.clone(),
             active: main_active,
-            line: Says::ScreenGone { name: name.clone(), moved: waiting, to: Some(label(s, &main.id)) },
-            text: format!("{name} unplugged: {} moved here", words(waiting)),
+            line: Says::ScreenGone { name: label(s, id), moved: waiting, to: Some(label(s, &main.id)) },
+            text: format!("{} unplugged: {} moved here", label(s, id), words(waiting)),
         });
     }
 }
@@ -2677,7 +3078,7 @@ fn give_back(s: &mut State, id: &str, last: bool, notes: &mut Vec<Note>) -> bool
                 id: p.id.clone(),
                 active,
                 line: Says::ScreenBack { name: label(s, &p.id), moved: total, left, here: true },
-                text: format!("{} is back: {} returned{stuck}", p.name, words(total)),
+                text: format!("{} is back: {} returned{stuck}", label(s, &p.id), words(total)),
             });
         }
     }
@@ -2775,6 +3176,32 @@ mod tests {
         assert_eq!(m.active, 1);
         assert_eq!(m.hidden, vec![vec![9], vec![]]);
         assert!(m.last_switch.is_none(), "a back jump to a removed workspace would index past the end");
+    }
+
+    // Back must land on a real workspace other than the shown one, or do nothing but the card:
+    // a fresh start, a workspace a smaller count removed, and a resize that moved the screen onto
+    // its own last workspace all have nowhere to go (spec 0024 AC-4).
+    #[test]
+    fn back_goes_only_to_a_workspace_that_still_exists() {
+        let mut m = with_hidden(2, &[&[], &[], &[], &[]]);
+        assert_eq!(m.back_target(4), None, "des-k just started: no switch yet");
+        m.last_switch = Some((Instant::now(), 0));
+        assert_eq!(m.back_target(4), Some(0));
+        m.last_switch = Some((Instant::now(), 3));
+        assert_eq!(m.back_target(3), None, "workspace 4 is gone");
+        m.last_switch = Some((Instant::now(), 2));
+        assert_eq!(m.back_target(4), None, "already shown");
+    }
+
+    // A smaller count that moves the screen onto its last workspace leaves back nowhere to go,
+    // never a jump to where you already are (spec 0024 state transitions).
+    #[test]
+    fn a_resize_onto_the_last_workspace_leaves_no_back() {
+        let mut m = with_hidden(3, &[&[], &[], &[], &[]]);
+        m.last_switch = Some((Instant::now(), 1));
+        m.resize(2);
+        assert_eq!(m.active, 1);
+        assert_eq!(m.back_target(2), None);
     }
 
     // Raising adds empty workspaces and leaves windows where an earlier lowering put them (AC-6).
@@ -2966,6 +3393,31 @@ mod tests {
         let mut list = vec![at("internal", -100), at("DEL-4123", 0), at("DEL-4123", 100)];
         number_twins(&mut list);
         assert_eq!(list.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["internal", "DEL-4123#1", "DEL-4123#2"]);
+    }
+
+    // Spec 0023 AC-11: a rename shows exactly as typed, with no number, and the twin it leaves
+    // behind loses its " #2" (nothing left to tell apart). An empty rename keeps both numbers.
+    #[test]
+    fn a_renamed_twin_leaves_the_other_unnumbered() {
+        let at = |id: &str, left| Screen { device: String::new(), id: id.into(), name: "DELL U2720Q".into(), area: rect(left, 0, left + 10, 10), full: rect(left, 0, left + 10, 10), primary: false };
+        let s = State { present: vec![at("DEL-4123#1", 0), at("DEL-4123#2", 100)], ..State::default() };
+        let labels = |file: &str| {
+            let set = settings::parse_for_test(file).0;
+            (label_by(&set, &s, "DEL-4123#1"), label_by(&set, &s, "DEL-4123#2"))
+        };
+        assert_eq!(labels(""), ("DELL U2720Q #1".into(), "DELL U2720Q #2".into()));
+        assert_eq!(labels("[names.screens.\"DEL-4123#1\"]
+screen = \"Left\"
+"), ("Left".into(), "DELL U2720Q".into()));
+        assert_eq!(labels("[names.screens.\"DEL-4123#1\"]
+screen = \"\"
+"), ("DELL U2720Q #1".into(), "DELL U2720Q #2".into()));
+        let both = "[names.screens.\"DEL-4123#1\"]
+screen = \"Desk\"
+[names.screens.\"DEL-4123#2\"]
+screen = \"Desk\"
+";
+        assert_eq!(labels(both), ("Desk".into(), "Desk".into()));
     }
 
     // An EDID serial or instance id with spaces or tabs would break the state.txt line.

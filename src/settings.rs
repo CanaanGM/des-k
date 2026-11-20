@@ -141,6 +141,7 @@ impl Motion {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
     Switch(isize),       // -1 previous, +1 next
+    Back,                // the workspace the screen showed before (spec 0024)
     Send(isize, bool),   // step, and follow
     Jump(usize),         // 0 based
     SendTo(usize, bool), // 0 based, and follow
@@ -159,6 +160,7 @@ pub enum Action {
 const ACTIONS: &[(&str, Action)] = &[
     ("previous", Action::Switch(-1)),
     ("next", Action::Switch(1)),
+    ("back", Action::Back),
     ("send_previous", Action::Send(-1, true)),
     ("send_next", Action::Send(1, true)),
     ("send_previous_stay", Action::Send(-1, false)),
@@ -185,6 +187,7 @@ const ACTIONS: &[(&str, Action)] = &[
 const ACTION_LABELS: &[(&str, &str)] = &[
     ("previous", "previous workspace"),
     ("next", "next workspace"),
+    ("back", "last workspace"),
     ("send_previous", "send window to previous"),
     ("send_next", "send window to next"),
     ("send_previous_stay", "send window to previous, stay"),
@@ -221,6 +224,7 @@ pub struct Settings {
     pub workspaces: usize,
     pub copilot_as_right_ctrl: bool,
     pub follow_activation: bool,
+    pub jump_back: bool, // a jump to the shown workspace goes back to the last one (spec 0024)
     pub fastest: bool, // every des-k fade and move instant (spec 0017)
     // Read at start only (spec 0017 AC-9). None: the file lacks the key, as an upgrader's does.
     pub first_run_seen: Option<bool>,
@@ -234,6 +238,7 @@ pub struct Settings {
     pub jump: Option<u8>,
     pub send_to: Option<u8>, // and follow
     pub send_to_stay: Option<u8>,
+    pub back: Vec<Combo>,   // flips the screen to the workspace it showed before (spec 0024)
     pub finder: Vec<Combo>, // opens the window finder (spec 0007)
     pub overview: Vec<Combo>, // opens the workspace overview (spec 0010)
     pub pin: Vec<Combo>,      // keeps the focused window on every workspace (spec 0014)
@@ -261,6 +266,27 @@ pub struct Settings {
     pub gestures: Vec<Gesture>,
     pub accent: Accent,
     pub ws_colors: [Option<u32>; 9], // None keeps look B's color (spec 0020 AC-4)
+    // Spec 0023: shown on the card when two or more screens are plugged in.
+    pub indicator_screen_name: bool,
+    // Spec 0023. Read only through ws_name and screen_rename, which own the fallback rules.
+    pub names: [String; 9], // every screen's; empty = no name
+    pub names_screens: BTreeMap<String, ScreenNames>, // by screen id (spec 0016)
+    // Spec 0027: rules for where new windows open, in file order, keys lowercased.
+    pub apps: Vec<(String, Rule)>,
+}
+
+/// One `[apps]` rule (spec 0027): where an app's new main windows open.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Rule {
+    pub workspace: usize,       // 0 based; past the count, the rule waits (AC-9)
+    pub screen: Option<String>, // a screen id (spec 0016); None: the screen it opens on
+}
+
+/// One `[names.screens."<id>"]` table (spec 0023 AC-1, AC-11).
+#[derive(PartialEq, Debug, Default)]
+pub struct ScreenNames {
+    pub screen: Option<String>,  // the rename; never empty
+    pub ws: [Option<String>; 9], // Some("") = no name on this screen
 }
 
 /// The map used when settings.toml has no [[gesture]] rule (spec 0011 AC-2).
@@ -288,6 +314,7 @@ impl Default for Settings {
             workspaces: 4,
             copilot_as_right_ctrl: true,
             follow_activation: true,
+            jump_back: true,
             fastest: false,
             first_run_seen: Some(false),
             previous: vec![Combo { mods: WIN | CTRL, vk: VK_LEFT.0 }],
@@ -299,6 +326,7 @@ impl Default for Settings {
             jump: Some(WIN),
             send_to: Some(WIN | SHIFT),
             send_to_stay: Some(WIN | CTRL),
+            back: vec![Combo { mods: WIN, vk: VK_BACK.0 }],
             finder: vec![Combo { mods: WIN, vk: b'F' as u16 }],
             overview: vec![Combo { mods: WIN, vk: VK_TAB.0 }],
             pin: vec![Combo { mods: WIN | CTRL, vk: b'U' as u16 }],
@@ -323,6 +351,10 @@ impl Default for Settings {
             gestures: default_gestures(),
             accent: Accent::Windows,
             ws_colors: [None; 9],
+            indicator_screen_name: true,
+            names: Default::default(),
+            names_screens: BTreeMap::new(),
+            apps: Vec::new(),
         }
     }
 }
@@ -333,6 +365,7 @@ const DEFAULT_FILE: &str = r##"# des-k settings. A saved change applies within t
 workspaces = 4              # 2 to 9, every screen
 copilot_as_right_ctrl = true
 follow_activation = true    # switch to a hidden window's workspace when it comes to the front
+jump_back = true            # Win+N on the workspace you're on goes back to the last one
 fastest = false             # true: every des-k fade and move is instant
 first_run_seen = false      # false: the first run opens at the next start
 
@@ -349,6 +382,8 @@ send_next_stay     = ["Win+Ctrl+Alt+Right"]
 jump         = "Win"         # "" turns a set off
 send_to      = "Win+Shift"   # and follow it there
 send_to_stay = "Win+Ctrl"    # and stay where you are
+# Flip this screen between its workspace and the one before.
+back = ["Win+Backspace"]
 # Search every window on every screen and workspace; Enter goes there.
 finder = ["Win+F"]
 # Every workspace of every screen at once, like Task View (which it replaces on Win+Tab).
@@ -361,6 +396,7 @@ hints = []
 [indicator]
 enabled = true
 style = "card"              # "card" or "dots"
+screen_name = true          # with two or more screens, the card names its screen
 spot = "center"             # top-left, top, top-right, left, center, right, bottom-left, bottom, bottom-right or custom
 gap = 24                    # 0 to 400: pixels from the screen's edges at 100% scale (center ignores it)
 x = 50                      # 0 to 100, with spot = "custom": the card's center, in percent of the screen
@@ -379,6 +415,20 @@ text = "{{appname}} misses you"   # up to 100 characters; {{appname}} is the app
 accent = "windows"          # "windows" follows your Windows accent color, or your own "#RRGGBB"
 # Your own color for a workspace, in light and dark alike; a workspace left out keeps des-k's:
 # ws1 = "#79A4F3"
+
+[names]
+# A name for a workspace on every screen, up to 32 characters; a workspace left out shows its number:
+# ws1 = "Mail"
+# A screen's own table, named by its id, renames the screen and can name its workspaces its own way:
+# [names.screens."DEL-A1B2-12345"]
+# screen = "Left"
+# ws2 = "Notes"             # "" is no name on this screen
+
+[apps]
+# One line per app. workspace is 1 to 9; screen is optional (a screen id, as in [names.screens]).
+# The settings page's Apps section writes these for you.
+# "slack.exe" = { workspace = 1, screen = "GSM-5B7F-12345" }
+# "spotify.exe" = { workspace = 4 }
 
 [restore]
 enabled = true              # after a reboot or sign in, hide reopened windows back into their workspaces
@@ -400,7 +450,7 @@ twice_ms = 300              # how long a gesture with a "times = 2" rule waits f
 
 # One block per gesture. fingers = 3 or 4; swipe = "left", "right", "up" or "down", or tap = true;
 # times = 1 or 2 (optional); do = an action below, or a key combo like "Ctrl+Shift+T".
-# Actions: previous, next, send_previous, send_next, send_previous_stay, send_next_stay,
+# Actions: previous, next, back, send_previous, send_next, send_previous_stay, send_next_stay,
 # jump_1 to jump_9, send_to_1 to send_to_9, send_to_stay_1 to send_to_stay_9, finder, overview,
 # show_desktop, app_next, app_previous, pin, search, notifications, middle_click, play_pause,
 # next_track, previous_track, volume_up, volume_down, mute, none.
@@ -456,14 +506,20 @@ tap = true
 do = "notifications"
 "##;
 
-const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activation", "fastest", "first_run_seen", "shortcuts", "indicator", "attention", "colors", "restore", "overview", "touchpad", "gesture"];
-const SHORTCUT_KEYS: &[&str] = &["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "jump", "send_to", "send_to_stay", "finder", "overview", "pin", "hints"];
-const INDICATOR_KEYS: &[&str] = &["enabled", "style", "spot", "gap", "x", "y", "hold_ms", "fade_ms", "screens"];
+const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activation", "jump_back", "fastest", "first_run_seen", "shortcuts", "indicator", "attention", "colors", "names", "apps", "restore", "overview", "touchpad", "gesture"];
+const SHORTCUT_KEYS: &[&str] = &["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "jump", "send_to", "send_to_stay", "back", "finder", "overview", "pin", "hints"];
+const INDICATOR_KEYS: &[&str] = &["enabled", "style", "screen_name", "spot", "gap", "x", "y", "hold_ms", "fade_ms", "screens"];
 const SCREEN_KEYS: &[&str] = &["spot", "gap", "x", "y"];
 const ATTENTION_KEYS: &[&str] = &["enabled", "text"];
 pub const ATTENTION_TEXT: &str = "{{appname}} misses you";
 pub const ATTENTION_MAX: usize = 100; // in UTF-16 units, as the page's text box counts (spec 0022 AC-9)
 const COLORS_KEYS: &[&str] = &["accent", "ws1", "ws2", "ws3", "ws4", "ws5", "ws6", "ws7", "ws8", "ws9"];
+const NAMES_KEYS: &[&str] = &["ws1", "ws2", "ws3", "ws4", "ws5", "ws6", "ws7", "ws8", "ws9", "screens"];
+const SCREEN_NAMES_KEYS: &[&str] = &["screen", "ws1", "ws2", "ws3", "ws4", "ws5", "ws6", "ws7", "ws8", "ws9"];
+pub const NAME_MAX: usize = 32; // in UTF-16 units, after cleanup (spec 0023 AC-2)
+const RULE_KEYS: &[&str] = &["workspace", "screen"];
+pub const APPS_MAX: usize = 64; // spec 0027 AC-10
+const APP_KEY_MAX: usize = 260;
 const RESTORE_KEYS: &[&str] = &["enabled", "minutes"];
 const OVERVIEW_KEYS: &[&str] = &["animation", "labels", "live", "fade_ms"];
 const TOUCHPAD_KEYS: &[&str] = &["enabled", "swipe_mm", "twice_ms"];
@@ -637,8 +693,11 @@ fn diff(old: &Settings, new: &Settings, source: Source) -> Vec<Change> {
         Source::File => "file",
     };
     let mut changes = Vec::new();
+    // Names log their keys only (spec 0023 AC-15), so a new name for a key already set changes
+    // no text here; compare the names themselves, or the new one is never stored.
+    let renamed = old.names != new.names || old.names_screens != new.names_screens;
     for ((key, was), (_, now)) in old.fields().into_iter().zip(new.fields()) {
-        if was != now {
+        if was != now || (key == "names" && renamed) {
             info!("settings: {key} {was} -> {now} ({from})");
             changes.push(Change { key, was, now });
         }
@@ -673,6 +732,9 @@ fn apply(old: &Settings, changes: &[Change]) -> Vec<String> {
     }
     if has("fastest") {
         crate::ui::transitions_all();
+    }
+    if has("apps") {
+        crate::apps::sync();
     }
     if has("attention.enabled") && !new.attention_enabled {
         crate::ws::forget_wants();
@@ -723,6 +785,13 @@ pub fn write(edit: Edit) -> Result<(), String> {
         return Err(why);
     }
     reload(Source::Page).map(|_| ())
+}
+
+/// An `[apps]` rule's key as the file spells it, for a key the settings hold lowercased: an
+/// edit must name the file's own key (spec 0027 AC-14).
+pub fn app_key_in_file(lower: &str) -> String {
+    let text = std::fs::read_to_string(path()).unwrap_or_default();
+    file_order(&text, "apps").into_iter().find(|k| k.to_lowercase() == lower).unwrap_or_else(|| lower.to_string())
 }
 
 /// The value at a path of keys as the file holds it now, None when there is no such key: the
@@ -776,7 +845,8 @@ fn edit_doc(doc: &mut toml_edit::DocumentMut, edit: &Edit) -> Result<(), String>
 
 fn set_at(doc: &mut toml_edit::DocumentMut, path: &[String], value: toml_edit::Value) -> Result<(), String> {
     let Some((key, tables)) = path.split_last() else { return Ok(()) };
-    let mut table = doc.as_table_mut();
+    // Table like, so a key inside an [apps] rule's inline table is one edit too (spec 0027 AC-14).
+    let mut table: &mut dyn toml_edit::TableLike = doc.as_table_mut();
     for (i, name) in tables.iter().enumerate() {
         // A screen id is always a quoted key, whatever letters it has.
         let quoted = i > 0 && tables[i - 1] == "screens";
@@ -787,7 +857,7 @@ fn set_at(doc: &mut toml_edit::DocumentMut, path: &[String], value: toml_edit::V
             t.set_implicit(i + 1 < tables.len());
             toml_edit::Item::Table(t)
         });
-        table = item.as_table_mut().ok_or_else(|| format!("{}: expected a table", tables[..=i].join(".")))?;
+        table = item.as_table_like_mut().ok_or_else(|| format!("{}: expected a table", tables[..=i].join(".")))?;
     }
     match table.get_mut(key) {
         Some(item) => {
@@ -805,8 +875,8 @@ fn set_at(doc: &mut toml_edit::DocumentMut, path: &[String], value: toml_edit::V
 }
 
 fn remove_at(doc: &mut toml_edit::DocumentMut, path: &[String]) {
-    fn table_at<'a>(doc: &'a mut toml_edit::DocumentMut, path: &[String]) -> Option<&'a mut toml_edit::Table> {
-        path.iter().try_fold(doc.as_table_mut(), |t, name| t.get_mut(name)?.as_table_mut())
+    fn table_at<'a>(doc: &'a mut toml_edit::DocumentMut, path: &[String]) -> Option<&'a mut dyn toml_edit::TableLike> {
+        path.iter().try_fold(doc.as_table_mut() as &mut dyn toml_edit::TableLike, |t, name| t.get_mut(name)?.as_table_like_mut())
     }
     let Some((key, tables)) = path.split_last() else { return };
     let Some(t) = table_at(doc, tables) else { return };
@@ -879,6 +949,13 @@ fn set_value(doc: &mut toml_edit::DocumentMut, name: &str, value: toml_edit::Val
 pub fn use_for_test(text: &str) {
     let (settings, warnings) = parse(text);
     store(settings, warnings.into_iter().map(Problem::new).collect());
+    PARSE_ERROR.set(None); // as a good read does
+}
+
+/// For the settings page's renders: the file can't be read, so the page is read only.
+#[cfg(test)]
+pub fn broken_for_test(why: &str) {
+    PARSE_ERROR.set(Some(why.to_string()));
 }
 
 /// For the settings page's tests: any text with an edit made.
@@ -926,6 +1003,7 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
     s.workspaces = int(&top, "workspaces", "workspaces", 2, 9, s.workspaces as i64, &mut warn) as usize;
     s.copilot_as_right_ctrl = boolean(&top, "copilot_as_right_ctrl", "copilot_as_right_ctrl", s.copilot_as_right_ctrl, &mut warn);
     s.follow_activation = boolean(&top, "follow_activation", "follow_activation", s.follow_activation, &mut warn);
+    s.jump_back = boolean(&top, "jump_back", "jump_back", s.jump_back, &mut warn);
     s.fastest = boolean(&top, "fastest", "fastest", s.fastest, &mut warn);
     s.first_run_seen = top.contains_key("first_run_seen").then(|| boolean(&top, "first_run_seen", "first_run_seen", false, &mut warn));
 
@@ -939,11 +1017,12 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
         } else {
             (s.previous, s.next) = (previous, next);
         }
-        // Switch keys always win: a send list (or the finder, the overview, pin, hints) sharing a combo
-        // with them, or with an earlier list still on, is turned off (an empty list never matches)
-        // (specs 0004, 0007, 0010, 0014, 0017).
+        // Switch keys always win: a send list (or back, the finder, the overview, pin, hints) sharing
+        // a combo with them, or with an earlier list still on, is turned off (an empty list never
+        // matches) (specs 0004, 0007, 0010, 0014, 0017, 0024).
         let mut taken = vec![("previous", s.previous.clone()), ("next", s.next.clone())];
         let sends = [
+            ("back", &mut s.back),
             ("send_previous", &mut s.send_previous),
             ("send_next", &mut s.send_next),
             ("send_previous_stay", &mut s.send_previous_stay),
@@ -987,6 +1066,7 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
         unknown_keys(t, "indicator.", INDICATOR_KEYS, &mut warn);
         s.indicator_enabled = boolean(t, "enabled", "indicator.enabled", s.indicator_enabled, &mut warn);
         s.indicator_style = choice(t, "style", "indicator.style", STYLES, s.indicator_style, &mut warn);
+        s.indicator_screen_name = boolean(t, "screen_name", "indicator.screen_name", s.indicator_screen_name, &mut warn);
         s.hold_ms = int(t, "hold_ms", "indicator.hold_ms", 0, 5000, s.hold_ms as i64, &mut warn) as u32;
         s.fade_ms = int(t, "fade_ms", "indicator.fade_ms", 0, 2000, s.fade_ms as i64, &mut warn) as u32;
         let d = Pos::default();
@@ -1015,6 +1095,19 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
             let key = COLORS_KEYS[i + 1];
             *c = color(t, key, &format!("colors.{key}"), "des-k's color", &mut warn);
         }
+    }
+
+    if let Some(t) = section(&top, "names", &mut warn) {
+        unknown_keys(t, "names.", NAMES_KEYS, &mut warn);
+        for (i, n) in s.names.iter_mut().enumerate() {
+            let key = NAMES_KEYS[i];
+            *n = name(t, key, &format!("names.{key}"), &mut warn).unwrap_or_default();
+        }
+        s.names_screens = name_screens(t, &mut warn);
+    }
+
+    if let Some(t) = section(&top, "apps", &mut warn) {
+        s.apps = apps(t, &file_order(text, "apps"), &mut warn);
     }
 
     if let Some(t) = section(&top, "restore", &mut warn) {
@@ -1091,7 +1184,7 @@ pub fn savable(vk: u16) -> bool {
 }
 
 /// The shortcut lists in the order the hook tries them, then the digit sets (keys::shortcut).
-pub const LISTS: [&str; 10] = ["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "finder", "overview", "pin", "hints"];
+pub const LISTS: [&str; 11] = ["previous", "next", "back", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "finder", "overview", "pin", "hints"];
 pub const SETS: [&str; 3] = ["jump", "send_to", "send_to_stay"];
 
 /// Who already uses a combo the page is about to save (spec 0012 AC-9).
@@ -1113,6 +1206,7 @@ impl Settings {
         match name {
             "previous" => &self.previous,
             "next" => &self.next,
+            "back" => &self.back,
             "send_previous" => &self.send_previous,
             "send_next" => &self.send_next,
             "send_previous_stay" => &self.send_previous_stay,
@@ -1418,6 +1512,119 @@ fn screens(t: &Table, d: Pos, warn: &mut Vec<String>) -> BTreeMap<String, PosOve
     out
 }
 
+/// A name or rename as spec 0023 AC-2 cleans it. None when missing or bad; the warn line
+/// names the key, never the text, since a name can say anything about you (AC-15).
+fn name(t: &Table, key: &str, full: &str, warn: &mut Vec<String>) -> Option<String> {
+    let text = match t.get(key)? {
+        Value::String(s) => clean_name(s),
+        v => {
+            warn.push(format!("{full}: expected text, got a {}, ignored", v.type_str()));
+            return None;
+        }
+    };
+    let n = text.encode_utf16().count();
+    if n > NAME_MAX {
+        warn.push(format!("{full}: {n} characters, the most is {NAME_MAX}, ignored"));
+        return None;
+    }
+    Some(text)
+}
+
+/// Control characters (a newline, a tab) become spaces and both ends are trimmed, since a
+/// name is drawn on one line (spec 0023 AC-2).
+pub fn clean_name(text: &str) -> String {
+    text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>().trim().to_string()
+}
+
+/// The `[names.screens."<id>"]` tables. A table for a screen not plugged in is kept (AC-3).
+fn name_screens(t: &Table, warn: &mut Vec<String>) -> BTreeMap<String, ScreenNames> {
+    let Some(v) = t.get("screens") else { return BTreeMap::new() };
+    let Some(list) = v.as_table().filter(|l| l.values().all(Value::is_table)) else {
+        let got = if v.is_table() { "table with plain values in it" } else { v.type_str() };
+        warn.push(format!("names.screens: expected [names.screens.\"<screen id>\"] tables, got a {got}, ignored"));
+        return BTreeMap::new();
+    };
+    let mut out = BTreeMap::new();
+    for (id, st) in list.iter().filter_map(|(id, v)| Some((id, v.as_table()?))) {
+        let full = |k: &str| format!("names.screens.\"{id}\".{k}");
+        unknown_keys(st, &full(""), SCREEN_NAMES_KEYS, warn);
+        let screen = name(st, "screen", &full("screen"), warn).filter(|n| !n.is_empty());
+        let ws = std::array::from_fn(|i| name(st, NAMES_KEYS[i], &full(NAMES_KEYS[i]), warn));
+        out.insert(id.clone(), ScreenNames { screen, ws });
+    }
+    out
+}
+
+/// The `[apps]` rules (spec 0027 AC-10): a bad one is dropped alone, the first 64 kept, and of
+/// two keys that differ only in case the first wins. A key is only ever compared, never opened
+/// or run, and one with a path in it is never echoed: a log is safe to share.
+fn apps(t: &Table, order: &[String], warn: &mut Vec<String>) -> Vec<(String, Rule)> {
+    let mut out: Vec<(String, Rule)> = Vec::new();
+    let mut dropped = 0;
+    let rest = t.keys().filter(|k| !order.contains(k));
+    for (key, v) in order.iter().chain(rest).filter_map(|k| t.get_key_value(k)) {
+        let shown = if key.contains(['\\', '/', ':']) { "a key with a path in it".to_string() } else { format!("\"{key}\"") };
+        let full = format!("apps.{shown}");
+        if !app_key(key) {
+            warn.push(format!("apps: {shown} is not an exe file name (like \"slack.exe\") or a Store app id, ignored"));
+            continue;
+        }
+        let lower = key.to_lowercase();
+        if out.iter().any(|(k, _)| *k == lower) {
+            warn.push(format!("apps: {shown} differs from an earlier key only in case, ignored"));
+            continue;
+        }
+        let rule = match v {
+            Value::Table(r) => rule(r, &full),
+            v => Err(format!("{full}: expected {{ workspace = N }}, got a {}, ignored", v.type_str())),
+        };
+        match rule {
+            Err(why) => warn.push(why),
+            Ok(_) if out.len() == APPS_MAX => dropped += 1,
+            Ok(r) => out.push((lower, r)),
+        }
+    }
+    if dropped > 0 {
+        warn.push(format!("apps: more than {APPS_MAX} rules, the last {dropped} ignored"));
+    }
+    out
+}
+
+/// Table `name`'s keys as the file has them: toml's Table sorts its keys, and the first of two
+/// rules that differ only in case wins (spec 0027 AC-10).
+fn file_order(text: &str, name: &str) -> Vec<String> {
+    let doc = text.parse::<toml_edit::DocumentMut>().ok();
+    let t = doc.as_ref().and_then(|d| d.get(name)?.as_table_like());
+    t.map_or_else(Vec::new, |t| t.iter().map(|(k, _)| k.to_string()).collect())
+}
+
+/// An exe file name (`slack.exe`) or a Store app id (`Microsoft.WindowsCalculator_8wekyb3d8bbwe!App`).
+fn app_key(key: &str) -> bool {
+    let plain = !key.is_empty() && key.chars().count() <= APP_KEY_MAX && !key.contains(['\\', '/', ':']) && !key.chars().any(char::is_control);
+    plain && (key.contains('!') || (key.len() > 4 && key.to_lowercase().ends_with(".exe")))
+}
+
+/// One rule's table; any bad part drops the whole rule, since half a rule would put windows
+/// somewhere you did not ask for.
+fn rule(t: &Table, full: &str) -> Result<Rule, String> {
+    if let Some(k) = t.keys().find(|k| !RULE_KEYS.contains(&k.as_str())) {
+        return Err(format!("{full}: unknown key {k}, rule ignored"));
+    }
+    let workspace = match t.get("workspace") {
+        Some(Value::Integer(n)) if (1..=9).contains(n) => *n as usize - 1,
+        Some(Value::Integer(n)) => return Err(format!("{full}.workspace: {n} is not 1 to 9, rule ignored")),
+        Some(v) => return Err(format!("{full}.workspace: expected a whole number, got a {}, rule ignored", v.type_str())),
+        None => return Err(format!("{full}: no workspace, rule ignored")),
+    };
+    let screen = match t.get("screen") {
+        None => None,
+        Some(Value::String(id)) if !id.trim().is_empty() => Some(id.clone()),
+        Some(Value::String(_)) => return Err(format!("{full}.screen: empty, rule ignored")),
+        Some(v) => return Err(format!("{full}.screen: expected a screen id, got a {}, rule ignored", v.type_str())),
+    };
+    Ok(Rule { workspace, screen })
+}
+
 /// Bad entries are dropped one by one; a list left empty by that falls back to `default`.
 /// A list written empty, `[]`, is off: the settings page writes it when you remove the last
 /// combo (spec 0012 AC-8).
@@ -1534,7 +1741,7 @@ const NAMED_KEYS: &[(&str, VIRTUAL_KEY)] = &[
     ("Left", VK_LEFT), ("Right", VK_RIGHT), ("Up", VK_UP), ("Down", VK_DOWN),
     ("Home", VK_HOME), ("End", VK_END), ("PageUp", VK_PRIOR), ("PageDown", VK_NEXT),
     ("Insert", VK_INSERT), ("Delete", VK_DELETE), ("Space", VK_SPACE), ("Enter", VK_RETURN),
-    ("Tab", VK_TAB), ("Escape", VK_ESCAPE),
+    ("Tab", VK_TAB), ("Escape", VK_ESCAPE), ("Backspace", VK_BACK),
 ];
 
 /// Named keys, A to Z, 0 to 9 (their vk is the ASCII code), F1 to F24.
@@ -1609,6 +1816,21 @@ impl Settings {
         self.indicator_screens.get(id).map_or(self.indicator_pos, |o| o.over(self.indicator_pos))
     }
 
+    /// Workspace `i`'s name (0 based) on screen `id`: the screen's own key, else `[names]`'s,
+    /// else none; `""` is none, and so is a workspace past the count (spec 0023 AC-1, AC-3).
+    pub fn ws_name(&self, id: &str, i: usize) -> Option<&str> {
+        if i >= self.workspaces {
+            return None;
+        }
+        let own = self.names_screens.get(id).and_then(|n| n.ws.get(i)?.as_deref());
+        Some(own.unwrap_or(self.names.get(i)?)).filter(|n| !n.is_empty())
+    }
+
+    /// Your name for screen `id`, if you renamed it (spec 0023 AC-11).
+    pub fn screen_rename(&self, id: &str) -> Option<&str> {
+        self.names_screens.get(id)?.screen.as_deref()
+    }
+
     /// Every setting as (name, value) in file order: the start log line, and the change log
     /// that compares two of these (spec 0012 AC-15).
     fn fields(&self) -> Vec<(&'static str, String)> {
@@ -1619,6 +1841,7 @@ impl Settings {
             ("workspaces", self.workspaces.to_string()),
             ("copilot_as_right_ctrl", self.copilot_as_right_ctrl.to_string()),
             ("follow_activation", self.follow_activation.to_string()),
+            ("jump_back", self.jump_back.to_string()),
             ("fastest", self.fastest.to_string()),
             ("first_run_seen", self.first_run_seen.map_or(String::new(), |b| b.to_string())),
             ("shortcuts.previous", list(&self.previous)),
@@ -1630,12 +1853,14 @@ impl Settings {
             ("shortcuts.jump", mods_text(self.jump).to_string()),
             ("shortcuts.send_to", mods_text(self.send_to).to_string()),
             ("shortcuts.send_to_stay", mods_text(self.send_to_stay).to_string()),
+            ("shortcuts.back", list(&self.back)),
             ("shortcuts.finder", list(&self.finder)),
             ("shortcuts.overview", list(&self.overview)),
             ("shortcuts.pin", list(&self.pin)),
             ("shortcuts.hints", list(&self.hints)),
             ("indicator.enabled", self.indicator_enabled.to_string()),
             ("indicator.style", word(STYLES.iter().find(|(_, v)| *v == self.indicator_style).map(|(w, _)| *w))),
+            ("indicator.screen_name", self.indicator_screen_name.to_string()),
             ("indicator.hold_ms", self.hold_ms.to_string()),
             ("indicator.fade_ms", self.fade_ms.to_string()),
             ("indicator.spot", word(SPOTS.iter().find(|(_, v)| *v == self.indicator_pos.spot).map(|(w, _)| *w))),
@@ -1666,6 +1891,10 @@ impl Settings {
         let at = fields.iter().position(|(k, _)| *k == "restore.enabled").unwrap_or(fields.len());
         let ws = WS_NAMES.iter().zip(self.ws_colors).map(|(k, c)| (*k, c.map_or(String::new(), hex)));
         fields.splice(at..at, ws);
+        let at = fields.iter().position(|(k, _)| *k == "restore.enabled").unwrap_or(fields.len());
+        fields.insert(at, ("names", names_text(&self.names, &self.names_screens)));
+        let at = fields.iter().position(|(k, _)| *k == "restore.enabled").unwrap_or(fields.len());
+        fields.insert(at, ("apps", apps_text(&self.apps)));
         fields
     }
 }
@@ -1685,6 +1914,35 @@ fn screens_text(screens: &BTreeMap<String, PosOverride>) -> String {
     };
     let all: Vec<String> = screens.iter().map(|(id, o)| format!("{id}: {}", one(o))).collect();
     format!("[{}]", all.join(", "))
+}
+
+/// Which `[names]` keys are set, never their text (spec 0023 AC-15), like
+/// `[ws1, ws2; screens: internal (screen, ws2)]`.
+fn names_text(names: &[String; 9], screens: &BTreeMap<String, ScreenNames>) -> String {
+    let all: Vec<&str> = (0..9).filter(|&i| !names[i].is_empty()).map(|i| NAMES_KEYS[i]).collect();
+    let one = |n: &ScreenNames| {
+        let keys: Vec<&str> = n.screen.iter().map(|_| "screen").chain((0..9).filter(|&i| n.ws[i].is_some()).map(|i| NAMES_KEYS[i])).collect();
+        keys.join(", ")
+    };
+    let per: Vec<String> = screens.iter().map(|(id, n)| format!("{id} ({})", one(n))).collect();
+    let mut parts = vec![];
+    if !all.is_empty() {
+        parts.push(all.join(", "));
+    }
+    if !per.is_empty() {
+        parts.push(format!("screens: {}", per.join(", ")));
+    }
+    format!("[{}]", parts.join("; "))
+}
+
+/// Every rule by key, workspace and screen id, never a path (spec 0027 AC-15), like
+/// `[slack.exe: 1 on GSM-5B7F-12345, spotify.exe: 4]`.
+fn apps_text(apps: &[(String, Rule)]) -> String {
+    let one = |(k, r): &(String, Rule)| match &r.screen {
+        Some(id) => format!("{k}: {} on {id}", r.workspace + 1),
+        None => format!("{k}: {}", r.workspace + 1),
+    };
+    format!("[{}]", apps.iter().map(one).collect::<Vec<_>>().join(", "))
 }
 
 impl fmt::Display for Settings {
@@ -1719,6 +1977,30 @@ spot = \"top-right\""), "{one}");
         assert_eq!(whole, DEFAULT_FILE);
         let colors = edit_text(DEFAULT_FILE, &Edit::At(vec!["colors".into(), "ws2".into()], "#123456".into())).unwrap();
         assert_eq!(parse(&colors).0.ws_colors[1], Some(0x123456));
+    }
+
+    // Spec 0027 AC-14: a rule is an inline table, and the page changes one key inside it, so
+    // whatever else you wrote on that line, and the comments around it, stay as they were.
+    #[test]
+    fn rule_keys_change_inside_their_inline_table() {
+        let file = "[apps]
+# mine
+\"Slack.exe\" = { workspace = 1, screen = \"GSM-1\" } # chat
+";
+        let at = |k: &str| vec!["apps".to_string(), "Slack.exe".into(), k.into()];
+        let moved = edit_text(file, &Edit::At(at("workspace"), 3.into())).unwrap();
+        assert_eq!(moved, "[apps]
+# mine
+\"Slack.exe\" = { workspace = 3, screen = \"GSM-1\" } # chat
+");
+        let any = edit_text(&moved, &Edit::Remove(at("screen"))).unwrap();
+        assert_eq!(parse(&any).0.apps, vec![("slack.exe".to_string(), Rule { workspace: 2, screen: None })]);
+        assert!(any.contains("# mine") && any.contains("# chat"), "{any}");
+        // The last rule out leaves [apps] itself for the next one.
+        let none = edit_text(&any, &Edit::Remove(at("screen")[..2].to_vec())).unwrap();
+        assert_eq!(none, "[apps]
+");
+        assert!(parse(&none).0.apps.is_empty());
     }
 
     // The file des-k writes for you and the values it falls back to are two copies of the
@@ -1903,6 +2185,16 @@ hints = [\"Win+F\"]
     }
 
     // follow_activation = false is the escape from an app that keeps stealing focus, so it must stick.
+    #[test]
+    fn jump_back_can_be_turned_off() {
+        let (s, warn) = parse("jump_back = false\n");
+        assert!(!s.jump_back, "off must give back spec 0005's jump, which only shows the card");
+        assert!(warn.is_empty(), "{warn:?}");
+        let (s, warn) = parse("jump_back = \"no\"\n");
+        assert!(s.jump_back, "a bad value keeps the default");
+        assert_eq!(warn.len(), 1, "{warn:?}");
+    }
+
     #[test]
     fn follow_activation_can_be_turned_off() {
         let (s, warn) = parse("follow_activation = false\n");
@@ -2144,6 +2436,7 @@ do = "previous"
     #[test]
     fn do_takes_a_name_or_a_combo() {
         assert_eq!(action("NEXT"), Ok(Action::Switch(1)));
+        assert_eq!(action("back"), Ok(Action::Back));
         assert_eq!(action("send_to_stay_3"), Ok(Action::SendTo(2, false)));
         assert_eq!(action("send_to_9"), Ok(Action::SendTo(8, true)));
         assert_eq!(action("jump_1"), Ok(Action::Jump(0)));
@@ -2315,6 +2608,16 @@ do = "previous"
         assert!(!savable(VK_NUMPAD3.0) && !savable(VK_OEM_1.0) && !savable(VK_VOLUME_UP.0) && !savable(VK_LWIN.0));
     }
 
+    // Back's default key must be one the file can name, read in any case and written back the
+    // same way, or the page's recorder could never save it again (spec 0024 AC-6).
+    #[test]
+    fn backspace_is_a_key_name() {
+        let combo = Combo { mods: WIN, vk: VK_BACK.0 };
+        assert_eq!(parse_combo("win+BACKSPACE"), Ok(combo));
+        assert_eq!(combo.to_string(), "Win+Backspace");
+        assert!(savable(VK_BACK.0));
+    }
+
     // The change log compares these one by one, so each must name its setting once.
     #[test]
     fn every_setting_is_logged_by_name() {
@@ -2322,7 +2625,115 @@ do = "previous"
         let mut unique = names.clone();
         unique.sort();
         unique.dedup();
-        assert_eq!((names.len(), unique.len()), (49, 49));
+        assert_eq!((names.len(), unique.len()), (54, 54));
+    }
+
+    // Spec 0027 AC-10: one bad rule never costs the others, each problem is one line, and a key
+    // with a path in it is never echoed, so a shared log can't leak where your files live.
+    #[test]
+    fn a_bad_app_rule_only_drops_itself() {
+        let file = r#"[apps]
+"Slack.exe" = { workspace = 1, screen = "GSM-5B7F-12345" }
+"C:\\x\\notepad.exe" = { workspace = 2 }
+"spotify" = { workspace = 2 }
+"zero.exe" = { workspace = 0 }
+"text.exe" = { workspace = "1" }
+"empty.exe" = { workspace = 1, screen = "" }
+"colour.exe" = { workspace = 1, colour = 1 }
+"plain.exe" = 3
+"slack.exe" = { workspace = 3 }
+"Microsoft.WindowsCalculator_8wekyb3d8bbwe!App" = { workspace = 4 }
+"spotify.exe" = { workspace = 4 }
+"#;
+        let (s, warn) = parse(file);
+        let rule = |w, sc: Option<&str>| Rule { workspace: w, screen: sc.map(str::to_string) };
+        assert_eq!(s.apps, vec![
+            ("slack.exe".to_string(), rule(0, Some("GSM-5B7F-12345"))),
+            ("microsoft.windowscalculator_8wekyb3d8bbwe!app".to_string(), rule(3, None)),
+            ("spotify.exe".to_string(), rule(3, None)),
+        ]);
+        assert_eq!(warn.len(), 8, "{warn:?}");
+        assert!(warn.iter().all(|w| !w.contains("C:") && !w.contains("\\x")), "{warn:?}");
+        assert!(warn.iter().any(|w| w.contains("\"slack.exe\" differs from an earlier key only in case")), "{warn:?}");
+    }
+
+    // Spec 0027 AC-10: past 64 rules the rest are dropped with one line, not one each.
+    #[test]
+    fn app_rules_stop_at_64() {
+        let file = (0..70).fold("[apps]\n".to_string(), |f, i| f + &format!("\"app{i}.exe\" = {{ workspace = 1 }}\n"));
+        let (s, warn) = parse(&file);
+        assert_eq!(s.apps.len(), APPS_MAX);
+        assert_eq!(s.apps.last().map(|(k, _)| k.as_str()), Some("app63.exe"));
+        assert_eq!(warn, vec!["apps: more than 64 rules, the last 6 ignored".to_string()]);
+    }
+
+    // Spec 0027 AC-15: the change log names rules by key, workspace and screen id only.
+    #[test]
+    fn app_rules_log_by_key() {
+        let (s, _) = parse("[apps]\n\"slack.exe\" = { workspace = 1, screen = \"GSM-1\" }\n\"spotify.exe\" = { workspace = 4 }\n");
+        let line = s.fields().into_iter().find(|(k, _)| *k == "apps").map(|(_, v)| v);
+        assert_eq!(line.as_deref(), Some("[slack.exe: 1 on GSM-1, spotify.exe: 4]"));
+    }
+
+    // Spec 0023 AC-1, AC-3: a screen's own name beats every screen's, "" there hides the name on
+    // that screen only, and a workspace past the count shows no name until the count grows back.
+    // Every surface asks ws_name, so this order is the one you see everywhere.
+    #[test]
+    fn a_screen_name_beats_every_screens_name() {
+        let file = "workspaces = 3\n[names]\nws2 = \"Code\"\nws3 = \"\"\nws4 = \"Later\"\n\
+                    [names.screens.internal]\nws2 = \"Notes\"\nws1 = \"\"\n\
+                    [names.screens.\"DEL-1\"]\nws2 = \"\"\n";
+        let (s, warn) = parse(file);
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(s.ws_name("internal", 1), Some("Notes"));
+        assert_eq!(s.ws_name("SAM-9", 1), Some("Code"));
+        assert_eq!(s.ws_name("DEL-1", 1), None);
+        assert_eq!((s.ws_name("SAM-9", 0), s.ws_name("internal", 0)), (None, None));
+        assert_eq!(s.ws_name("SAM-9", 2), None, "\"\" in [names] is no name");
+        assert_eq!(s.ws_name("SAM-9", 3), None, "past the count");
+        let (more, _) = parse(&file.replace("workspaces = 3", "workspaces = 4"));
+        assert_eq!(more.ws_name("SAM-9", 3), Some("Later"));
+    }
+
+    // Spec 0023 AC-11: a rename names its screen; "" or no key leaves Windows' name.
+    #[test]
+    fn an_empty_rename_is_no_rename() {
+        let (s, warn) = parse("[names.screens.internal]\nscreen = \"Left\"\n[names.screens.\"DEL-1\"]\nscreen = \"  \"\nws1 = \"Mail\"\n");
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!((s.screen_rename("internal"), s.screen_rename("DEL-1"), s.screen_rename("SAM-9")), (Some("Left"), None, None));
+    }
+
+    // Spec 0023 AC-2, AC-15: a bad name resets only its own key, and the warn line names the key
+    // but never the text (a name can say anything). 32 units fit after cleanup; an emoji is two.
+    #[test]
+    fn a_bad_name_resets_only_itself_and_is_never_logged() {
+        let full = "é".repeat(30) + "😀";
+        let (s, warn) = parse(&format!("[names]\nws1 = \"  {full}\\t\"\nws2 = \"Mail\\nRoom\"\n"));
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!((s.names[0].as_str(), s.names[1].as_str()), (full.as_str(), "Mail Room"));
+        let long = format!("\"{full}x\"");
+        for (key, value, why) in [("ws1", long.as_str(), "33 characters"), ("ws1", "7", "expected text"), ("ws10", "\"Secret\"", "unknown key"), ("foo", "\"Secret\"", "unknown key")] {
+            let (s, warn) = parse(&format!("[names]\nws2 = \"Code\"\n{key} = {value}\n"));
+            assert_eq!((s.names[0].as_str(), s.names[1].as_str()), ("", "Code"), "{key} = {value}");
+            assert!(warn.len() == 1 && warn[0].contains(why) && !warn[0].contains('é') && !warn[0].contains("Secret") && !warn[0].contains("Code"), "{warn:?}");
+        }
+        let (s, warn) = parse(&format!("[names.screens.internal]\nscreen = {long}\nws2 = \"Notes\"\nws12 = \"x\"\n"));
+        assert_eq!(warn.len(), 2, "{warn:?}");
+        assert_eq!((s.screen_rename("internal"), s.ws_name("internal", 1)), (None, Some("Notes")));
+    }
+
+    // Spec 0023 AC-15: the change line says which name keys are set, never what they say, and a
+    // new name for a key already set still counts as a change, or it would never take effect.
+    #[test]
+    fn names_change_lines_hold_keys_only() {
+        let (old, _) = parse("[names]\nws1 = \"Mail\"\n");
+        let (new, _) = parse("[names]\nws1 = \"Post\"\nws2 = \"Code\"\n[names.screens.internal]\nscreen = \"Kitchen\"\nws2 = \"\"\n");
+        let changes = diff(&old, &new, Source::File);
+        assert_eq!(changes, [Change { key: "names", was: "[ws1]".into(), now: "[ws1, ws2; screens: internal (screen, ws2)]".into() }]);
+        let (renamed, _) = parse("[names]\nws1 = \"Post\"\n");
+        let changes = diff(&old, &renamed, Source::File);
+        assert_eq!(changes.len(), 1);
+        assert!(!format!("{changes:?}{new}").contains("Post") && !format!("{new}").contains("Kitchen"));
     }
 
     // Spec 0020 AC-9: a screen's table changes only the keys it sets; the rest, and every screen

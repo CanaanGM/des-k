@@ -221,7 +221,8 @@ pub fn warn_if_broken() {
 /// screen. Never over the warning that hiding does not work: then the indicator and the log say it.
 pub fn screens_changed(lines: &[String]) {
     if BROKEN.get() {
-        return info!("tray: no balloon over the hiding warning: {}", lines.join("; "));
+        // Counted, not quoted: the lines name screens as you renamed them (spec 0023 AC-15).
+        return info!("tray: no balloon over the hiding warning, {} screen notes not shown", lines.len());
     }
     balloon("Screens changed", &lines.join("\n"), false, None);
 }

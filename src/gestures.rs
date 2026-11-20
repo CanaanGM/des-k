@@ -31,6 +31,10 @@ pub fn run(gesture: usize) {
             ws::switch(dir);
             crate::welcome::tried(crate::welcome::Try::Switch);
         }
+        Action::Back => {
+            close();
+            ws::back();
+        }
         Action::Send(dir, follow) => {
             close();
             ws::send(ws::To::Step(dir), follow);
