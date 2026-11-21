@@ -53,6 +53,19 @@ pub enum Style {
 
 pub const STYLES: &[(&str, Style)] = &[("card", Style::Card), ("dots", Style::Dots)];
 
+/// How des-k places a workspace's picture on a screen (spec 0026 AC-5).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Fit {
+    Fill,    // covers the screen, cropping the edges
+    Whole,   // `fit`: the whole picture, bars on two sides
+    Stretch, // fills exactly, shape distorted
+    Center,  // actual size, bars or cropping around it
+}
+
+pub const FITS: &[(&str, Fit)] = &[("fill", Fit::Fill), ("fit", Fit::Whole), ("stretch", Fit::Stretch), ("center", Fit::Center)];
+// `transition`: whether a picture change fades (spec 0026 AC-4).
+const TRANSITIONS: &[(&str, bool)] = &[("instant", false), ("fade", true)];
+
 /// Where the indicator sits on a screen's work area (spec 0020).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Spot {
@@ -273,6 +286,12 @@ pub struct Settings {
     pub names_screens: BTreeMap<String, ScreenNames>, // by screen id (spec 0016)
     // Spec 0027: rules for where new windows open, in file order, keys lowercased.
     pub apps: Vec<(String, Rule)>,
+    // Spec 0026. Read only through wallpaper_for, which owns the fallback rules.
+    pub wallpaper: [String; 9], // every screen's picture, a file name in the wallpapers folder; empty = none
+    pub wallpaper_screens: BTreeMap<String, [Option<String>; 9]>, // by screen id; Some("") = your Windows wallpaper there
+    pub wallpaper_fit: Fit,
+    pub wallpaper_fade: bool, // transition = "fade"; read through wallpaper_fades, which fastest overrides
+    pub wallpaper_dim: u8,    // 0 to 80: percent darker, laid over at paint time (AC-18)
 }
 
 /// One `[apps]` rule (spec 0027): where an app's new main windows open.
@@ -355,6 +374,11 @@ impl Default for Settings {
             names: Default::default(),
             names_screens: BTreeMap::new(),
             apps: Vec::new(),
+            wallpaper: Default::default(),
+            wallpaper_screens: BTreeMap::new(),
+            wallpaper_fit: Fit::Fill,
+            wallpaper_fade: false,
+            wallpaper_dim: 0,
         }
     }
 }
@@ -423,6 +447,17 @@ accent = "windows"          # "windows" follows your Windows accent color, or yo
 # [names.screens."DEL-A1B2-12345"]
 # screen = "Left"
 # ws2 = "Notes"             # "" is no name on this screen
+
+[wallpaper]
+fit = "fill"                # fill (covers the screen), fit (bars on two sides), stretch or center
+transition = "instant"      # instant or fade (fastest = true keeps it instant)
+dim = 0                     # 0 to 80: darkens des-k's pictures by this percent, so white icon labels stay readable
+# A picture for a workspace on every screen: a file name in %LOCALAPPDATA%\des-k\wallpapers\
+# (.jpg, .jpeg, .png, .bmp or .gif). A workspace left out shows your Windows wallpaper:
+# ws1 = "forest.jpg"
+# A screen's own table, named by its id, overrides it there:
+# [wallpaper.screens."DEL-A1B2-12345"]
+# ws2 = "desk.png"          # "" shows your Windows wallpaper on this screen
 
 [apps]
 # One line per app. workspace is 1 to 9; screen is optional (a screen id, as in [names.screens]).
@@ -506,7 +541,7 @@ tap = true
 do = "notifications"
 "##;
 
-const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activation", "jump_back", "fastest", "first_run_seen", "shortcuts", "indicator", "attention", "colors", "names", "apps", "restore", "overview", "touchpad", "gesture"];
+const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activation", "jump_back", "fastest", "first_run_seen", "shortcuts", "indicator", "attention", "colors", "names", "wallpaper", "apps", "restore", "overview", "touchpad", "gesture"];
 const SHORTCUT_KEYS: &[&str] = &["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "jump", "send_to", "send_to_stay", "back", "finder", "overview", "pin", "hints"];
 const INDICATOR_KEYS: &[&str] = &["enabled", "style", "screen_name", "spot", "gap", "x", "y", "hold_ms", "fade_ms", "screens"];
 const SCREEN_KEYS: &[&str] = &["spot", "gap", "x", "y"];
@@ -517,6 +552,9 @@ const COLORS_KEYS: &[&str] = &["accent", "ws1", "ws2", "ws3", "ws4", "ws5", "ws6
 const NAMES_KEYS: &[&str] = &["ws1", "ws2", "ws3", "ws4", "ws5", "ws6", "ws7", "ws8", "ws9", "screens"];
 const SCREEN_NAMES_KEYS: &[&str] = &["screen", "ws1", "ws2", "ws3", "ws4", "ws5", "ws6", "ws7", "ws8", "ws9"];
 pub const NAME_MAX: usize = 32; // in UTF-16 units, after cleanup (spec 0023 AC-2)
+const WALLPAPER_KEYS: &[&str] = &["ws1", "ws2", "ws3", "ws4", "ws5", "ws6", "ws7", "ws8", "ws9", "screens", "fit", "transition", "dim"];
+const PICTURE_MAX: usize = 255; // in UTF-16 units (spec 0026 AC-2)
+const PICTURE_TYPES: &[&str] = &["jpg", "jpeg", "png", "bmp", "gif"];
 const RULE_KEYS: &[&str] = &["workspace", "screen"];
 pub const APPS_MAX: usize = 64; // spec 0027 AC-10
 const APP_KEY_MAX: usize = 260;
@@ -696,8 +734,9 @@ fn diff(old: &Settings, new: &Settings, source: Source) -> Vec<Change> {
     // Names log their keys only (spec 0023 AC-15), so a new name for a key already set changes
     // no text here; compare the names themselves, or the new one is never stored.
     let renamed = old.names != new.names || old.names_screens != new.names_screens;
+    let repictured = old.wallpaper != new.wallpaper || old.wallpaper_screens != new.wallpaper_screens; // the same, for picture file names (spec 0026 AC-16)
     for ((key, was), (_, now)) in old.fields().into_iter().zip(new.fields()) {
-        if was != now || (key == "names" && renamed) {
+        if was != now || (key == "names" && renamed) || (key == "wallpaper" && repictured) {
             info!("settings: {key} {was} -> {now} ({from})");
             changes.push(Change { key, was, now });
         }
@@ -1104,6 +1143,18 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
             *n = name(t, key, &format!("names.{key}"), &mut warn).unwrap_or_default();
         }
         s.names_screens = name_screens(t, &mut warn);
+    }
+
+    if let Some(t) = section(&top, "wallpaper", &mut warn) {
+        unknown_keys(t, "wallpaper.", WALLPAPER_KEYS, &mut warn);
+        for (i, p) in s.wallpaper.iter_mut().enumerate() {
+            let key = WALLPAPER_KEYS[i];
+            *p = picture(t, key, &format!("wallpaper.{key}"), &mut warn).unwrap_or_default();
+        }
+        s.wallpaper_screens = wallpaper_screens(t, &mut warn);
+        s.wallpaper_fit = choice(t, "fit", "wallpaper.fit", FITS, s.wallpaper_fit, &mut warn);
+        s.wallpaper_fade = choice(t, "transition", "wallpaper.transition", TRANSITIONS, s.wallpaper_fade, &mut warn);
+        s.wallpaper_dim = int(t, "dim", "wallpaper.dim", 0, 80, 0, &mut warn) as u8;
     }
 
     if let Some(t) = section(&top, "apps", &mut warn) {
@@ -1536,6 +1587,44 @@ pub fn clean_name(text: &str) -> String {
     text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>().trim().to_string()
 }
 
+/// A picture's file name as spec 0026 AC-2 allows it: a plain name in the wallpapers folder, so
+/// the full path is always that folder joined with it. None when missing or bad; `""` stays
+/// `""`. The warn line names the key, never the value, since a file name can say anything.
+fn picture(t: &Table, key: &str, full: &str, warn: &mut Vec<String>) -> Option<String> {
+    let name = match t.get(key)? {
+        Value::String(s) => s,
+        v => {
+            warn.push(format!("{full}: expected a picture's file name, got a {}, ignored", v.type_str()));
+            return None;
+        }
+    };
+    if name.is_empty() {
+        return Some(String::new());
+    }
+    let Some(why) = picture_why(name) else { return Some(name.clone()) };
+    warn.push(format!("{full}: {why}, ignored"));
+    None
+}
+
+/// Why `name` can't be a picture's file name (spec 0026 AC-2), or None when it can.
+fn picture_why(name: &str) -> Option<String> {
+    Some(if name.is_empty() || name.contains(['\\', '/', ':']) || name.contains("..") {
+        "not a plain file name in the wallpapers folder".to_string()
+    } else if name.encode_utf16().count() > PICTURE_MAX {
+        format!("{} characters, the most is {PICTURE_MAX}", name.encode_utf16().count())
+    } else if !name.rsplit_once('.').is_some_and(|(_, ext)| PICTURE_TYPES.iter().any(|t| ext.eq_ignore_ascii_case(t))) {
+        "not a .jpg, .jpeg, .png, .bmp or .gif file".to_string()
+    } else {
+        return None;
+    })
+}
+
+/// A file in the wallpapers folder the settings page may list and write (spec 0026 AC-14):
+/// one whose name the file's reader keeps.
+pub(crate) fn is_picture_name(name: &str) -> bool {
+    picture_why(name).is_none()
+}
+
 /// The `[names.screens."<id>"]` tables. A table for a screen not plugged in is kept (AC-3).
 fn name_screens(t: &Table, warn: &mut Vec<String>) -> BTreeMap<String, ScreenNames> {
     let Some(v) = t.get("screens") else { return BTreeMap::new() };
@@ -1551,6 +1640,24 @@ fn name_screens(t: &Table, warn: &mut Vec<String>) -> BTreeMap<String, ScreenNam
         let screen = name(st, "screen", &full("screen"), warn).filter(|n| !n.is_empty());
         let ws = std::array::from_fn(|i| name(st, NAMES_KEYS[i], &full(NAMES_KEYS[i]), warn));
         out.insert(id.clone(), ScreenNames { screen, ws });
+    }
+    out
+}
+
+/// The `[wallpaper.screens."<id>"]` tables (spec 0026 AC-1). A table for a screen not plugged
+/// in is kept (AC-10).
+fn wallpaper_screens(t: &Table, warn: &mut Vec<String>) -> BTreeMap<String, [Option<String>; 9]> {
+    let Some(v) = t.get("screens") else { return BTreeMap::new() };
+    let Some(list) = v.as_table().filter(|l| l.values().all(Value::is_table)) else {
+        let got = if v.is_table() { "table with plain values in it" } else { v.type_str() };
+        warn.push(format!("wallpaper.screens: expected [wallpaper.screens.\"<screen id>\"] tables, got a {got}, ignored"));
+        return BTreeMap::new();
+    };
+    let mut out = BTreeMap::new();
+    for (id, st) in list.iter().filter_map(|(id, v)| Some((id, v.as_table()?))) {
+        let full = |k: &str| format!("wallpaper.screens.\"{id}\".{k}");
+        unknown_keys(st, &full(""), &WALLPAPER_KEYS[..9], warn);
+        out.insert(id.clone(), std::array::from_fn(|i| picture(st, WALLPAPER_KEYS[i], &full(WALLPAPER_KEYS[i]), warn)));
     }
     out
 }
@@ -1826,6 +1933,22 @@ impl Settings {
         Some(own.unwrap_or(self.names.get(i)?)).filter(|n| !n.is_empty())
     }
 
+    /// Workspace `i`'s picture (0 based) on screen `id`, a file name in the wallpapers folder:
+    /// the screen's own key, else `[wallpaper]`'s, else none; `""` is none, and so is a
+    /// workspace past the count (spec 0026 AC-1, AC-10).
+    pub fn wallpaper_for(&self, id: &str, i: usize) -> Option<&str> {
+        if i >= self.workspaces {
+            return None;
+        }
+        let own = self.wallpaper_screens.get(id).and_then(|w| w.get(i)?.as_deref());
+        Some(own.unwrap_or(self.wallpaper.get(i)?)).filter(|p| !p.is_empty())
+    }
+
+    /// Whether a picture change fades: `transition = "fade"`, unless `fastest` (spec 0026 AC-4).
+    pub fn wallpaper_fades(&self) -> bool {
+        self.wallpaper_fade && !self.fastest
+    }
+
     /// Your name for screen `id`, if you renamed it (spec 0023 AC-11).
     pub fn screen_rename(&self, id: &str) -> Option<&str> {
         self.names_screens.get(id)?.screen.as_deref()
@@ -1894,6 +2017,16 @@ impl Settings {
         let at = fields.iter().position(|(k, _)| *k == "restore.enabled").unwrap_or(fields.len());
         fields.insert(at, ("names", names_text(&self.names, &self.names_screens)));
         let at = fields.iter().position(|(k, _)| *k == "restore.enabled").unwrap_or(fields.len());
+        fields.insert(at, ("wallpaper", wallpaper_text(&self.wallpaper, &self.wallpaper_screens)));
+        // These say nothing about you, so they log with their values (spec 0026 AC-16).
+        let at = fields.iter().position(|(k, _)| *k == "restore.enabled").unwrap_or(fields.len());
+        let look = [
+            ("wallpaper.fit", word(FITS.iter().find(|(_, v)| *v == self.wallpaper_fit).map(|(w, _)| *w))),
+            ("wallpaper.transition", word(TRANSITIONS.iter().find(|(_, v)| *v == self.wallpaper_fade).map(|(w, _)| *w))),
+            ("wallpaper.dim", self.wallpaper_dim.to_string()),
+        ];
+        fields.splice(at..at, look);
+        let at = fields.iter().position(|(k, _)| *k == "restore.enabled").unwrap_or(fields.len());
         fields.insert(at, ("apps", apps_text(&self.apps)));
         fields
     }
@@ -1925,6 +2058,22 @@ fn names_text(names: &[String; 9], screens: &BTreeMap<String, ScreenNames>) -> S
         keys.join(", ")
     };
     let per: Vec<String> = screens.iter().map(|(id, n)| format!("{id} ({})", one(n))).collect();
+    let mut parts = vec![];
+    if !all.is_empty() {
+        parts.push(all.join(", "));
+    }
+    if !per.is_empty() {
+        parts.push(format!("screens: {}", per.join(", ")));
+    }
+    format!("[{}]", parts.join("; "))
+}
+
+/// Which `[wallpaper]` keys are set, never their file names (spec 0026 AC-16), like
+/// `[ws1, ws2; screens: internal (ws2)]`.
+fn wallpaper_text(pictures: &[String; 9], screens: &BTreeMap<String, [Option<String>; 9]>) -> String {
+    let all: Vec<&str> = (0..9).filter(|&i| !pictures[i].is_empty()).map(|i| WALLPAPER_KEYS[i]).collect();
+    let one = |ws: &[Option<String>; 9]| (0..9).filter(|&i| ws[i].is_some()).map(|i| WALLPAPER_KEYS[i]).collect::<Vec<_>>().join(", ");
+    let per: Vec<String> = screens.iter().map(|(id, ws)| format!("{id} ({})", one(ws))).collect();
     let mut parts = vec![];
     if !all.is_empty() {
         parts.push(all.join(", "));
@@ -2625,7 +2774,7 @@ do = "previous"
         let mut unique = names.clone();
         unique.sort();
         unique.dedup();
-        assert_eq!((names.len(), unique.len()), (54, 54));
+        assert_eq!((names.len(), unique.len()), (58, 58));
     }
 
     // Spec 0027 AC-10: one bad rule never costs the others, each problem is one line, and a key
@@ -2720,6 +2869,124 @@ do = "previous"
         let (s, warn) = parse(&format!("[names.screens.internal]\nscreen = {long}\nws2 = \"Notes\"\nws12 = \"x\"\n"));
         assert_eq!(warn.len(), 2, "{warn:?}");
         assert_eq!((s.screen_rename("internal"), s.ws_name("internal", 1)), (None, Some("Notes")));
+    }
+
+    // Spec 0026 AC-2: the admin des-k reads a picture by joining the wallpapers folder with this
+    // value, so anything that could reach outside the folder, or isn't a picture type, resets
+    // only its own key. The warn line names the key, never the value (a file name can say
+    // anything about you, AC-16).
+    #[test]
+    fn a_bad_picture_resets_only_itself_and_is_never_logged() {
+        let (s, warn) = parse("[wallpaper]\nws1 = \"Forest.JPG\"\nws2 = \"\"\nws3 = \"a b.jpeg\"\n");
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!((s.wallpaper_for("x", 0), s.wallpaper_for("x", 1), s.wallpaper_for("x", 2)), (Some("Forest.JPG"), None, Some("a b.jpeg")));
+        let long = format!("\"{}.png\"", "s".repeat(252));
+        let outside = "not a plain file name";
+        for (key, value, why) in [
+            ("ws1", r#""..\\secret.jpg""#, outside),
+            ("ws1", r#""C:\\secret.jpg""#, outside),
+            ("ws1", r#""secret/b.jpg""#, outside),
+            ("ws1", r#""secret.jpg:x.png""#, outside),
+            ("ws1", r#""secret..jpg""#, outside),
+            ("ws1", r#""secret.txt""#, "not a .jpg"),
+            ("ws1", r#""secret""#, "not a .jpg"),
+            ("ws1", "5", "expected a picture's file name"),
+            ("ws1", long.as_str(), "256 characters"),
+            ("ws10", r#""secret.jpg""#, "unknown key"),
+        ] {
+            let (s, warn) = parse(&format!("[wallpaper]\nws2 = \"desk.png\"\n{key} = {value}\n"));
+            assert_eq!((s.wallpaper_for("x", 0), s.wallpaper_for("x", 1)), (None, Some("desk.png")), "{key} = {value}");
+            assert!(warn.len() == 1 && warn[0].contains(why) && warn[0].contains(key), "{warn:?}");
+            assert!(!warn[0].contains("secret") && !warn[0].contains("desk") && !warn[0].contains("sss"), "{warn:?}");
+        }
+    }
+
+    // Spec 0026 AC-16: the change line says which picture keys are set, never the file names, and a
+    // new picture for a key already set still counts as a change, or it would never show.
+    #[test]
+    fn wallpaper_change_lines_hold_keys_only() {
+        let (old, _) = parse("[wallpaper]\nws1 = \"forest.jpg\"\n");
+        let (new, _) = parse("[wallpaper]\nws1 = \"desk.png\"\nws3 = \"tall.jpg\"\n");
+        assert_eq!(diff(&old, &new, Source::File), [Change { key: "wallpaper", was: "[ws1]".into(), now: "[ws1, ws3]".into() }]);
+        let (swapped, _) = parse("[wallpaper]\nws1 = \"desk.png\"\n");
+        assert_eq!(diff(&old, &swapped, Source::File), [Change { key: "wallpaper", was: "[ws1]".into(), now: "[ws1]".into() }]);
+        let (screen, _) = parse("[wallpaper]\nws1 = \"forest.jpg\"\n[wallpaper.screens.internal]\nws2 = \"desk.png\"\nws3 = \"\"\n");
+        assert_eq!(diff(&old, &screen, Source::File), [Change { key: "wallpaper", was: "[ws1]".into(), now: "[ws1; screens: internal (ws2, ws3)]".into() }]);
+        let (moved, _) = parse("[wallpaper]\nws1 = \"forest.jpg\"\n[wallpaper.screens.internal]\nws2 = \"tall.jpg\"\nws3 = \"\"\n");
+        assert_eq!(diff(&screen, &moved, Source::File).len(), 1, "a new picture on one screen is a change");
+    }
+
+    // Spec 0026 AC-1, AC-10: a screen's own picture beats every screen's, "" there shows your
+    // Windows wallpaper on that screen only, and a workspace past the count shows nothing until
+    // the count grows back. The backdrop, the overview and the page all ask wallpaper_for, so
+    // this order is what you see everywhere.
+    #[test]
+    fn a_screen_picture_beats_every_screens_picture() {
+        let file = "workspaces = 3\n[wallpaper]\nws2 = \"forest.jpg\"\nws3 = \"\"\nws4 = \"later.png\"\n\
+                    [wallpaper.screens.internal]\nws2 = \"desk.png\"\nws1 = \"\"\nws3 = \"tall.jpg\"\n\
+                    [wallpaper.screens.\"DEL-1\"]\nws2 = \"\"\n";
+        let (s, warn) = parse(file);
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(s.wallpaper_for("internal", 1), Some("desk.png"));
+        assert_eq!(s.wallpaper_for("SAM-9", 1), Some("forest.jpg"));
+        assert_eq!(s.wallpaper_for("DEL-1", 1), None, "\"\" on a screen is your Windows wallpaper there");
+        assert_eq!((s.wallpaper_for("SAM-9", 0), s.wallpaper_for("internal", 0)), (None, None));
+        assert_eq!((s.wallpaper_for("SAM-9", 2), s.wallpaper_for("internal", 2)), (None, Some("tall.jpg")), "\"\" in [wallpaper] is no picture");
+        assert_eq!(s.wallpaper_for("SAM-9", 3), None, "past the count");
+        let (more, _) = parse(&file.replace("workspaces = 3", "workspaces = 4"));
+        assert_eq!(more.wallpaper_for("SAM-9", 3), Some("later.png"));
+    }
+
+    // Spec 0026 AC-2: a screen table holds the same plain file names; a bad one, or an unknown
+    // key, resets only itself and is logged by key, never by value.
+    #[test]
+    fn a_bad_screen_picture_resets_only_itself() {
+        let (s, warn) = parse("[wallpaper]\nws2 = \"forest.jpg\"\n[wallpaper.screens.internal]\nws1 = \"desk.png\"\nws2 = \"C:\\\\secret.jpg\"\nfit = \"secret\"\n");
+        assert_eq!((s.wallpaper_for("internal", 0), s.wallpaper_for("internal", 1)), (Some("desk.png"), Some("forest.jpg")));
+        assert_eq!(warn.len(), 2, "{warn:?}");
+        assert!(warn.iter().any(|w| w.contains("wallpaper.screens.\"internal\".ws2") && w.contains("not a plain file name")), "{warn:?}");
+        assert!(warn.iter().all(|w| !w.contains("secret") && !w.contains("desk")), "{warn:?}");
+        let (s, warn) = parse("[wallpaper]\nws2 = \"forest.jpg\"\nscreens = \"secret\"\n");
+        assert!(warn.len() == 1 && warn[0].contains("wallpaper.screens") && !warn[0].contains("secret"), "{warn:?}");
+        assert_eq!(s.wallpaper_for("internal", 1), Some("forest.jpg"));
+    }
+
+    // Spec 0026 AC-4, AC-5, AC-18: fit, transition and dim are one value for every screen, and
+    // a bad one resets only itself. dim resets to 0, never to the last good value, so a typo
+    // can't leave pictures darker than the file says; past 80 a picture is close to black.
+    #[test]
+    fn fit_transition_and_dim_reset_only_themselves() {
+        let s = parse("").0;
+        assert_eq!((s.wallpaper_fit, s.wallpaper_fade, s.wallpaper_dim), (Fit::Fill, false, 0), "fill, instant, no dim");
+        let (s, warn) = parse("[wallpaper]\nfit = \"Center\"\ntransition = \"fade\"\ndim = 80\nws1 = \"forest.jpg\"\n");
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!((s.wallpaper_fit, s.wallpaper_fade, s.wallpaper_dim), (Fit::Center, true, 80));
+        for bad in ["dim = 81", "dim = -5", "dim = \"40\"", "dim = 40.5"] {
+            let (s, warn) = parse(&format!("[wallpaper]\nfit = \"fit\"\nws1 = \"forest.jpg\"\n{bad}\n"));
+            assert_eq!((s.wallpaper_dim, s.wallpaper_fit, s.wallpaper_for("x", 0)), (0, Fit::Whole, Some("forest.jpg")), "{bad}");
+            assert!(warn.len() == 1 && warn[0].starts_with("wallpaper.dim"), "{bad}: {warn:?}");
+        }
+        let (s, warn) = parse("[wallpaper]\nfit = \"tile\"\ntransition = \"slide\"\ndim = 40\n");
+        assert_eq!((s.wallpaper_fit, s.wallpaper_fade, s.wallpaper_dim), (Fit::Fill, false, 40));
+        assert!(warn.len() == 2 && warn[0].starts_with("wallpaper.fit") && warn[1].starts_with("wallpaper.transition"), "{warn:?}");
+    }
+
+    // Spec 0026 AC-4: fastest means every des-k fade is instant, the picture fade included,
+    // whatever transition says.
+    #[test]
+    fn fastest_keeps_pictures_instant() {
+        assert!(parse("[wallpaper]\ntransition = \"fade\"\n").0.wallpaper_fades());
+        assert!(!parse("fastest = true\n[wallpaper]\ntransition = \"fade\"\n").0.wallpaper_fades());
+    }
+
+    // Spec 0026 AC-16: fit, transition and dim say nothing about you, so each logs as its own
+    // line with its value, apart from the keys only wallpaper line.
+    #[test]
+    fn picture_look_changes_log_their_values() {
+        let (old, _) = parse("[wallpaper]\nws1 = \"forest.jpg\"\n");
+        let (new, _) = parse("[wallpaper]\nws1 = \"forest.jpg\"\nfit = \"fit\"\ntransition = \"fade\"\ndim = 40\n");
+        let lines: Vec<(&str, String, String)> = diff(&old, &new, Source::File).into_iter().map(|c| (c.key, c.was, c.now)).collect();
+        assert_eq!(lines, [("wallpaper.fit", "fill".into(), "fit".into()), ("wallpaper.transition", "instant".into(), "fade".into()), ("wallpaper.dim", "0".into(), "40".into())]);
     }
 
     // Spec 0023 AC-15: the change line says which name keys are set, never what they say, and a

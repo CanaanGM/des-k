@@ -95,6 +95,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             _ if msg == TASKBAR_CREATED.get() => {
                 add(hwnd);
                 crate::ws::resync_soon();
+                crate::backdrop::explorer_restarted();
                 LRESULT(0)
             }
             _ => DefWindowProcW(hwnd, msg, wp, lp),

@@ -6,6 +6,7 @@
 // where a window lives only ever changes through `ws`, and the overview never cloaks anything.
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use windows::Win32::{
     Foundation::{COLORREF, ERROR_ACCESS_DENIED, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM},
@@ -127,6 +128,8 @@ struct Tile {
     rect: RECT,
     minis: Vec<Slot>, // back to front, as the windows stack
     name: String,     // its workspace's name on this screen; empty for none (spec 0023 AC-7)
+    file: Option<String>,               // its workspace's picture on this screen (spec 0026 AC-9)
+    picture: Option<Arc<ui::Picture>>, // that picture at tile size, once decoded
 }
 
 struct Screen {
@@ -235,7 +238,19 @@ impl Screen {
 
     /// The tiles' face as cached now, or the desktop color while it is first read.
     fn read_face(&mut self) {
-        self.face = wallpaper::cached(self.rect, self.tile_size()).unwrap_or(Face::Color(desktop_color()));
+        let size = self.tile_size();
+        self.face = wallpaper::cached(self.rect, size).unwrap_or(Face::Color(desktop_color()));
+        for t in &mut self.tiles {
+            t.picture = t.file.as_deref().and_then(|f| wallpaper::cached_ws(self.rect, f, size));
+        }
+    }
+
+    /// The pictures this screen's workspaces name, for the wallpaper thread to decode.
+    fn files(&self) -> Vec<String> {
+        let mut files: Vec<String> = self.tiles.iter().filter_map(|t| t.file.clone()).collect();
+        files.sort();
+        files.dedup();
+        files
     }
 
     /// Lay out the strip and the spread from `places` (a `ws::windows()` list).
@@ -247,13 +262,16 @@ impl Screen {
         self.slots.clear();
         let mine: Vec<&ws::Place> = places.iter().filter(|p| p.device == self.device).collect();
         let names = ws::names(&self.device);
+        let id = ws::id(&self.device);
+        let s = settings::get();
         for (i, rect) in strip(w, h, settings::get().workspaces, self.scale).into_iter().enumerate() {
             // ws::windows() lists front first (on screen in z order, hidden top first), and
             // DWM draws the thumbnail registered last on top, so register back to front. A
             // pinned window is in the shown workspace's tile only.
             let here = |p: &&&ws::Place| if p.pinned { i == self.shown } else { p.workspace == i };
             let minis = mine.iter().rev().filter(here).filter_map(|p| self.mini(rect, p.hwnd)).collect();
-            self.tiles.push(Tile { rect, minis, name: names.get(i).cloned().unwrap_or_default() });
+            let file = s.wallpaper_for(&id, i).map(str::to_string);
+            self.tiles.push(Tile { rect, minis, name: names.get(i).cloned().unwrap_or_default(), file, picture: None });
         }
         let labels = settings::get().overview_labels;
         self.labels = labels;
@@ -955,7 +973,7 @@ fn open() {
     let windows: usize = screens.iter().map(|s| s.slots.len()).sum();
     let popups: Vec<HWND> = screens.iter().map(|s| s.popup).collect();
     // Read off the open's path; the tiles take the wallpaper when it is ready.
-    wallpaper::check(screens.iter().map(|s| (s.rect, s.tile_size())).collect());
+    wallpaper::check(screens.iter().map(|s| (s.rect, s.tile_size(), s.files())).collect(), settings::get().wallpaper_fit);
     let fading_in = (style == Animation::Fade).then(Instant::now);
     let alpha = if fading_in.is_some() { 0 } else { 255 };
     SAID.set(None);
@@ -2007,10 +2025,18 @@ fn draw(c: &Canvas, sc: &Screen, m: &Marks) {
         } else {
             c.fill_rr(grow_bx(r, px1), 4.0 + px1, op(if m.tile_hover == Some(i) { b.tx2 } else { b.line }));
         }
-        match &sc.face {
-            Face::Picture(p) => c.picture_rr(r, 4.0, p),
-            Face::Color(color) => c.fill_rr(r, 4.0, op(*color)),
-            Face::Card => c.fill_rr(r, 4.0, op(b.card)),
+        match (&t.picture, &sc.face) {
+            // Dimmed as on the screen; your Windows wallpaper never is (spec 0026 AC-18).
+            (Some(p), _) => {
+                c.picture_rr(r, 4.0, p);
+                let dim = crate::backdrop::dim_alpha(settings::get().wallpaper_dim) as u32;
+                if dim > 0 {
+                    c.fill_rr(r, 4.0, dim << 24);
+                }
+            }
+            (None, Face::Picture(p)) => c.picture_rr(r, 4.0, p),
+            (None, Face::Color(color)) => c.fill_rr(r, 4.0, op(*color)),
+            (None, Face::Card) => c.fill_rr(r, 4.0, op(b.card)),
         }
         for mini in t.minis.iter().filter(|x| x.card) {
             let mr = bx(mini.rect);
@@ -2432,7 +2458,7 @@ mod tests {
 
     fn screen(w: i32, h: i32, scale: f32, shown: usize, workspaces: usize) -> Screen {
         let rect = RECT { left: 0, top: 0, right: w, bottom: h };
-        let tiles = strip(w, h, workspaces, scale).into_iter().map(|rect| Tile { rect, minis: Vec::new(), name: String::new() }).collect();
+        let tiles = strip(w, h, workspaces, scale).into_iter().map(|rect| Tile { rect, minis: Vec::new(), name: String::new(), file: None, picture: None }).collect();
         Screen { device: "D".into(), popup: HWND::default(), rect, scale, shown, tiles, slots: Vec::new(), cell_w: 0, labels: Labels::Hover, face: Face::Card, close_btn: HWND::default(), note: None, painted: false, tree: Tree::default(), wants: Vec::new() }
     }
 
@@ -2440,7 +2466,7 @@ mod tests {
     // unnamed tile reads as it always has.
     #[test]
     fn narrator_reads_a_tiles_name_after_its_number() {
-        let tile = |name: &str| Tile { rect: RECT::default(), minis: Vec::new(), name: name.into() };
+        let tile = |name: &str| Tile { rect: RECT::default(), minis: Vec::new(), name: name.into(), file: None, picture: None };
         assert_eq!(tile_words(1, &tile("Mail"), true), "Workspace 2, Mail, shown, no windows");
         assert_eq!(tile_words(2, &tile(""), false), "Workspace 3, not shown, no windows");
     }

@@ -3,7 +3,7 @@
 // windows and windows dragged between monitors need no tracking.
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use windows::Win32::{
@@ -124,6 +124,7 @@ impl Monitor {
         }
         // The windows on screen stay; the ones hidden on the new last one come into view too.
         self.active = last;
+        shown_changed();
         self.hidden[last].drain(..).chain(gone).collect()
     }
 }
@@ -264,6 +265,19 @@ struct Restore {
 }
 
 static STATE: LazyLock<Mutex<State>> = LazyLock::new(Default::default);
+// Bumped whenever a screen's shown workspace or the set of present screens changes: main
+// hands the backdrop a new wish only then (spec 0026), so no switch pays for an unchanged one.
+pub(crate) static SHOWN: AtomicU64 = AtomicU64::new(0);
+
+fn shown_changed() {
+    SHOWN.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Each present screen's full rect, id and shown workspace, left to right as Windows lists them.
+pub(crate) fn shown() -> Vec<(RECT, String, usize)> {
+    let s = state();
+    s.present.iter().map(|p| (p.full, p.id.clone(), s.monitors.get(&p.id).map_or(0, |m| m.active))).collect()
+}
 // When the PC last woke (spec 0016 AC-18). Its own lock: the indicator hears the wake inside
 // any call that pumps sent messages, which can run under the ws lock.
 static WOKE: Mutex<Option<Instant>> = Mutex::new(None);
@@ -289,6 +303,7 @@ fn mon_mut<'a>(s: &'a mut State, id: &str) -> &'a mut Monitor {
 fn id_of(s: &mut State, device: &str) -> String {
     if !s.present.iter().any(|p| p.device == device) {
         s.present = screen_ids();
+        shown_changed();
     }
     s.present.iter().find(|p| p.device == device).map_or_else(|| device.to_string(), |p| p.id.clone())
 }
@@ -342,6 +357,11 @@ fn names_of(id: &str, count: usize) -> Vec<String> {
 
 /// `device`'s workspace names, for the overview, which knows screens by device name (spec 0023
 /// AC-7). An unknown device has no names.
+/// The screen id of a present screen's device name, for the overview's pictures (spec 0026).
+pub(crate) fn id(device: &str) -> String {
+    id_of(&mut state(), device)
+}
+
 pub fn names(device: &str) -> Vec<String> {
     let count = settings::get().workspaces;
     let mut s = state();
@@ -1222,6 +1242,7 @@ fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize, focus: Opt
     m.hidden[target] = stuck;
     m.last_switch = Some((Instant::now(), m.active));
     m.active = target;
+    shown_changed();
     // Those windows now belong to the workspace just left; show_desktop must not bring them back here.
     m.desktop.clear();
 
@@ -2760,6 +2781,9 @@ fn check_in(s: &mut State, present: Vec<Screen>, tick: bool) -> Vec<Note> {
     s.layout = layout;
     // While Windows is still moving windows between screens, a spot read now is half a move.
     let settled = s.calm >= SETTLE_CHECKS;
+    if s.present.iter().map(|p| (&p.id, p.full)).ne(present.iter().map(|p| (&p.id, p.full))) {
+        shown_changed();
+    }
     s.present = present;
     for p in &s.present {
         if let Some(m) = s.monitors.get_mut(&p.id) {

@@ -16,6 +16,7 @@
 #[macro_use]
 mod log; // first: its info!, warn! and error! macros reach only the modules after it
 mod apps;
+mod backdrop;
 mod cloak;
 mod finder;
 mod gestures;
@@ -106,6 +107,24 @@ fn start_task() {
         Ok(s) => warn!("des-k task did not start ({s}): install des-k first, with its setup or install.ps1"),
         Err(e) => warn!("schtasks did not run: {e}"),
     }
+}
+
+/// Hands the backdrop each screen's pictures when its shown workspace or the settings changed
+/// since `seen` (spec 0026). A reload puts new settings at a new address.
+fn backdrop_check(seen: &mut Option<(u64, usize)>) {
+    let s = settings::get();
+    let now = (ws::SHOWN.load(std::sync::atomic::Ordering::Relaxed), std::ptr::from_ref(s) as usize);
+    if *seen == Some(now) {
+        return;
+    }
+    *seen = Some(now);
+    let wants = ws::shown().into_iter().map(|(rect, id, shown)| backdrop::Want {
+        rect,
+        shown,
+        files: (0..s.workspaces).map(|i| s.wallpaper_for(&id, i).map(str::to_string)).collect(),
+    });
+    let look = backdrop::Look { fit: s.wallpaper_fit, dim: s.wallpaper_dim, fade: s.wallpaper_fades() };
+    backdrop::want(wants.collect(), look);
 }
 
 /// Starts a thread timer of `ms` into `timer` when `on` and none runs yet.
@@ -219,6 +238,8 @@ fn main() -> windows::core::Result<()> {
         warn!("settings: no file watch, hand edits apply at the next start");
     }
 
+    let mut shown = None;
+    backdrop_check(&mut shown);
     let mut msg = MSG::default();
     while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
         // Any switch, jump, back, send, pin, hints key or screen change closes the finder, the
@@ -347,6 +368,7 @@ fn main() -> windows::core::Result<()> {
                 DispatchMessageW(&msg);
             },
         }
+        backdrop_check(&mut shown);
     }
     ws::restore_all();
     setup::write_back(); // Quit and --quit
