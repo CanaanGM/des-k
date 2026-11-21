@@ -55,8 +55,10 @@ static FRESH: AtomicBool = AtomicBool::new(false);
 /// Why one of your pictures can't show (spec 0026 AC-8).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Problem {
-    Missing,     // no such file in the wallpapers folder
+    Missing,     // no such file or subfolder in the wallpapers folder; for a set, none of its pictures
     Undecodable, // there, but not a picture GDI+ can read
+    Empty,       // a subfolder with no picture in it (spec 0028 AC-8)
+    Unreadable,  // a slideshow none of whose pictures can be read
 }
 
 impl Problem {
@@ -65,11 +67,14 @@ impl Problem {
         match self {
             Problem::Missing => "not in the folder",
             Problem::Undecodable => "can't be read as a picture",
+            Problem::Empty => "no pictures in it",
+            Problem::Unreadable => "no picture in it can be read",
         }
     }
 }
 
-// By file name in the wallpapers folder; set by every decode of one, cleared by its success.
+// By a value's name in the wallpapers folder (a slideshow's by `backdrop::Source::key`); set by
+// every decode of a picture or listing of a slideshow, cleared by its success.
 static PROBLEMS: Mutex<BTreeMap<String, Problem>> = Mutex::new(BTreeMap::new());
 
 /// Records how the last decode of `file` went: `None` is a success.

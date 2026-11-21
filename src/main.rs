@@ -121,9 +121,11 @@ fn backdrop_check(seen: &mut Option<(u64, usize)>) {
     let wants = ws::shown().into_iter().map(|(rect, id, shown)| backdrop::Want {
         rect,
         shown,
-        files: (0..s.workspaces).map(|i| s.wallpaper_for(&id, i).map(str::to_string)).collect(),
+        files: (0..s.workspaces).map(|i| s.wallpaper_for(&id, i).and_then(backdrop::Source::of)).collect(),
+        intervals: (0..s.workspaces).map(|i| s.interval_for(i)).collect(),
+        id,
     });
-    let look = backdrop::Look { fit: s.wallpaper_fit, dim: s.wallpaper_dim, fade: s.wallpaper_fades() };
+    let look = backdrop::Look { fit: s.wallpaper_fit, dim: s.wallpaper_dim, fade: s.wallpaper_fades(), fastest: s.fastest, shuffle: s.wallpaper_shuffle };
     backdrop::want(wants.collect(), look);
 }
 

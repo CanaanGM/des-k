@@ -26,7 +26,7 @@ use windows::Win32::{
 use windows::core::{BOOL, PCWSTR, w};
 
 use crate::finder;
-use crate::settings::{self, Animation, Labels};
+use crate::settings::{self, Animation, Labels, Pick, Settings};
 use crate::ui::{self, Bx, Canvas, F, Theme, alpha, mix, op};
 use crate::uia::{self, Node, Tree};
 use crate::wallpaper::{self, Face};
@@ -270,7 +270,7 @@ impl Screen {
             // pinned window is in the shown workspace's tile only.
             let here = |p: &&&ws::Place| if p.pinned { i == self.shown } else { p.workspace == i };
             let minis = mine.iter().rev().filter(here).filter_map(|p| self.mini(rect, p.hwnd)).collect();
-            let file = s.wallpaper_for(&id, i).map(str::to_string);
+            let file = tile_file(s, &id, i);
             self.tiles.push(Tile { rect, minis, name: names.get(i).cloned().unwrap_or_default(), file, picture: None });
         }
         let labels = settings::get().overview_labels;
@@ -529,6 +529,7 @@ struct Session {
     alpha: u8, // the popups' now, so a close during the fade in fades out from there
     asked: u32, // the key message's time, for AC-8's clock
     logged: bool,
+    wall_gen: u64, // backdrop::current_gen as the tiles last took their pictures (spec 0028 AC-10)
 }
 
 /// The popups of a closed session while they fade out: no focus, and clicks go through them.
@@ -977,7 +978,7 @@ fn open() {
     let fading_in = (style == Animation::Fade).then(Instant::now);
     let alpha = if fading_in.is_some() { 0 } else { 255 };
     SAID.set(None);
-    SESSION.set(Some(Session { screens, came_from, hover: None, tile_hover: None, selected, closing: Vec::new(), drag: None, seen: seen(&places), fading_in, alpha, asked, logged: false }));
+    SESSION.set(Some(Session { screens, came_from, hover: None, tile_hover: None, selected, closing: Vec::new(), drag: None, seen: seen(&places), fading_in, alpha, asked, logged: false, wall_gen: 0 }));
     // The first frame before anything shows.
     let animating = SESSION.with_borrow_mut(|s| {
         s.as_mut().is_some_and(|s| {
@@ -1309,12 +1310,52 @@ fn rebuild() {
     invalidate(popups);
 }
 
+/// Workspace `i`'s picture on screen `id` for its tile: its own, or its slideshow's now. None
+/// before the backdrop chose one: the tile shows that screen's Windows wallpaper, which is
+/// what the screen shows then (spec 0028 AC-10).
+fn tile_file(s: &Settings, id: &str, i: usize) -> Option<String> {
+    match s.wallpaper_for(id, i)? {
+        Pick::Picture(p) => Some(p.clone()),
+        _ => crate::backdrop::current(id, i),
+    }
+}
+
+/// A slideshow moved on since the tiles were made: each tile takes its picture now, decoded
+/// on the wallpaper thread, and shows it once ready (spec 0028 AC-10).
+fn slides_moved() {
+    let moved = SESSION.with_borrow_mut(|s| {
+        let s = s.as_mut()?;
+        let now = crate::backdrop::current_gen();
+        if s.wall_gen == now {
+            return None;
+        }
+        s.wall_gen = now;
+        let st = settings::get();
+        let mut any = false;
+        for sc in &mut s.screens {
+            let id = ws::id(&sc.device);
+            for (i, t) in sc.tiles.iter_mut().enumerate() {
+                let file = tile_file(st, &id, i);
+                any |= t.file != file;
+                t.file = file;
+            }
+        }
+        let popup = s.screens.first()?.popup;
+        any.then(|| (popup, s.screens.iter().map(|sc| (sc.rect, sc.tile_size(), sc.files())).collect::<Vec<_>>()))
+    });
+    if let Some((popup, screens)) = moved {
+        wallpaper::check(screens, settings::get().wallpaper_fit);
+        unsafe { SetTimer(Some(popup), WALL_TIMER, WALL_POLL_MS, None) };
+    }
+}
+
 /// Every 250 ms: catch windows that opened, went or moved since the layout was made (AC-10).
 /// Skipped mid drag, so the spread never shifts under a press.
 fn refresh() {
     if SESSION.with_borrow(|s| s.as_ref().is_none_or(|s| s.drag.is_some())) {
         return;
     }
+    slides_moved();
     // A name typed in the settings page or the file shows here too (spec 0023 AC-7).
     let renamed = SESSION.with_borrow_mut(|s| {
         let s = s.as_mut()?;
@@ -2563,6 +2604,7 @@ mod tests {
             alpha: 255,
             asked: 0,
             logged: false,
+            wall_gen: 0,
         };
         assert_eq!((s.bar(0), s.bar(1)), (None, Some(Bar::Keys)));
         s.screens[0].note = Some(Note::CantMove);

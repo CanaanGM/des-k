@@ -1522,6 +1522,7 @@ impl Ctx<'_, '_> {
                 let sw = self.seg_w(&list);
                 self.row(y, title, &caps, (sw, 28.0), |c, x, y| c.seg(x, y, &list, sel, false, |i| Ctl::Choice(key, i), Ctl::Pick(key), title, &help), None, false)
             }
+            Kind::Ladder(_) => 0.0, // the first run asks nothing about slideshows
         }
     }
 
