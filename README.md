@@ -49,7 +49,8 @@ Everything works on **the screen under your mouse**.
 | Keys | What it does |
 |---|---|
 | `Win+Ctrl+Left` / `Right` | Previous / next workspace |
-| `Win+1` … `Win+9` | Go straight to workspace N |
+| `Win+1` … `Win+9` | Go straight to workspace N (on the one you're on: go back) |
+| `Win+Backspace` | Go back to the workspace this screen showed before; again to return |
 | `Win+Ctrl+Shift+Left` / `Right` | Send the focused window to the previous / next workspace, and go with it |
 | `Win+Ctrl+Alt+Left` / `Right` | Send it there, but stay where you are |
 | `Win+Shift+1` … `9` | Send the focused window to workspace N, and go with it |
@@ -71,11 +72,20 @@ taskbar app"). You can change any shortcut in Settings. Forgot one? Tray → **S
 - **Touchpad**: three and four finger swipes and taps work over every window, admin ones too.
   Four fingers left and right switch workspaces. Windows' own gestures must be set to
   **Nothing**; the welcome screen helps you do that.
-- **Settings** (tray → **Settings**): the number of workspaces (2 to 9), every shortcut, the
-  indicator, colors and gestures. Changes apply at once.
+- **Wallpapers**: each workspace can have its own picture, or a slideshow, on every screen or on
+  one. Your Windows wallpaper is never changed; a workspace without a picture shows it.
+- **Apps in their place**: give an app a workspace (and a screen) in Settings → **Apps**, and its
+  new windows open there, without switching your screens.
+- **Names**: call a workspace "Mail" or "Code", and rename a screen. The names show beside the
+  numbers everywhere.
+- **A hidden window that wants you** (a new Slack message, say) shows a note on its screen, and
+  its workspace keeps a dot until you go there.
+- **Settings** (tray → **Settings**): the number of workspaces (2 to 9), names, wallpapers, app
+  rules, every shortcut, the indicator, colors and gestures. Changes apply at once.
 - **Screens**: unplug one and its windows move to the main display. Plug it back in and they go
   back to their workspace, place and size.
-- Windows on other workspaces leave the taskbar and Alt+Tab. If a hidden window pops up by
+- Windows on other workspaces leave the taskbar and Alt+Tab (Store apps like Calculator keep
+  their taskbar button; Windows ignores des-k there). If a hidden window pops up by
   itself, des-k switches to its workspace. After a restart, reopened windows go back to their
   workspaces.
 
