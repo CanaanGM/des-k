@@ -6,6 +6,7 @@
 // where a window lives only ever changes through `ws`, and the overview never cloaks anything.
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use windows::Win32::{
     Foundation::{COLORREF, ERROR_ACCESS_DENIED, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM},
@@ -25,7 +26,7 @@ use windows::Win32::{
 use windows::core::{BOOL, PCWSTR, w};
 
 use crate::finder;
-use crate::settings::{self, Animation, Labels};
+use crate::settings::{self, Animation, Labels, Pick, Settings};
 use crate::ui::{self, Bx, Canvas, F, Theme, alpha, mix, op};
 use crate::uia::{self, Node, Tree};
 use crate::wallpaper::{self, Face};
@@ -127,6 +128,8 @@ struct Tile {
     rect: RECT,
     minis: Vec<Slot>, // back to front, as the windows stack
     name: String,     // its workspace's name on this screen; empty for none (spec 0023 AC-7)
+    file: Option<String>,               // its workspace's picture on this screen (spec 0026 AC-9)
+    picture: Option<Arc<ui::Picture>>, // that picture at tile size, once decoded
 }
 
 struct Screen {
@@ -235,7 +238,19 @@ impl Screen {
 
     /// The tiles' face as cached now, or the desktop color while it is first read.
     fn read_face(&mut self) {
-        self.face = wallpaper::cached(self.rect, self.tile_size()).unwrap_or(Face::Color(desktop_color()));
+        let size = self.tile_size();
+        self.face = wallpaper::cached(self.rect, size).unwrap_or(Face::Color(desktop_color()));
+        for t in &mut self.tiles {
+            t.picture = t.file.as_deref().and_then(|f| wallpaper::cached_ws(self.rect, f, size));
+        }
+    }
+
+    /// The pictures this screen's workspaces name, for the wallpaper thread to decode.
+    fn files(&self) -> Vec<String> {
+        let mut files: Vec<String> = self.tiles.iter().filter_map(|t| t.file.clone()).collect();
+        files.sort();
+        files.dedup();
+        files
     }
 
     /// Lay out the strip and the spread from `places` (a `ws::windows()` list).
@@ -247,13 +262,16 @@ impl Screen {
         self.slots.clear();
         let mine: Vec<&ws::Place> = places.iter().filter(|p| p.device == self.device).collect();
         let names = ws::names(&self.device);
+        let id = ws::id(&self.device);
+        let s = settings::get();
         for (i, rect) in strip(w, h, settings::get().workspaces, self.scale).into_iter().enumerate() {
             // ws::windows() lists front first (on screen in z order, hidden top first), and
             // DWM draws the thumbnail registered last on top, so register back to front. A
             // pinned window is in the shown workspace's tile only.
             let here = |p: &&&ws::Place| if p.pinned { i == self.shown } else { p.workspace == i };
             let minis = mine.iter().rev().filter(here).filter_map(|p| self.mini(rect, p.hwnd)).collect();
-            self.tiles.push(Tile { rect, minis, name: names.get(i).cloned().unwrap_or_default() });
+            let file = tile_file(s, &id, i);
+            self.tiles.push(Tile { rect, minis, name: names.get(i).cloned().unwrap_or_default(), file, picture: None });
         }
         let labels = settings::get().overview_labels;
         self.labels = labels;
@@ -511,6 +529,7 @@ struct Session {
     alpha: u8, // the popups' now, so a close during the fade in fades out from there
     asked: u32, // the key message's time, for AC-8's clock
     logged: bool,
+    wall_gen: u64, // backdrop::current_gen as the tiles last took their pictures (spec 0028 AC-10)
 }
 
 /// The popups of a closed session while they fade out: no focus, and clicks go through them.
@@ -955,11 +974,11 @@ fn open() {
     let windows: usize = screens.iter().map(|s| s.slots.len()).sum();
     let popups: Vec<HWND> = screens.iter().map(|s| s.popup).collect();
     // Read off the open's path; the tiles take the wallpaper when it is ready.
-    wallpaper::check(screens.iter().map(|s| (s.rect, s.tile_size())).collect());
+    wallpaper::check(screens.iter().map(|s| (s.rect, s.tile_size(), s.files())).collect(), settings::get().wallpaper_fit);
     let fading_in = (style == Animation::Fade).then(Instant::now);
     let alpha = if fading_in.is_some() { 0 } else { 255 };
     SAID.set(None);
-    SESSION.set(Some(Session { screens, came_from, hover: None, tile_hover: None, selected, closing: Vec::new(), drag: None, seen: seen(&places), fading_in, alpha, asked, logged: false }));
+    SESSION.set(Some(Session { screens, came_from, hover: None, tile_hover: None, selected, closing: Vec::new(), drag: None, seen: seen(&places), fading_in, alpha, asked, logged: false, wall_gen: 0 }));
     // The first frame before anything shows.
     let animating = SESSION.with_borrow_mut(|s| {
         s.as_mut().is_some_and(|s| {
@@ -1291,12 +1310,52 @@ fn rebuild() {
     invalidate(popups);
 }
 
+/// Workspace `i`'s picture on screen `id` for its tile: its own, or its slideshow's now. None
+/// before the backdrop chose one: the tile shows that screen's Windows wallpaper, which is
+/// what the screen shows then (spec 0028 AC-10).
+fn tile_file(s: &Settings, id: &str, i: usize) -> Option<String> {
+    match s.wallpaper_for(id, i)? {
+        Pick::Picture(p) => Some(p.clone()),
+        _ => crate::backdrop::current(id, i),
+    }
+}
+
+/// A slideshow moved on since the tiles were made: each tile takes its picture now, decoded
+/// on the wallpaper thread, and shows it once ready (spec 0028 AC-10).
+fn slides_moved() {
+    let moved = SESSION.with_borrow_mut(|s| {
+        let s = s.as_mut()?;
+        let now = crate::backdrop::current_gen();
+        if s.wall_gen == now {
+            return None;
+        }
+        s.wall_gen = now;
+        let st = settings::get();
+        let mut any = false;
+        for sc in &mut s.screens {
+            let id = ws::id(&sc.device);
+            for (i, t) in sc.tiles.iter_mut().enumerate() {
+                let file = tile_file(st, &id, i);
+                any |= t.file != file;
+                t.file = file;
+            }
+        }
+        let popup = s.screens.first()?.popup;
+        any.then(|| (popup, s.screens.iter().map(|sc| (sc.rect, sc.tile_size(), sc.files())).collect::<Vec<_>>()))
+    });
+    if let Some((popup, screens)) = moved {
+        wallpaper::check(screens, settings::get().wallpaper_fit);
+        unsafe { SetTimer(Some(popup), WALL_TIMER, WALL_POLL_MS, None) };
+    }
+}
+
 /// Every 250 ms: catch windows that opened, went or moved since the layout was made (AC-10).
 /// Skipped mid drag, so the spread never shifts under a press.
 fn refresh() {
     if SESSION.with_borrow(|s| s.as_ref().is_none_or(|s| s.drag.is_some())) {
         return;
     }
+    slides_moved();
     // A name typed in the settings page or the file shows here too (spec 0023 AC-7).
     let renamed = SESSION.with_borrow_mut(|s| {
         let s = s.as_mut()?;
@@ -2007,10 +2066,18 @@ fn draw(c: &Canvas, sc: &Screen, m: &Marks) {
         } else {
             c.fill_rr(grow_bx(r, px1), 4.0 + px1, op(if m.tile_hover == Some(i) { b.tx2 } else { b.line }));
         }
-        match &sc.face {
-            Face::Picture(p) => c.picture_rr(r, 4.0, p),
-            Face::Color(color) => c.fill_rr(r, 4.0, op(*color)),
-            Face::Card => c.fill_rr(r, 4.0, op(b.card)),
+        match (&t.picture, &sc.face) {
+            // Dimmed as on the screen; your Windows wallpaper never is (spec 0026 AC-18).
+            (Some(p), _) => {
+                c.picture_rr(r, 4.0, p);
+                let dim = crate::backdrop::dim_alpha(settings::get().wallpaper_dim) as u32;
+                if dim > 0 {
+                    c.fill_rr(r, 4.0, dim << 24);
+                }
+            }
+            (None, Face::Picture(p)) => c.picture_rr(r, 4.0, p),
+            (None, Face::Color(color)) => c.fill_rr(r, 4.0, op(*color)),
+            (None, Face::Card) => c.fill_rr(r, 4.0, op(b.card)),
         }
         for mini in t.minis.iter().filter(|x| x.card) {
             let mr = bx(mini.rect);
@@ -2432,7 +2499,7 @@ mod tests {
 
     fn screen(w: i32, h: i32, scale: f32, shown: usize, workspaces: usize) -> Screen {
         let rect = RECT { left: 0, top: 0, right: w, bottom: h };
-        let tiles = strip(w, h, workspaces, scale).into_iter().map(|rect| Tile { rect, minis: Vec::new(), name: String::new() }).collect();
+        let tiles = strip(w, h, workspaces, scale).into_iter().map(|rect| Tile { rect, minis: Vec::new(), name: String::new(), file: None, picture: None }).collect();
         Screen { device: "D".into(), popup: HWND::default(), rect, scale, shown, tiles, slots: Vec::new(), cell_w: 0, labels: Labels::Hover, face: Face::Card, close_btn: HWND::default(), note: None, painted: false, tree: Tree::default(), wants: Vec::new() }
     }
 
@@ -2440,7 +2507,7 @@ mod tests {
     // unnamed tile reads as it always has.
     #[test]
     fn narrator_reads_a_tiles_name_after_its_number() {
-        let tile = |name: &str| Tile { rect: RECT::default(), minis: Vec::new(), name: name.into() };
+        let tile = |name: &str| Tile { rect: RECT::default(), minis: Vec::new(), name: name.into(), file: None, picture: None };
         assert_eq!(tile_words(1, &tile("Mail"), true), "Workspace 2, Mail, shown, no windows");
         assert_eq!(tile_words(2, &tile(""), false), "Workspace 3, not shown, no windows");
     }
@@ -2537,6 +2604,7 @@ mod tests {
             alpha: 255,
             asked: 0,
             logged: false,
+            wall_gen: 0,
         };
         assert_eq!((s.bar(0), s.bar(1)), (None, Some(Bar::Keys)));
         s.screens[0].note = Some(Note::CantMove);

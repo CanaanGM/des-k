@@ -16,6 +16,7 @@
 #[macro_use]
 mod log; // first: its info!, warn! and error! macros reach only the modules after it
 mod apps;
+mod backdrop;
 mod cloak;
 mod finder;
 mod gestures;
@@ -36,6 +37,7 @@ mod uia;
 mod update;
 mod wallpaper;
 mod welcome;
+mod whats_new;
 mod ws;
 
 use windows::Win32::{
@@ -106,6 +108,26 @@ fn start_task() {
         Ok(s) => warn!("des-k task did not start ({s}): install des-k first, with its setup or install.ps1"),
         Err(e) => warn!("schtasks did not run: {e}"),
     }
+}
+
+/// Hands the backdrop each screen's pictures when its shown workspace or the settings changed
+/// since `seen` (spec 0026). A reload puts new settings at a new address.
+fn backdrop_check(seen: &mut Option<(u64, usize)>) {
+    let s = settings::get();
+    let now = (ws::SHOWN.load(std::sync::atomic::Ordering::Relaxed), std::ptr::from_ref(s) as usize);
+    if *seen == Some(now) {
+        return;
+    }
+    *seen = Some(now);
+    let wants = ws::shown().into_iter().map(|(rect, id, shown)| backdrop::Want {
+        rect,
+        shown,
+        files: (0..s.workspaces).map(|i| s.wallpaper_for(&id, i).and_then(backdrop::Source::of)).collect(),
+        intervals: (0..s.workspaces).map(|i| s.interval_for(i)).collect(),
+        id,
+    });
+    let look = backdrop::Look { fit: s.wallpaper_fit, dim: s.wallpaper_dim, fade: s.wallpaper_fades(), fastest: s.fastest, shuffle: s.wallpaper_shuffle };
+    backdrop::want(wants.collect(), look);
 }
 
 /// Starts a thread timer of `ms` into `timer` when `on` and none runs yet.
@@ -188,12 +210,15 @@ fn main() -> windows::core::Result<()> {
     install::cleanup();
     // Read at start only; written the moment it opens, so a crash can never make it loop
     // (spec 0017 AC-9).
-    if settings::get().first_run_seen != Some(true) {
+    let first_run = settings::get().first_run_seen != Some(true);
+    if first_run {
         welcome::show();
         if let Err(why) = settings::write(settings::Edit::Value("first_run_seen", true.into())) {
             error!("first run: could not write first_run_seen = true, so it opens again at the next start ({why})");
         }
     }
+    // After an update, never with the first run: a start opens one screen at most (spec 0029).
+    whats_new::at_start(first_run);
     info!("des-k running: the shortcuts switch the monitor under the mouse ({} workspaces each).", settings::get().workspaces);
 
     // Only now, with every exit path in place, may restore hide anything. The first tick
@@ -219,6 +244,8 @@ fn main() -> windows::core::Result<()> {
         warn!("settings: no file watch, hand edits apply at the next start");
     }
 
+    let mut shown = None;
+    backdrop_check(&mut shown);
     let mut msg = MSG::default();
     while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
         // Any switch, jump, back, send, pin, hints key or screen change closes the finder, the
@@ -331,6 +358,7 @@ fn main() -> windows::core::Result<()> {
                 tray::warn_if_broken();
                 settings_page::tick();
                 welcome::tick();
+                whats_new::tick(); // opens What's new once you're not busy (spec 0029 AC-7)
             }
             // Posted by `des-k --quit` (to the indicator) and the tray's Quit. The finder and
             // the overview post WM_CLOSE to any window they close, des-k's own settings page
@@ -347,6 +375,7 @@ fn main() -> windows::core::Result<()> {
                 DispatchMessageW(&msg);
             },
         }
+        backdrop_check(&mut shown);
     }
     ws::restore_all();
     setup::write_back(); // Quit and --quit
