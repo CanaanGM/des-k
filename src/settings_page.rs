@@ -86,6 +86,14 @@ pub enum Section {
     Touchpad,
 }
 
+/// A card inside a section that the page can open at (spec 0029 AC-4): What's new's buttons.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Card {
+    Names,
+    Wallpaper,
+    Back, // the Back row under Shortcuts
+}
+
 const SECTIONS: [Section; 10] = [Section::Workspaces, Section::Apps, Section::Shortcuts, Section::Indicator, Section::Attention, Section::Restore, Section::Overview, Section::Colors, Section::Motion, Section::Touchpad];
 
 impl Section {
@@ -897,12 +905,17 @@ fn wall_use_edit(s: &Settings, present: &[String], k: usize) -> Option<Edit> {
 /// What choosing `pick` (`Pick::None` for Windows wallpaper) in row `k` writes, if anything
 /// (spec 0026 AC-15, spec 0028 AC-11). What the row already follows takes its key out; on All
 /// screens Windows wallpaper is no key. Values compare by their key, so a set by its names.
+/// Windows wallpaper on All screens is a reset (amended 2026-11-22): every screen's own value
+/// for the row goes too, plugged in or not, so no screen keeps a picture there.
 pub(crate) fn wall_edit(s: &Settings, screen: Option<&str>, k: usize, pick: &Pick) -> Option<Edit> {
     let path = wall_path(screen, k);
     let (all, key) = (s.wallpaper[k].key(), pick.key());
     let Some(id) = screen else {
         return match pick {
-            Pick::None => (!all.is_empty()).then_some(Edit::Remove(path)),
+            Pick::None => {
+                let own = s.wallpaper_screens.iter().filter(|(_, o)| o[k].is_some()).map(|(id, _)| Edit::Remove(wall_path(Some(id), k)));
+                (!all.is_empty()).then_some(Edit::Remove(path)).into_iter().chain(own).reduce(|a, b| Edit::Pair(Box::new(a), Box::new(b)))
+            }
             _ => (key != all).then(|| Edit::At(path, wall_value(pick))),
         };
     };
@@ -1126,7 +1139,8 @@ enum Pad {
 enum Ctl {
     Side(Option<Section>), // None: Notes
     Welcome,
-    Open, // Open settings.toml
+    WhatsNew, // spec 0029 AC-8
+    Open,     // Open settings.toml
     Toggle(&'static str),
     Minus(&'static str),
     Plus(&'static str),
@@ -1228,7 +1242,7 @@ impl Ctl {
     }
 
     fn in_side(self) -> bool {
-        matches!(self, Ctl::Side(_) | Ctl::Welcome | Ctl::Open)
+        matches!(self, Ctl::Side(_) | Ctl::Welcome | Ctl::WhatsNew | Ctl::Open)
     }
 }
 
@@ -1451,6 +1465,10 @@ fn changed(key: &str, was: &str, now: &str) -> String {
     if key == "wallpaper" {
         return "Wallpapers: changed".into();
     }
+    // The Apps section shows the rules themselves; the fallback below would read them as keys.
+    if key == "apps" {
+        return "App rules: changed".into();
+    }
     // A workspace's own time per picture, or "default" (spec 0028 AC-12).
     if let Some(n) = key.strip_prefix("wallpaper.intervals.ws") {
         let words = |v: &str| v.parse().map_or(v.to_string(), minutes);
@@ -1489,6 +1507,7 @@ struct Win {
     height: f32,  // the column's full height
     fixed: f32,   // the banners' height above it
     tops: Vec<(Option<Section>, f32)>, // where each section starts in the column; None: Notes
+    cards: Vec<(Card, f32)>,           // and each card What's new opens at (spec 0029 AC-4)
     hits: Vec<Hit>,
     focus: Option<Ctl>,
     kb: bool, // the focus ring shows only after a key, as in Windows
@@ -1635,6 +1654,7 @@ struct Out {
     height: f32,
     fixed: f32,
     tops: Vec<(Option<Section>, f32)>,
+    cards: Vec<(Card, f32)>, // where each card What's new opens at starts, like tops
     said: Vec<(Ctl, Node)>, // what Narrator reads for each stop, in page order
     geo: Geo,
 }
@@ -1683,9 +1703,11 @@ impl Ctx<'_, '_> {
     fn measured(&mut self, f: impl FnOnce(&mut Self) -> f32) -> f32 {
         let draw = std::mem::replace(&mut self.c.draw, false);
         let (hits, tops, said, geo) = (self.out.hits.len(), self.out.tops.len(), self.out.said.len(), self.out.geo.clone());
+        let cards = self.out.cards.len();
         let h = f(self);
         self.out.hits.truncate(hits);
         self.out.tops.truncate(tops);
+        self.out.cards.truncate(cards);
         self.out.said.truncate(said);
         self.out.geo = geo;
         self.c.draw = draw;
@@ -2279,6 +2301,7 @@ impl Ctx<'_, '_> {
         let b = self.c.t.b;
         let (list, i) = names_chosen(self.w);
         let two = list.len() > 2;
+        self.out.cards.push((Card::Names, y - self.top0));
         self.header(y, "Names", None, "");
         if two {
             let who = if i == 0 { "all screens".to_string() } else { list[i].name.clone() };
@@ -2410,6 +2433,7 @@ impl Ctx<'_, '_> {
         let b = self.c.t.b;
         let (list, i) = wall_chosen(self.w);
         let two = wall_two(self.w, self.s);
+        self.out.cards.push((Card::Wallpaper, y - self.top0));
         self.header(y, "Wallpaper", None, "");
         if two {
             let who = if i == 0 { "all screens".to_string() } else { list[i].name.clone() };
@@ -3375,6 +3399,9 @@ impl Ctx<'_, '_> {
         let b = self.c.t.b;
         let s = self.s;
         let key = sh.key;
+        if key == "shortcuts.back" {
+            self.out.cards.push((Card::Back, y - self.top0));
+        }
         let digits = is_digits(key);
         let all = keys_of(s, key);
         let order = drawn_order(s, sh);
@@ -4600,18 +4627,21 @@ impl Ctx<'_, '_> {
             y += 38.0;
         }
         // Welcome and the file, at the foot.
-        let foot = [(Ctl::Welcome, "Welcome", "\u{EA80}"), (Ctl::Open, "Open settings.toml", "\u{E8A5}")];
-        let mut fy = vh - 16.0 - 36.0 * 2.0 - 2.0;
+        // What's new opens inside des-k, so it has no open elsewhere mark (spec 0029 AC-8).
+        let foot = [(Ctl::Welcome, "Welcome", "\u{EA80}", true), (Ctl::WhatsNew, "What's new", "\u{E734}", false), (Ctl::Open, "Open settings.toml", "\u{E8A5}", true)];
+        let mut fy = vh - 14.0 - 38.0 * foot.len() as f32;
         self.c.rule(24.0, fy - 7.0, NAV - 48.0, op(b.line));
-        for (ctl, name, icon) in foot {
+        for (ctl, name, icon, out) in foot {
             let bx = (12.0, fy, NAV - 24.0, 36.0);
             if self.hovered(ctl) {
                 self.c.fill_rr(bx, 6.0, op(mix(b.bg, b.tx, 0.05)));
             }
             self.icon(24.0, fy, 36.0, icon, F::Icon, b.tx2);
             self.c.text(52.0, fy, 36.0, name, F::Body, b.tx);
-            let ow = self.c.width(I_OUT, F::IconSmall);
-            self.icon(NAV - 24.0 - ow, fy, 36.0, I_OUT, F::IconSmall, b.tx2);
+            if out {
+                let ow = self.c.width(I_OUT, F::IconSmall);
+                self.icon(NAV - 24.0 - ow, fy, 36.0, I_OUT, F::IconSmall, b.tx2);
+            }
             self.ring(bx, 6.0, ctl);
             self.hit(ctl, bx, 0);
             self.say(ctl, UIA_HyperlinkControlTypeId, name, "", false, (None, None));
@@ -5453,7 +5483,7 @@ fn escape(prompt: Option<&Prompt>, error: bool, edited: bool) -> Option<Ctl> {
 fn compose(c: &mut Canvas, w: &Win) -> Out {
     let s = settings::get();
     let cw = (w.vw - X0 - PAD_R).min(COL_MAX);
-    let mut x = Ctx { c, w, s, ro: settings::parse_error().is_some(), cw, top0: 0.0, out: Out { hits: vec![], height: 0.0, fixed: 0.0, tops: vec![], said: vec![], geo: Geo::default() } };
+    let mut x = Ctx { c, w, s, ro: settings::parse_error().is_some(), cw, top0: 0.0, out: Out { hits: vec![], height: 0.0, fixed: 0.0, tops: vec![], cards: vec![], said: vec![], geo: Geo::default() } };
     let fixed = x.measured(|c| c.banners());
     x.out.fixed = fixed;
     let top0 = fixed - w.scroll;
@@ -5793,6 +5823,7 @@ fn lay() {
             w.height = out.height;
             w.fixed = out.fixed;
             w.tops = out.tops;
+            w.cards = out.cards;
             w.hits = out.hits;
             w.geo = out.geo;
             if let Some(f) = w.focus
@@ -5880,6 +5911,13 @@ fn reveal() {
 
 fn jump(sec: Option<Section>) {
     if let Some(top) = get(|w| w.tops.iter().find(|(s, _)| *s == sec).map(|(_, t)| *t)).flatten() {
+        scroll_to(top - 8.0);
+    }
+}
+
+/// Scrolls so `card` sits at the top, as `jump` does for its section.
+fn jump_card(card: Card) {
+    if let Some(top) = get(|w| w.cards.iter().find(|(c, _)| *c == card).map(|(_, t)| *t)).flatten() {
         scroll_to(top - 8.0);
     }
 }
@@ -6254,6 +6292,7 @@ fn act(ctl: Ctl) {
     match ctl {
         Ctl::Side(sec) => jump(sec),
         Ctl::Welcome => crate::welcome::show(),
+        Ctl::WhatsNew => crate::whats_new::show_current(),
         Ctl::Open => crate::tray::open(&settings::path()),
         Ctl::Toggle(key) if unused(s, key).is_empty() => save(key, 1 - value(s, key)),
         Ctl::Toggle(_) => {} // greyed: kept but not in use
@@ -7975,6 +8014,16 @@ fn hit_at(w: &Win, (x, y): (f32, f32)) -> Option<Ctl> {
 /// Opens the page on the screen under the mouse, or brings the open one to the front (AC-SET-1).
 /// `section`: scroll to it.
 pub fn open(section: Option<Section>) {
+    open_at(section, None);
+}
+
+/// `open`, scrolled to `card` inside `section` when given (What's new's buttons, spec 0029 AC-4).
+pub fn open_at(section: Option<Section>, card: Option<Card>) {
+    let go = || match card {
+        Some(c) => jump_card(c),
+        None if section.is_some() => jump(section),
+        None => {}
+    };
     if let Some(h) = hwnd() {
         unsafe {
             if IsIconic(h).as_bool() {
@@ -7982,9 +8031,7 @@ pub fn open(section: Option<Section>) {
             }
             let _ = SetForegroundWindow(h);
         }
-        if section.is_some() {
-            jump(section);
-        }
+        go();
         return;
     }
     ui::gdiplus();
@@ -8021,6 +8068,7 @@ pub fn open(section: Option<Section>) {
             height: 0.0,
             fixed: 0.0,
             tops: vec![],
+            cards: vec![],
             hits: vec![],
             focus: None,
             kb: false,
@@ -8063,9 +8111,7 @@ pub fn open(section: Option<Section>) {
         let (x, y) = ((work.left + work.right - ww) / 2, ((work.top + work.bottom - wh) / 2).max(work.top));
         let _ = SetWindowPos(h, None, x, y, ww, wh, SWP_NOZORDER | SWP_NOACTIVATE);
         update_pictures(true);
-        if section.is_some() {
-            jump(section);
-        }
+        go();
         let _ = ShowWindow(h, SW_SHOW);
         let _ = SetForegroundWindow(h);
     }
@@ -8749,6 +8795,31 @@ mod tests {
         assert!(wall_use_edit(loaded(text), &present, 2).is_none(), "nothing to clear");
     }
 
+    // Spec 0026 AC-15 (amended 2026-11-22): Windows wallpaper on All screens is a reset, so
+    // every screen shows your Windows wallpaper on that workspace: each screen's own value for
+    // the row goes, plugged in or not (one coming back must not bring a picture back), even
+    // when All screens had no picture. Other rows keep theirs, and a picture on All screens
+    // still leaves a screen's own alone (Use this there too is for that).
+    #[test]
+    fn windows_wallpaper_on_all_screens_resets_the_row_everywhere() {
+        let text = "[wallpaper]\nws2 = \"a.jpg\"\n[wallpaper.screens.internal]\nws1 = \"x.jpg\"\nws2 = \"b.jpg\"\nws3 = \"\"\n[wallpaper.screens.\"LG-2\"]\nws2 = \"d.jpg\"\nws3 = \"e.jpg\"\n";
+        let reset = |k: usize| {
+            let edit = wall_edit(loaded(text), None, k, &Pick::None).expect("something to take out");
+            let (read, warn) = settings::parse_for_test(&settings::apply_for_test(text, &edit));
+            assert!(warn.is_empty(), "{warn:?}");
+            read
+        };
+        let two = reset(1);
+        assert_eq!(two.wallpaper[1], Pick::None);
+        assert_eq!(two.wallpaper_screens.get("internal").map(|o| (o[0].clone(), o[1].clone())), Some((Some(pic("x.jpg")), None)), "row 1 kept");
+        assert_eq!(two.wallpaper_screens.get("LG-2").map(|o| o[1].clone()), Some(None), "not plugged in, still reset");
+        let three = reset(2);
+        assert_eq!(three.wallpaper_screens.get("internal").map(|o| o[2].clone()), Some(None), "All screens had none: still reset");
+        assert_eq!(three.wallpaper_screens.get("LG-2").map(|o| o[2].clone()), Some(None));
+        assert_eq!(said(wall_edit(loaded(text), None, 3, &Pick::None)), "none", "nothing anywhere");
+        assert_eq!(said(wall_edit(loaded(text), None, 1, &pic("c.jpg"))), "at wallpaper.ws2 = \"c.jpg\"", "a picture keeps screens' own");
+    }
+
     // Spec 0028 AC-11: an All screens slideshow previews the picture its screen shows now, but
     // only if that screen runs it: a screen with its own value must not lend its picture. With
     // none running, a set previews its first picture rather than an empty tile (tried live
@@ -8959,6 +9030,8 @@ mod tests {
         assert_eq!(changed("shortcuts.overview", "[Win+Tab]", "[]"), "Open overview: Win Tab → no key");
         assert_eq!(changed("fastest", "false", "true"), "Skip animations: off → on");
         assert_eq!(changed("overview.animation", "off", "fade"), "Overview animation: None → Fade");
+        // App rules are not shortcut keys: they once read "notepad.exe: 3 or …" (tried 2026-11-22).
+        assert_eq!(changed("apps", "[notepad.exe: 3]", "[notepad.exe: 3, mspaint.exe: 2 on XYZ-0000-1]"), "App rules: changed");
     }
 
     // The Windows key of an action another action holds reads as taken by that one.
@@ -9084,7 +9157,7 @@ mod tests {
 
     fn fake_win(theme: Theme, scale: f32) -> Win {
         Win {
-            hwnd: HWND::default(), scale, theme, fonts: Fonts::new(scale), scroll: 0.0, height: 0.0, fixed: 0.0, tops: vec![], hits: vec![],
+            hwnd: HWND::default(), scale, theme, fonts: Fonts::new(scale), scroll: 0.0, height: 0.0, fixed: 0.0, tops: vec![], cards: vec![], hits: vec![],
             focus: None, kb: true, hover: None, press: None, drag: None, vw: W, vh: H, error: None, rec: None, refused: None, prompt: None, menu: None,
             pics: fake_pics(), edited: None, tree: Arc::new(Mutex::new(Node::default())),
             hexes: vec![], own: None, screen: None, chooser: None, dragging: None, pick: None, geo: Geo::default(), ease: None, down_at: (0, 0), words: None,

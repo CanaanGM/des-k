@@ -37,6 +37,7 @@ mod uia;
 mod update;
 mod wallpaper;
 mod welcome;
+mod whats_new;
 mod ws;
 
 use windows::Win32::{
@@ -209,12 +210,15 @@ fn main() -> windows::core::Result<()> {
     install::cleanup();
     // Read at start only; written the moment it opens, so a crash can never make it loop
     // (spec 0017 AC-9).
-    if settings::get().first_run_seen != Some(true) {
+    let first_run = settings::get().first_run_seen != Some(true);
+    if first_run {
         welcome::show();
         if let Err(why) = settings::write(settings::Edit::Value("first_run_seen", true.into())) {
             error!("first run: could not write first_run_seen = true, so it opens again at the next start ({why})");
         }
     }
+    // After an update, never with the first run: a start opens one screen at most (spec 0029).
+    whats_new::at_start(first_run);
     info!("des-k running: the shortcuts switch the monitor under the mouse ({} workspaces each).", settings::get().workspaces);
 
     // Only now, with every exit path in place, may restore hide anything. The first tick
@@ -354,6 +358,7 @@ fn main() -> windows::core::Result<()> {
                 tray::warn_if_broken();
                 settings_page::tick();
                 welcome::tick();
+                whats_new::tick(); // opens What's new once you're not busy (spec 0029 AC-7)
             }
             // Posted by `des-k --quit` (to the indicator) and the tray's Quit. The finder and
             // the overview post WM_CLOSE to any window they close, des-k's own settings page

@@ -241,6 +241,9 @@ pub struct Settings {
     pub fastest: bool, // every des-k fade and move instant (spec 0017)
     // Read at start only (spec 0017 AC-9). None: the file lacks the key, as an upgrader's does.
     pub first_run_seen: Option<bool>,
+    // The last release whose What's new you saw (spec 0029). None: missing, as an upgrader from
+    // 0.8.0 or earlier has it, or not X.Y.Z (warned), both counting as older than every release.
+    pub whats_new_seen: Option<crate::update::Version>,
     pub previous: Vec<Combo>,
     pub next: Vec<Combo>,
     pub send_previous: Vec<Combo>, // these two switch along with the window
@@ -363,6 +366,7 @@ impl Default for Settings {
             jump_back: true,
             fastest: false,
             first_run_seen: Some(false),
+            whats_new_seen: None,
             previous: vec![Combo { mods: WIN | CTRL, vk: VK_LEFT.0 }],
             next: vec![Combo { mods: WIN | CTRL, vk: VK_RIGHT.0 }],
             send_previous: vec![Combo { mods: WIN | CTRL | SHIFT, vk: VK_LEFT.0 }],
@@ -578,7 +582,7 @@ tap = true
 do = "notifications"
 "##;
 
-const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activation", "jump_back", "fastest", "first_run_seen", "shortcuts", "indicator", "attention", "colors", "names", "wallpaper", "apps", "restore", "overview", "touchpad", "gesture"];
+const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activation", "jump_back", "fastest", "first_run_seen", "whats_new_seen", "shortcuts", "indicator", "attention", "colors", "names", "wallpaper", "apps", "restore", "overview", "touchpad", "gesture"];
 const SHORTCUT_KEYS: &[&str] = &["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "jump", "send_to", "send_to_stay", "back", "finder", "overview", "pin", "hints"];
 const INDICATOR_KEYS: &[&str] = &["enabled", "style", "screen_name", "spot", "gap", "x", "y", "hold_ms", "fade_ms", "screens"];
 const SCREEN_KEYS: &[&str] = &["spot", "gap", "x", "y"];
@@ -822,6 +826,7 @@ fn apply(old: &Settings, changes: &[Change]) -> Vec<String> {
     }
     crate::welcome::refresh();
     crate::hints::refresh();
+    crate::whats_new::refresh();
     moves
 }
 
@@ -1083,6 +1088,21 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
     s.jump_back = boolean(&top, "jump_back", "jump_back", s.jump_back, &mut warn);
     s.fastest = boolean(&top, "fastest", "fastest", s.fastest, &mut warn);
     s.first_run_seen = top.contains_key("first_run_seen").then(|| boolean(&top, "first_run_seen", "first_run_seen", false, &mut warn));
+    // Only ever compared with des-k's own version, never shown or opened (spec 0029 AC-9).
+    s.whats_new_seen = match top.get("whats_new_seen") {
+        None => None,
+        Some(Value::String(v)) => {
+            let seen = crate::update::parse_version(v);
+            if seen.is_none() {
+                warn.push("whats_new_seen: not a version like \"0.9.0\", so What's new counts it as missing".into());
+            }
+            seen
+        }
+        Some(v) => {
+            warn.push(format!("whats_new_seen: expected text like \"0.9.0\", got a {}, so What's new counts it as missing", v.type_str()));
+            None
+        }
+    };
 
     if let Some(t) = section(&top, "shortcuts", &mut warn) {
         unknown_keys(t, "shortcuts.", SHORTCUT_KEYS, &mut warn);
@@ -2058,6 +2078,7 @@ impl Settings {
             ("jump_back", self.jump_back.to_string()),
             ("fastest", self.fastest.to_string()),
             ("first_run_seen", self.first_run_seen.map_or(String::new(), |b| b.to_string())),
+            ("whats_new_seen", self.whats_new_seen.map_or(String::new(), |v| v.to_string())),
             ("shortcuts.previous", list(&self.previous)),
             ("shortcuts.next", list(&self.next)),
             ("shortcuts.send_previous", list(&self.send_previous)),
@@ -2274,7 +2295,8 @@ spot = \"top-right\""), "{one}");
         // parse() starts from the defaults, so also prove every key is spelled out in the file.
         let top: Table = DEFAULT_FILE.parse().unwrap();
         let (sc, ind, res) = (top["shortcuts"].as_table().unwrap(), top["indicator"].as_table().unwrap(), top["restore"].as_table().unwrap());
-        assert!(TOP_KEYS.iter().all(|k| top.contains_key(*k)));
+        // whats_new_seen has no default to write: the first start writes the running version.
+        assert!(TOP_KEYS.iter().filter(|k| **k != "whats_new_seen").all(|k| top.contains_key(*k)));
         assert!(SHORTCUT_KEYS.iter().all(|k| sc.contains_key(*k)));
         // Screen tables and workspace colors have no default to write; the file shows an example.
         assert!(INDICATOR_KEYS.iter().filter(|k| **k != "screens").all(|k| ind.contains_key(*k)));
@@ -2372,6 +2394,31 @@ spot = \"top-right\""), "{one}");
         assert_eq!(new.lines().find(|l| l.starts_with("first_run_seen")), Some("first_run_seen = true"));
         assert_eq!(parse(&new).0.first_run_seen, Some(true));
         assert_eq!(parse(&new).0.finder, Settings::default().finder);
+    }
+
+    // What's new opens for releases newer than this key (spec 0029 AC-9): a missing key is an
+    // upgrader from 0.8.0, and anything that isn't X.Y.Z must count the same, with one warning,
+    // or a typo would hide What's new for good.
+    #[test]
+    fn whats_new_seen_reads_a_version_or_counts_as_missing() {
+        use crate::update::Version;
+        assert_eq!(parse("workspaces = 3\n").0.whats_new_seen, None);
+        assert_eq!(parse("whats_new_seen = \"0.9.0\"\n").0.whats_new_seen, Some(Version(0, 9, 0)));
+        for bad in ["whats_new_seen = \"banana\"\n", "whats_new_seen = \"0.9\"\n", "whats_new_seen = 9\n"] {
+            let (s, warn) = parse(bad);
+            assert_eq!((s.whats_new_seen, warn.len()), (None, 1), "{bad}");
+        }
+    }
+
+    // Written at the first start after an update into a file that never had it: like
+    // first_run_seen, it must land above [shortcuts] or TOML would read it as a shortcut.
+    #[test]
+    fn whats_new_seen_lands_above_the_first_table() {
+        let old = "workspaces = 4\nfirst_run_seen = true\n\n# Your keys.\n[shortcuts]\nfinder = [\"Win+F\"]\n";
+        let new = edit_text(old, &Edit::Value("whats_new_seen", "0.9.0".into())).unwrap();
+        assert!(new.find("whats_new_seen = \"0.9.0\"").unwrap() < new.find("# Your keys.").unwrap(), "{new}");
+        let (s, warn) = parse(&new);
+        assert_eq!((s.whats_new_seen, warn.len()), (Some(crate::update::Version(0, 9, 0)), 0));
     }
 
     // The overview's fade time is yours to shorten (0 is instant) but never past a second; a
@@ -2886,7 +2933,7 @@ do = "previous"
         let mut unique = names.clone();
         unique.sort();
         unique.dedup();
-        assert_eq!((names.len(), unique.len()), (69, 69));
+        assert_eq!((names.len(), unique.len()), (70, 70));
     }
 
     // Spec 0027 AC-10: one bad rule never costs the others, each problem is one line, and a key
