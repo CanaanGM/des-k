@@ -41,6 +41,7 @@ thread_local! {
     static ICON: Cell<Option<HICON>> = const { Cell::new(None) };
     static TASKBAR_CREATED: Cell<u32> = const { Cell::new(0) };
     static BROKEN: Cell<bool> = const { Cell::new(false) }; // warned that hiding does not work
+    static WAITING: Cell<bool> = const { Cell::new(false) }; // no taskbar yet, said so once
     /// What a click on the current balloon does, if anything.
     static BALLOON: RefCell<Option<Click>> = const { RefCell::new(None) };
     /// An update answer while the broken warning shows (spec 0015 AC-9, spec 0017 AC-TRY-7):
@@ -95,6 +96,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             _ if msg == TASKBAR_CREATED.get() => {
                 add(hwnd);
                 crate::ws::resync_soon();
+                crate::backdrop::explorer_restarted();
                 LRESULT(0)
             }
             _ => DefWindowProcW(hwnd, msg, wp, lp),
@@ -153,7 +155,18 @@ fn add(hwnd: HWND) {
     unsafe {
         // At login explorer may not be ready yet; its TaskbarCreated brings us back here.
         if !Shell_NotifyIconW(NIM_ADD, &nid).as_bool() && !Shell_NotifyIconW(NIM_MODIFY, &nid).as_bool() {
+            // No taskbar at all is explorer starting or stopped, not a failure: the icon comes
+            // with its TaskbarCreated (tried 2026-11-22, des-k started with explorer stopped).
+            if FindWindowW(w!("Shell_TrayWnd"), None).is_err() {
+                if !WAITING.replace(true) {
+                    info!("tray: waiting for the taskbar (explorer is starting)");
+                }
+                return;
+            }
             return error!("tray: icon not added");
+        }
+        if WAITING.replace(false) {
+            info!("tray: icon added");
         }
         // Set again after every add: a restarted explorer forgets it. Version 4 tells a
         // keyboard open from a click (spec 0017 AC-TRY-8).
@@ -221,7 +234,8 @@ pub fn warn_if_broken() {
 /// screen. Never over the warning that hiding does not work: then the indicator and the log say it.
 pub fn screens_changed(lines: &[String]) {
     if BROKEN.get() {
-        return info!("tray: no balloon over the hiding warning: {}", lines.join("; "));
+        // Counted, not quoted: the lines name screens as you renamed them (spec 0023 AC-15).
+        return info!("tray: no balloon over the hiding warning, {} screen notes not shown", lines.len());
     }
     balloon("Screens changed", &lines.join("\n"), false, None);
 }

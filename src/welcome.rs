@@ -1502,6 +1502,7 @@ impl Ctx<'_, '_> {
                 sp::Why::AnimationNone => "Overview animation is None",
                 sp::Why::Skip => "Skip animations is on",
                 sp::Why::IndicatorOff => "the indicator is off",
+                sp::Why::Dots => "the dots show no names",
             }).collect();
             caps.push(P::Why(format!(" Not in use: {}.", reasons.join(", and "))));
         }
@@ -1521,6 +1522,7 @@ impl Ctx<'_, '_> {
                 let sw = self.seg_w(&list);
                 self.row(y, title, &caps, (sw, 28.0), |c, x, y| c.seg(x, y, &list, sel, false, |i| Ctl::Choice(key, i), Ctl::Pick(key), title, &help), None, false)
             }
+            Kind::Ladder(_) => 0.0, // the first run asks nothing about slideshows
         }
     }
 
@@ -2987,6 +2989,7 @@ mod tests {
             ]],
             waiting: vec![],
             present: vec![],
+            open: vec![],
         };
         let (n, o) = (PadRow::Nothing, PadRow::StillOn);
         let pad = |rows: [PadRow; 4], saved| Some(PadState { pad: true, enabled: true, rows, off: rows == [n; 4], saved });

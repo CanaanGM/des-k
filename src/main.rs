@@ -15,6 +15,8 @@
 
 #[macro_use]
 mod log; // first: its info!, warn! and error! macros reach only the modules after it
+mod apps;
+mod backdrop;
 mod cloak;
 mod finder;
 mod gestures;
@@ -35,6 +37,7 @@ mod uia;
 mod update;
 mod wallpaper;
 mod welcome;
+mod whats_new;
 mod ws;
 
 use windows::Win32::{
@@ -107,6 +110,33 @@ fn start_task() {
     }
 }
 
+/// Hands the backdrop each screen's pictures when its shown workspace or the settings changed
+/// since `seen` (spec 0026). A reload puts new settings at a new address.
+fn backdrop_check(seen: &mut Option<(u64, usize)>) {
+    let s = settings::get();
+    let now = (ws::SHOWN.load(std::sync::atomic::Ordering::Relaxed), std::ptr::from_ref(s) as usize);
+    if *seen == Some(now) {
+        return;
+    }
+    *seen = Some(now);
+    let wants = ws::shown().into_iter().map(|(rect, id, shown)| backdrop::Want {
+        rect,
+        shown,
+        files: (0..s.workspaces).map(|i| s.wallpaper_for(&id, i).and_then(backdrop::Source::of)).collect(),
+        intervals: (0..s.workspaces).map(|i| s.interval_for(i)).collect(),
+        id,
+    });
+    let look = backdrop::Look { fit: s.wallpaper_fit, dim: s.wallpaper_dim, fade: s.wallpaper_fades(), fastest: s.fastest, shuffle: s.wallpaper_shuffle };
+    backdrop::want(wants.collect(), look);
+}
+
+/// Starts a thread timer of `ms` into `timer` when `on` and none runs yet.
+fn timer_on(timer: &mut usize, on: bool, ms: u32) {
+    if *timer == 0 && on {
+        *timer = unsafe { SetTimer(None, 0, ms, None) };
+    }
+}
+
 fn main() -> windows::core::Result<()> {
     let running = unsafe { FindWindowW(indicator::CLASS, None) }.ok();
     if std::env::args().nth(1).as_deref() == Some("--start") {
@@ -149,6 +179,7 @@ fn main() -> windows::core::Result<()> {
     indicator::init();
     settings::load(); // before anything that reads it: ws, keys, the indicator
     let restoring = ws::load();
+    apps::sync(); // after ws::load, so the windows it adopted count as already open (spec 0027 AC-3)
     // Always on: the finder's recency needs it even with follow_activation off (spec 0007).
     // Skipping our own process keeps des-k's own focus changes from triggering a follow.
     // Never unhooked: the hook dies with the process.
@@ -179,18 +210,28 @@ fn main() -> windows::core::Result<()> {
     install::cleanup();
     // Read at start only; written the moment it opens, so a crash can never make it loop
     // (spec 0017 AC-9).
-    if settings::get().first_run_seen != Some(true) {
+    let first_run = settings::get().first_run_seen != Some(true);
+    if first_run {
         welcome::show();
         if let Err(why) = settings::write(settings::Edit::Value("first_run_seen", true.into())) {
             error!("first run: could not write first_run_seen = true, so it opens again at the next start ({why})");
         }
     }
+    // After an update, never with the first run: a start opens one screen at most (spec 0029).
+    whats_new::at_start(first_run);
     info!("des-k running: the shortcuts switch the monitor under the mouse ({} workspaces each).", settings::get().workspaces);
 
     // Only now, with every exit path in place, may restore hide anything. The first tick
     // runs at once, so windows already open are matched like later ones (spec 0003).
     let mut restore_timer = 0;
-    if restoring {
+    // While a window a rule moved to another screen is watched (spec 0027 AC-6), and while a
+    // ruled app's window waits for its title or app id (AC-16).
+    let (mut settle_timer, mut pending_timer) = (0, 0);
+    if restoring == ws::Restoring::NewSignIn {
+        apps::place_open(); // restore leaves ruled apps to their rule (spec 0027 AC-11)
+        timer_on(&mut settle_timer, ws::settling(), 250);
+    }
+    if restoring != ws::Restoring::No {
         restore_timer = unsafe { SetTimer(None, 0, 500, None) };
         if !ws::restore_tick() && restore_timer != 0 {
             unsafe { let _ = KillTimer(None, restore_timer); }
@@ -203,16 +244,18 @@ fn main() -> windows::core::Result<()> {
         warn!("settings: no file watch, hand edits apply at the next start");
     }
 
+    let mut shown = None;
+    backdrop_check(&mut shown);
     let mut msg = MSG::default();
     while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
-        // Any switch, jump, send, pin, hints key or screen change closes the finder, the overview
-        // and the tray menu first, focus back (specs 0007, 0010, 0017).
-        if matches!(msg.message, WM_APP | indicator::WM_DISPLAY_CHANGED | keys::WM_SEND | keys::WM_JUMP | keys::WM_SEND_TO | keys::WM_PIN | keys::WM_HINTS) {
+        // Any switch, jump, back, send, pin, hints key or screen change closes the finder, the
+        // overview and the tray menu first, focus back (specs 0007, 0010, 0017, 0024).
+        if matches!(msg.message, WM_APP | indicator::WM_DISPLAY_CHANGED | keys::WM_SEND | keys::WM_JUMP | keys::WM_BACK | keys::WM_SEND_TO | keys::WM_PIN | keys::WM_HINTS) {
             finder::close(true);
             overview::close(true);
         }
         // The tray menu also closes for a gesture, a follow, the finder and the overview (AC-TRY-9).
-        if matches!(msg.message, WM_APP | indicator::WM_DISPLAY_CHANGED | keys::WM_SEND | keys::WM_JUMP | keys::WM_SEND_TO | keys::WM_PIN | keys::WM_HINTS | keys::WM_FINDER | keys::WM_OVERVIEW | touchpad::WM_GESTURE | WM_FOLLOW) {
+        if matches!(msg.message, WM_APP | indicator::WM_DISPLAY_CHANGED | keys::WM_SEND | keys::WM_JUMP | keys::WM_BACK | keys::WM_SEND_TO | keys::WM_PIN | keys::WM_HINTS | keys::WM_FINDER | keys::WM_OVERVIEW | touchpad::WM_GESTURE | WM_FOLLOW) {
             tray_menu::close(msg.message != WM_FOLLOW); // a follow already moved focus
         }
         match msg.message {
@@ -234,8 +277,33 @@ fn main() -> windows::core::Result<()> {
             }
             keys::WM_SEND => ws::send(ws::To::Step(msg.wParam.0 as isize), msg.lParam.0 != 0),
             keys::WM_JUMP => ws::jump(msg.wParam.0),
+            keys::WM_BACK => ws::back(),
             keys::WM_SEND_TO => ws::send(ws::To::Index(msg.wParam.0), msg.lParam.0 != 0),
             keys::WM_PIN => ws::pin(),
+            apps::WM_OPENED => {
+                apps::opened(HWND(msg.wParam.0 as *mut _), msg.lParam.0 as u32);
+                timer_on(&mut settle_timer, ws::settling(), 250);
+                timer_on(&mut pending_timer, apps::waiting(), 15);
+            }
+            apps::WM_UNCLOAKED => {
+                let h = HWND(msg.wParam.0 as *mut _);
+                ws::recloak(h);
+                apps::uncloaked(h);
+                timer_on(&mut settle_timer, ws::settling(), 250);
+            }
+            indicator::WM_ATTENTION => {
+                let p = ws::attention(HWND(msg.wParam.0 as *mut _));
+                overview::wants_changed();
+                // The mark is set either way; only the popup waits (spec 0022 AC-3, AC-7).
+                if let Some(p) = p
+                    && !overview::is_open()
+                    && !indicator::busy(p.mon)
+                {
+                    // Never the title: it often carries the message itself (spec 0022 AC-9).
+                    let text = settings::attention_line(&finder::app_name(p.hwnd).unwrap_or_default());
+                    indicator::show(p.mon, p.card.with(indicator::Line::Wants { text, ws: p.ws }));
+                }
+            }
             keys::WM_FINDER => {
                 overview::close(true);
                 finder::toggle();
@@ -266,6 +334,19 @@ fn main() -> windows::core::Result<()> {
                     restore_timer = 0;
                 }
             }
+            WM_TIMER if msg.hwnd.is_invalid() && settle_timer != 0 && msg.wParam.0 == settle_timer => {
+                if !ws::settle_tick() {
+                    unsafe { let _ = KillTimer(None, settle_timer); }
+                    settle_timer = 0;
+                }
+            }
+            WM_TIMER if msg.hwnd.is_invalid() && pending_timer != 0 && msg.wParam.0 == pending_timer => {
+                if !apps::pending_tick() {
+                    unsafe { let _ = KillTimer(None, pending_timer); }
+                    pending_timer = 0;
+                }
+                timer_on(&mut settle_timer, ws::settling(), 250);
+            }
             WM_TIMER if msg.hwnd.is_invalid() && watch_timer != 0 && msg.wParam.0 == watch_timer => {
                 // The theme broadcast may never reach an admin des-k (spec 0017 AC-2).
                 if ui::refresh() {
@@ -277,6 +358,7 @@ fn main() -> windows::core::Result<()> {
                 tray::warn_if_broken();
                 settings_page::tick();
                 welcome::tick();
+                whats_new::tick(); // opens What's new once you're not busy (spec 0029 AC-7)
             }
             // Posted by `des-k --quit` (to the indicator) and the tray's Quit. The finder and
             // the overview post WM_CLOSE to any window they close, des-k's own settings page
@@ -293,6 +375,7 @@ fn main() -> windows::core::Result<()> {
                 DispatchMessageW(&msg);
             },
         }
+        backdrop_check(&mut shown);
     }
     ws::restore_all();
     setup::write_back(); // Quit and --quit

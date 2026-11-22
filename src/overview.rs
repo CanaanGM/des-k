@@ -6,6 +6,7 @@
 // where a window lives only ever changes through `ws`, and the overview never cloaks anything.
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use windows::Win32::{
     Foundation::{COLORREF, ERROR_ACCESS_DENIED, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM},
@@ -25,7 +26,7 @@ use windows::Win32::{
 use windows::core::{BOOL, PCWSTR, w};
 
 use crate::finder;
-use crate::settings::{self, Animation, Labels};
+use crate::settings::{self, Animation, Labels, Pick, Settings};
 use crate::ui::{self, Bx, Canvas, F, Theme, alpha, mix, op};
 use crate::uia::{self, Node, Tree};
 use crate::wallpaper::{self, Face};
@@ -57,6 +58,7 @@ const TILE_HEIGHT: f32 = 0.12; // of the screen's height
 const MARGIN: f32 = 48.0;
 const CHIP_GAP: f32 = 8.0; // between a tile and its chip
 const CHIP_H: f32 = 18.0;
+const NAME_GAP: f32 = 6.0; // between a chip and its workspace's name (spec 0023)
 const BAND_PAD: f32 = 16.0; // under the chips, down to the band's rule
 const SPREAD_GAP: f32 = 24.0; // between the band and the spread
 const BOTTOM: f32 = 64.0; // under the spread: the bar's room
@@ -64,6 +66,8 @@ const SLOT_GAP: f32 = 32.0;
 const RING: f32 = 2.0; // a chosen or pointed at window's ring
 const RING_OFF: f32 = 3.0; // its gap from the window
 const TILE_RING_OFF: f32 = 2.0;
+const WANT: f32 = 6.0; // a mark's dot under a tile's chip (spec 0022)
+const WANT_GAP: f32 = 4.0;
 const LABEL: f32 = 22.0; // the band under each spread window
 const LABEL_PAD: f32 = 4.0;
 const ICON: f32 = 16.0;
@@ -123,6 +127,9 @@ struct Slot {
 struct Tile {
     rect: RECT,
     minis: Vec<Slot>, // back to front, as the windows stack
+    name: String,     // its workspace's name on this screen; empty for none (spec 0023 AC-7)
+    file: Option<String>,               // its workspace's picture on this screen (spec 0026 AC-9)
+    picture: Option<Arc<ui::Picture>>, // that picture at tile size, once decoded
 }
 
 struct Screen {
@@ -140,6 +147,7 @@ struct Screen {
     note: Option<Note>,
     painted: bool, // its first full paint is done (spec 0017 AC-8)
     tree: Tree,
+    wants: Vec<(usize, HWND)>, // marked windows here, by workspace (spec 0022)
 }
 
 /// What a note says (AC-OVR-8).
@@ -230,7 +238,19 @@ impl Screen {
 
     /// The tiles' face as cached now, or the desktop color while it is first read.
     fn read_face(&mut self) {
-        self.face = wallpaper::cached(self.rect, self.tile_size()).unwrap_or(Face::Color(desktop_color()));
+        let size = self.tile_size();
+        self.face = wallpaper::cached(self.rect, size).unwrap_or(Face::Color(desktop_color()));
+        for t in &mut self.tiles {
+            t.picture = t.file.as_deref().and_then(|f| wallpaper::cached_ws(self.rect, f, size));
+        }
+    }
+
+    /// The pictures this screen's workspaces name, for the wallpaper thread to decode.
+    fn files(&self) -> Vec<String> {
+        let mut files: Vec<String> = self.tiles.iter().filter_map(|t| t.file.clone()).collect();
+        files.sort();
+        files.dedup();
+        files
     }
 
     /// Lay out the strip and the spread from `places` (a `ws::windows()` list).
@@ -241,13 +261,17 @@ impl Screen {
         self.tiles.clear();
         self.slots.clear();
         let mine: Vec<&ws::Place> = places.iter().filter(|p| p.device == self.device).collect();
+        let names = ws::names(&self.device);
+        let id = ws::id(&self.device);
+        let s = settings::get();
         for (i, rect) in strip(w, h, settings::get().workspaces, self.scale).into_iter().enumerate() {
             // ws::windows() lists front first (on screen in z order, hidden top first), and
             // DWM draws the thumbnail registered last on top, so register back to front. A
             // pinned window is in the shown workspace's tile only.
             let here = |p: &&&ws::Place| if p.pinned { i == self.shown } else { p.workspace == i };
             let minis = mine.iter().rev().filter(here).filter_map(|p| self.mini(rect, p.hwnd)).collect();
-            self.tiles.push(Tile { rect, minis });
+            let file = tile_file(s, &id, i);
+            self.tiles.push(Tile { rect, minis, name: names.get(i).cloned().unwrap_or_default(), file, picture: None });
         }
         let labels = settings::get().overview_labels;
         self.labels = labels;
@@ -373,8 +397,7 @@ impl Screen {
         let item = |name: String, rect: RECT, selected: bool| Node { role: UIA_ListItemControlTypeId, name, rect, selected: Some(selected), ..Node::default() };
         let tiles = (self.tiles.iter().enumerate())
             .map(|(i, t)| {
-                let how = if i == self.shown { "shown" } else { "not shown" };
-                item(format!("Workspace {}, {how}, {}", i + 1, count(t.minis.len())), t.rect, i == self.shown)
+                item(tile_words(i, t, i == self.shown), t.rect, i == self.shown)
             })
             .collect();
         let band = RECT { left: 0, top: 0, right: self.size().0, bottom: self.band_h() };
@@ -390,6 +413,14 @@ impl Screen {
         let (w, h) = self.size();
         Node { role: UIA_PaneControlTypeId, name: "Overview".into(), rect: RECT { left: 0, top: 0, right: w, bottom: h }, selected: None, kids, ..Node::default() }
     }
+}
+
+/// A tile as Narrator reads it: its chip, its name as painted under it, then the rest
+/// (spec 0023 AC-15).
+fn tile_words(i: usize, t: &Tile, shown: bool) -> String {
+    let name = if t.name.is_empty() { String::new() } else { format!(", {}", t.name) };
+    let how = if shown { "shown" } else { "not shown" };
+    format!("Workspace {}{name}, {how}, {}", i + 1, count(t.minis.len()))
 }
 
 fn count(n: usize) -> String {
@@ -498,6 +529,7 @@ struct Session {
     alpha: u8, // the popups' now, so a close during the fade in fades out from there
     asked: u32, // the key message's time, for AC-8's clock
     logged: bool,
+    wall_gen: u64, // backdrop::current_gen as the tiles last took their pictures (spec 0028 AC-10)
 }
 
 /// The popups of a closed session while they fade out: no focus, and clicks go through them.
@@ -927,10 +959,11 @@ fn open() {
             warn!("overview: close button for {device} not created");
             HWND::default()
         });
-        let mut sc = Screen { device, popup, rect, scale, shown: 0, tiles: Vec::new(), slots: Vec::new(), cell_w: 0, labels: Labels::Hover, face: Face::Card, close_btn, note: None, painted: false, tree: Tree::default() };
+        let mut sc = Screen { device, popup, rect, scale, shown: 0, tiles: Vec::new(), slots: Vec::new(), cell_w: 0, labels: Labels::Hover, face: Face::Card, close_btn, note: None, painted: false, tree: Tree::default(), wants: Vec::new() };
         sc.build(&places);
         screens.push(sc);
     }
+    take_wants(&mut screens, &ws::wanted());
     let start = screens.iter().position(|s| s.device == mouse).unwrap_or(0);
     let Some(sc) = screens.get(start) else {
         return warn!("overview: no screen to open on");
@@ -941,11 +974,11 @@ fn open() {
     let windows: usize = screens.iter().map(|s| s.slots.len()).sum();
     let popups: Vec<HWND> = screens.iter().map(|s| s.popup).collect();
     // Read off the open's path; the tiles take the wallpaper when it is ready.
-    wallpaper::check(screens.iter().map(|s| (s.rect, s.tile_size())).collect());
+    wallpaper::check(screens.iter().map(|s| (s.rect, s.tile_size(), s.files())).collect(), settings::get().wallpaper_fit);
     let fading_in = (style == Animation::Fade).then(Instant::now);
     let alpha = if fading_in.is_some() { 0 } else { 255 };
     SAID.set(None);
-    SESSION.set(Some(Session { screens, came_from, hover: None, tile_hover: None, selected, closing: Vec::new(), drag: None, seen: seen(&places), fading_in, alpha, asked, logged: false }));
+    SESSION.set(Some(Session { screens, came_from, hover: None, tile_hover: None, selected, closing: Vec::new(), drag: None, seen: seen(&places), fading_in, alpha, asked, logged: false, wall_gen: 0 }));
     // The first frame before anything shows.
     let animating = SESSION.with_borrow_mut(|s| {
         s.as_mut().is_some_and(|s| {
@@ -1140,6 +1173,28 @@ pub fn key(msg: &MSG) -> bool {
     true
 }
 
+/// Each screen's marks from `ws::wanted` (spec 0022). Paint reads only these, never the layout,
+/// so a new mark shows without moving a tile or a window.
+fn take_wants(screens: &mut [Screen], wanted: &[(String, usize, HWND)]) {
+    for sc in screens {
+        sc.wants = wanted.iter().filter(|w| w.0 == sc.device).map(|w| (w.1, w.2)).collect();
+    }
+}
+
+/// A window got a mark (spec 0022 AC-3): it shows at once in an open overview.
+pub fn wants_changed() {
+    if !is_open() {
+        return;
+    }
+    let wanted = ws::wanted();
+    let popups = SESSION.with_borrow_mut(|s| {
+        let Some(s) = s.as_mut() else { return Vec::new() };
+        take_wants(&mut s.screens, &wanted);
+        s.screens.iter().map(|sc| sc.popup).collect::<Vec<_>>()
+    });
+    invalidate(popups);
+}
+
 fn invalidate(popups: impl IntoIterator<Item = HWND>) {
     for p in popups {
         unsafe { let _ = InvalidateRect(Some(p), None, false); }
@@ -1237,6 +1292,7 @@ fn go(hwnd: HWND) {
 /// one may sit in a tile on one screen and in the spread on another.
 fn rebuild() {
     let mut places = ws::windows();
+    let wanted = ws::wanted();
     let (popups, old) = SESSION.with_borrow_mut(|s| {
         let Some(s) = s.as_mut() else { return (Vec::new(), None) };
         // Seen with the closing windows, so the refresh does not take them for a change.
@@ -1245,6 +1301,7 @@ fn rebuild() {
         for sc in &mut s.screens {
             sc.build(&places);
         }
+        take_wants(&mut s.screens, &wanted);
         s.fix_selection();
         s.tile_hover = None;
         (s.screens.iter().map(|sc| sc.popup).collect(), s.hover.take())
@@ -1253,12 +1310,66 @@ fn rebuild() {
     invalidate(popups);
 }
 
+/// Workspace `i`'s picture on screen `id` for its tile: its own, or its slideshow's now. None
+/// before the backdrop chose one: the tile shows that screen's Windows wallpaper, which is
+/// what the screen shows then (spec 0028 AC-10).
+fn tile_file(s: &Settings, id: &str, i: usize) -> Option<String> {
+    match s.wallpaper_for(id, i)? {
+        Pick::Picture(p) => Some(p.clone()),
+        _ => crate::backdrop::current(id, i),
+    }
+}
+
+/// A slideshow moved on since the tiles were made: each tile takes its picture now, decoded
+/// on the wallpaper thread, and shows it once ready (spec 0028 AC-10).
+fn slides_moved() {
+    let moved = SESSION.with_borrow_mut(|s| {
+        let s = s.as_mut()?;
+        let now = crate::backdrop::current_gen();
+        if s.wall_gen == now {
+            return None;
+        }
+        s.wall_gen = now;
+        let st = settings::get();
+        let mut any = false;
+        for sc in &mut s.screens {
+            let id = ws::id(&sc.device);
+            for (i, t) in sc.tiles.iter_mut().enumerate() {
+                let file = tile_file(st, &id, i);
+                any |= t.file != file;
+                t.file = file;
+            }
+        }
+        let popup = s.screens.first()?.popup;
+        any.then(|| (popup, s.screens.iter().map(|sc| (sc.rect, sc.tile_size(), sc.files())).collect::<Vec<_>>()))
+    });
+    if let Some((popup, screens)) = moved {
+        wallpaper::check(screens, settings::get().wallpaper_fit);
+        unsafe { SetTimer(Some(popup), WALL_TIMER, WALL_POLL_MS, None) };
+    }
+}
+
 /// Every 250 ms: catch windows that opened, went or moved since the layout was made (AC-10).
 /// Skipped mid drag, so the spread never shifts under a press.
 fn refresh() {
     if SESSION.with_borrow(|s| s.as_ref().is_none_or(|s| s.drag.is_some())) {
         return;
     }
+    slides_moved();
+    // A name typed in the settings page or the file shows here too (spec 0023 AC-7).
+    let renamed = SESSION.with_borrow_mut(|s| {
+        let s = s.as_mut()?;
+        let mut popups = Vec::new();
+        for sc in &mut s.screens {
+            let names = ws::names(&sc.device);
+            if sc.tiles.iter().zip(&names).any(|(t, n)| t.name != *n) {
+                sc.tiles.iter_mut().zip(names).for_each(|(t, n)| t.name = n);
+                popups.push(sc.popup);
+            }
+        }
+        Some(popups)
+    });
+    invalidate(renamed.unwrap_or_default());
     let now = seen(&ws::windows());
     let plan = SESSION.with_borrow_mut(|s| {
         let s = s.as_mut()?;
@@ -1872,14 +1983,32 @@ fn ring_color(t: &Theme) -> u32 {
     }
 }
 
-/// A tile's workspace chip, centered under it: full in its color on the shown workspace, soft
+fn chip_w(c: &Canvas, ws: usize) -> f32 {
+    (c.width(&(ws + 1).to_string(), F::SmallBold) + 10.0).max(20.0)
+}
+
+/// A tile's chip and its workspace's name (spec 0023 AC-7), centered together under the tile
+/// `r`, the name cut to the tile's width. Returns the chip's center, where its mark hangs.
+fn chip_and_name(c: &Canvas, r: Bx, top: f32, ws: usize, name: &str, full: bool) -> f32 {
+    let cw = chip_w(c, ws);
+    let name = c.fit_name(name, F::Small, r.2 - cw - NAME_GAP);
+    let total = cw + if name.is_empty() { 0.0 } else { NAME_GAP + c.width(&name, F::Small) };
+    let left = r.0 + (r.2 - total) / 2.0;
+    chip(c, left + cw / 2.0, top, ws, full);
+    if !name.is_empty() {
+        c.text(left + cw + NAME_GAP, top, CHIP_H, &name, F::Small, c.t.b.tx);
+    }
+    left + cw / 2.0
+}
+
+/// A tile's workspace chip, centered on `cx`: full in its color on the shown workspace, soft
 /// on the others (AC-OVR-1).
 fn chip(c: &Canvas, cx: f32, top: f32, ws: usize, full: bool) {
     let (b, hc) = (c.t.b, c.t.hc);
     let color = b.ws[ws.min(8)];
     let label = (ws + 1).to_string();
     let tw = c.width(&label, F::SmallBold);
-    let w = (tw + 10.0).max(20.0);
+    let w = chip_w(c, ws);
     let at = (cx - w / 2.0, top, w, CHIP_H);
     let (fill, edge, ink) = match () {
         _ if full => (color, (b.ws_edge > 0.0).then(|| mix(color, 0, b.ws_edge)), b.on_ws[ws.min(8)]),
@@ -1937,10 +2066,18 @@ fn draw(c: &Canvas, sc: &Screen, m: &Marks) {
         } else {
             c.fill_rr(grow_bx(r, px1), 4.0 + px1, op(if m.tile_hover == Some(i) { b.tx2 } else { b.line }));
         }
-        match &sc.face {
-            Face::Picture(p) => c.picture_rr(r, 4.0, p),
-            Face::Color(color) => c.fill_rr(r, 4.0, op(*color)),
-            Face::Card => c.fill_rr(r, 4.0, op(b.card)),
+        match (&t.picture, &sc.face) {
+            // Dimmed as on the screen; your Windows wallpaper never is (spec 0026 AC-18).
+            (Some(p), _) => {
+                c.picture_rr(r, 4.0, p);
+                let dim = crate::backdrop::dim_alpha(settings::get().wallpaper_dim) as u32;
+                if dim > 0 {
+                    c.fill_rr(r, 4.0, dim << 24);
+                }
+            }
+            (None, Face::Picture(p)) => c.picture_rr(r, 4.0, p),
+            (None, Face::Color(color)) => c.fill_rr(r, 4.0, op(*color)),
+            (None, Face::Card) => c.fill_rr(r, 4.0, op(b.card)),
         }
         for mini in t.minis.iter().filter(|x| x.card) {
             let mr = bx(mini.rect);
@@ -1949,7 +2086,14 @@ fn draw(c: &Canvas, sc: &Screen, m: &Marks) {
                 c.icon(mr.0 + (mr.2 - MINI_ICON) / 2.0, mr.1 + (mr.3 - MINI_ICON) / 2.0, MINI_ICON, mini.icon);
             }
         }
-        chip(c, r.0 + r.2 / 2.0, r.1 + r.3 + CHIP_GAP, i, i == sc.shown);
+        let cx = chip_and_name(c, r, r.1 + r.3 + CHIP_GAP, i, &t.name, i == sc.shown);
+        // The indicator's mark, under the workspace (design attention-r2): a ring around a mini
+        // would read as a chosen window or a drop target, purple's only meanings here. Under
+        // the chip, not the tile, so it stays with the number when a name follows it.
+        if sc.wants.iter().any(|w| w.0 == i) {
+            let top = r.1 + r.3 + CHIP_GAP + CHIP_H + WANT_GAP;
+            c.fill_rr((cx - WANT / 2.0, top, WANT, WANT), WANT / 2.0, op(b.acc));
+        }
     }
     for sl in &sc.slots {
         let r = bx(sl.rect);
@@ -2355,8 +2499,17 @@ mod tests {
 
     fn screen(w: i32, h: i32, scale: f32, shown: usize, workspaces: usize) -> Screen {
         let rect = RECT { left: 0, top: 0, right: w, bottom: h };
-        let tiles = strip(w, h, workspaces, scale).into_iter().map(|rect| Tile { rect, minis: Vec::new() }).collect();
-        Screen { device: "D".into(), popup: HWND::default(), rect, scale, shown, tiles, slots: Vec::new(), cell_w: 0, labels: Labels::Hover, face: Face::Card, close_btn: HWND::default(), note: None, painted: false, tree: Tree::default() }
+        let tiles = strip(w, h, workspaces, scale).into_iter().map(|rect| Tile { rect, minis: Vec::new(), name: String::new(), file: None, picture: None }).collect();
+        Screen { device: "D".into(), popup: HWND::default(), rect, scale, shown, tiles, slots: Vec::new(), cell_w: 0, labels: Labels::Hover, face: Face::Card, close_btn: HWND::default(), note: None, painted: false, tree: Tree::default(), wants: Vec::new() }
+    }
+
+    // Spec 0023 AC-15: Narrator hears a tile's name where it is painted, after its number; an
+    // unnamed tile reads as it always has.
+    #[test]
+    fn narrator_reads_a_tiles_name_after_its_number() {
+        let tile = |name: &str| Tile { rect: RECT::default(), minis: Vec::new(), name: name.into(), file: None, picture: None };
+        assert_eq!(tile_words(1, &tile("Mail"), true), "Workspace 2, Mail, shown, no windows");
+        assert_eq!(tile_words(2, &tile(""), false), "Workspace 3, not shown, no windows");
     }
 
     // AC-7: a drop lands where you let go: on a tile, that workspace; anywhere in the spread,
@@ -2451,6 +2604,7 @@ mod tests {
             alpha: 255,
             asked: 0,
             logged: false,
+            wall_gen: 0,
         };
         assert_eq!((s.bar(0), s.bar(1)), (None, Some(Bar::Keys)));
         s.screens[0].note = Some(Note::CantMove);
@@ -2646,7 +2800,22 @@ mod tests {
             ("cant-close-admin", (design_windows(), 1, 4, Labels::Hover, &[]), Marks { selected: Some(code), bar: Some(Bar::Note(Note::CantCloseAdmin)), ..Marks::default() }),
             ("cant-close", (design_windows(), 1, 4, Labels::Hover, &[]), Marks { selected: Some(code), bar: Some(Bar::Note(Note::CantClose)), ..Marks::default() }),
             ("didnt-close", (design_windows(), 1, 4, Labels::Hover, &[]), Marks { selected: Some(note), bar: Some(Bar::Note(Note::DidntClose)), ..Marks::default() }),
+            // Spec 0022: Outlook on 3 and the full screen PowerShell on 1 want you.
+            ("wants", (design_windows(), 1, 4, Labels::Hover, &[]), Marks { selected: Some(code), bar: Some(Bar::Keys), ..Marks::default() }),
+            ("wants-drag", (design_windows(), 1, 4, Labels::Hover, &[]), Marks { src: Some(note), aim: Some(Aim::Tile(2)), bar: Some(Bar::Drag), ..Marks::default() }),
+            // Spec 0023: the handoff's o1 wide, o2 narrow, o4 marks under the chip.
+            ("names", (design_windows(), 1, 4, Labels::Hover, &[]), Marks { selected: Some(code), bar: Some(Bar::Keys), ..Marks::default() }),
+            ("names-nine", (design_windows(), 1, 9, Labels::Hover, &[]), Marks { selected: Some(code), bar: Some(Bar::Keys), ..Marks::default() }),
+            ("names-wants", (design_windows(), 1, 4, Labels::Hover, &[]), Marks { selected: Some(code), bar: Some(Bar::Keys), ..Marks::default() }),
         ];
+        let marked = |name: &str| if name.contains("wants") { vec![(0, HWND(std::ptr::without_provenance_mut(10))), (2, HWND(std::ptr::without_provenance_mut(17)))] } else { vec![] };
+        let named = |name: &str| -> Vec<&str> {
+            match name {
+                "names-nine" => vec!["Mail", "Code", "Research and reading", "Music", "設計レビュー", "Chat 💬", "", "Admin and billing", "ألعاب الفيديو"],
+                n if n.starts_with("names") => vec!["Mail", "Code", "", "Music"],
+                _ => vec![],
+            }
+        };
         let aquatic = ui::high_contrast([0x202020, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);
         let desert = ui::high_contrast([0xFFFAEF, 0x3D3D3D, 0x903909, 0xFFF5E3, 0x6D6D6D]);
         let themes: [(&str, Theme, f32, u32); 5] = [("light", LIGHT, 1.0, 0xCFD9EE), ("dark", DARK, 1.0, 0x1A2030), ("hc", aquatic, 1.0, 0x000000), ("desert", desert, 1.0, 0xFFFAEF), ("light-150", LIGHT, 1.5, 0xCFD9EE)];
@@ -2654,6 +2823,8 @@ mod tests {
             for (name, (wins, shown, n, labels, cards), m) in &states {
                 let mut sc = laid_out(scale, *shown, *n, wins, cards, *labels);
                 sc.face = Face::Color(wall);
+                sc.wants = marked(name);
+                sc.tiles.iter_mut().zip(named(name)).for_each(|(t, n)| t.name = n.into());
                 let (w, h) = sc.size();
                 let path = dir.join(format!("{name}-{tname}.png"));
                 ui::tests::save_png(w, h, &path, |dc| {

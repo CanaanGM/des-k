@@ -4,7 +4,7 @@ headline: Every screen gets its <em>own</em> desktops
 lede: des-k lets each monitor switch its own workspaces. The other screens stay where they are. This page shows how to install it, use it and remove it.
 pills: Runs on <b>Windows 11</b> | Built with <b>Rust</b> | Windows stay <b>floating</b>
 status: reviewed
-updated: 2026-11-09
+updated: 2026-11-22
 related: <a href="https://github.com/CanaanGM/des-k">The code on GitHub</a> | <a href="https://github.com/CanaanGM/des-k#readme">The README</a>
 link: https://canaangm.github.io/des-k/
 footnote: des-k is free software by CanaanGM, under the <a href="https://github.com/CanaanGM/des-k/blob/main/LICENSE">GNU GPL 3.0 or later</a>. Copyright (C) 2026 CanaanGM.
@@ -110,7 +110,8 @@ cd des-k</code></pre></li>
     <thead><tr><th>Keys</th><th>What it does</th></tr></thead>
     <tbody>
       <tr><td><code>Win+Ctrl+Left</code> / <code>Right</code></td><td>Go to the previous or next workspace</td></tr>
-      <tr><td><code>Win+1</code> … <code>Win+9</code></td><td>Go straight to workspace N</td></tr>
+      <tr><td><code>Win+1</code> … <code>Win+9</code></td><td>Go straight to workspace N. On the workspace you are already on, it goes back instead.</td></tr>
+      <tr><td><code>Win+Backspace</code></td><td>Go back to the workspace this screen showed before. Press again to return, like Alt+Tab for workspaces.</td></tr>
       <tr><td><code>Win+Ctrl+Shift+Left</code> / <code>Right</code></td><td>Send the window in front to the previous or next workspace, and go with it</td></tr>
       <tr><td><code>Win+Ctrl+Alt+Left</code> / <code>Right</code></td><td>Send it there, but stay where you are</td></tr>
       <tr><td><code>Win+Shift+1</code> … <code>9</code></td><td>Send the window in front to workspace N, and go with it</td></tr>
@@ -188,6 +189,43 @@ cd des-k</code></pre></li>
 </section>
 
 <section class="card">
+  <h2>Name your workspaces</h2>
+  <p>A name tells you what a workspace holds, like "Mail" or "Code". In Settings, Workspaces, type a name beside each number. The name shows next to the number on the indicator, in the overview, in the finder and in the tray menu. A workspace with no name just shows its number.</p>
+  <p>With two or more screens, pick a screen at the top of the card to give it its own names. <strong>Same as all screens</strong> on a row takes that screen's own name away again. You can also rename a screen there ("DELL U2720Q" becomes "Left"). To hide the screen's name on the indicator, turn off <strong>Show screen name</strong> in Settings, Indicator.</p>
+</section>
+
+<section class="card">
+  <h2>A picture for each workspace</h2>
+  <p>Each workspace can show its own picture behind your desktop icons. Switch a screen, and only that screen's picture changes. des-k draws the picture itself, so your Windows wallpaper is never changed. A workspace with no picture shows your Windows wallpaper, and so does every screen after you quit des-k.</p>
+  <ol class="steps">
+    <li>In Settings, Workspaces, Wallpaper, click <strong>Open folder</strong>. Put your pictures there (.jpg, .png, .bmp or .gif).</li>
+    <li>Click a workspace's row and pick a picture. It shows within a second or two.</li>
+    <li>With two or more screens, pick a screen at the top of the card to give it its own pictures.</li>
+  </ol>
+  <p><strong>Slideshows.</strong> Put a few pictures in a folder inside the wallpapers folder and pick the folder, or tick several pictures in the menu. des-k shows them one after another. Each workspace can have its own pace, in minutes. <strong>Shuffle</strong> picks a random order. A slideshow only moves while you can see it, so you come back to the picture you left.</p>
+  <p><strong>Fit</strong> says how a picture fills the screen: fill (no bars), fit (bars on two sides), stretch or center. <strong>Transition</strong> is an instant change or a short fade. <strong>Dim</strong> darkens the pictures, so white icon labels stay readable on a bright picture.</p>
+  <p>The overview shows each workspace's picture on its tile.</p>
+  <div class="callout note"><strong>A picture that can't be shown</strong> (renamed, deleted or broken) shows your Windows wallpaper instead, and the Wallpaper card says why.</div>
+</section>
+
+<section class="card">
+  <h2>Open apps in their place</h2>
+  <p>Tell des-k where an app belongs, and its new windows open there. Slack always on workspace 1 of the left screen, for example.</p>
+  <ol class="steps">
+    <li>Open the app. In Settings, Apps, click <strong>Add app</strong> and pick it from the apps open now. It starts with the workspace and screen it is on.</li>
+    <li>Change its workspace or screen in its row. <strong>Any screen</strong> keeps it on the screen where it opens. You can also write the line in <code>settings.toml</code> yourself: <code>"slack.exe" = { workspace = 1 }</code>.</li>
+  </ol>
+  <p>A new window of that app goes there the moment it opens. If that workspace is not showing, the window opens hidden, and a short note says where it went. Your screens never switch for it. Windows that were already open stay where they are.</p>
+  <p>des-k only matches apps. It never starts one. After a restart of the PC, a rule wins over des-k's restore: the app's windows go where the rule says.</p>
+</section>
+
+<section class="card">
+  <h2>When a hidden window wants you</h2>
+  <p>A window on a workspace you are not looking at has no taskbar button. So when it flashes for attention (a new Slack message, a finished build), des-k shows a note on its screen, like "Slack misses you". That workspace keeps a small dot on the indicator and in the overview until you go there.</p>
+  <p>Change the words in Settings, Attention. <code>{{appname}}</code> stands for the app's name. Turn it off there too.</p>
+</section>
+
+<section class="card">
   <p class="kicker">Steps</p>
   <h2>Switch with the touchpad</h2>
   <p>des-k reads three and four finger swipes and taps itself, so they work over every window, admin ones too. Out of the box, a four finger swipe left or right switches the workspace of the screen under the mouse.</p>
@@ -208,6 +246,7 @@ cd des-k</code></pre></li>
     <tbody>
       <tr><td><code>workspaces</code></td><td>4</td><td>2 to 9</td><td>Workspaces on every screen</td></tr>
       <tr><td><code>follow_activation</code></td><td>true</td><td>true, false</td><td>Switch to a hidden window's workspace when it comes to the front</td></tr>
+      <tr><td><code>jump_back</code></td><td>true</td><td>true, false</td><td><code>Win+N</code> on the workspace you are on goes back to the one before</td></tr>
       <tr><td><code>copilot_as_right_ctrl</code></td><td>true</td><td>true, false</td><td>The Copilot key works as <code>Right Ctrl</code></td></tr>
       <tr><td><code>[shortcuts]</code></td><td>see <a href="#shortcuts">Shortcuts</a></td><td>lists like <code>["Win+F"]</code></td><td>Every shortcut. An empty list turns one off.</td></tr>
       <tr><td><code>fastest</code></td><td>false</td><td>true, false</td><td>Skip animations: every des-k fade and move happens at once</td></tr>
@@ -220,6 +259,16 @@ cd des-k</code></pre></li>
       <tr><td><code>[indicator] fade_ms</code></td><td>200</td><td>0 to 2000</td><td>How long it takes to fade</td></tr>
       <tr><td><code>[colors] accent</code></td><td>"windows"</td><td>"windows", <code>"#RRGGBB"</code></td><td>des-k's accent: your Windows accent color, or your own</td></tr>
       <tr><td><code>[colors] ws1</code> … <code>ws9</code></td><td>des-k's colors</td><td><code>"#RRGGBB"</code></td><td>Your own color for a workspace</td></tr>
+      <tr><td><code>[attention] enabled</code></td><td>true</td><td>true, false</td><td>A note when a hidden window flashes</td></tr>
+      <tr><td><code>[attention] text</code></td><td>"{{appname}} misses you"</td><td>up to 100 characters</td><td>The note's words</td></tr>
+      <tr><td><code>[names] ws1</code> … <code>ws9</code></td><td>none</td><td>up to 32 characters</td><td>A workspace's name on every screen</td></tr>
+      <tr><td><code>[wallpaper] ws1</code> … <code>ws9</code></td><td>none</td><td>a picture, a folder, or a list of pictures in the wallpapers folder</td><td>A workspace's picture or slideshow on every screen</td></tr>
+      <tr><td><code>[wallpaper] fit</code></td><td>"fill"</td><td>"fill", "fit", "stretch", "center"</td><td>How a picture fills the screen</td></tr>
+      <tr><td><code>[wallpaper] transition</code></td><td>"instant"</td><td>"instant", "fade"</td><td>How the picture changes on a switch</td></tr>
+      <tr><td><code>[wallpaper] dim</code></td><td>0</td><td>0 to 80</td><td>Darkens des-k's pictures by this percent</td></tr>
+      <tr><td><code>[wallpaper] interval</code></td><td>30</td><td>1 to 1440</td><td>Minutes each slideshow picture shows</td></tr>
+      <tr><td><code>[wallpaper] shuffle</code></td><td>false</td><td>true, false</td><td>Slideshows in random order, else by file name</td></tr>
+      <tr><td><code>[apps]</code></td><td>none</td><td>lines like <code>"slack.exe" = { workspace = 1 }</code></td><td>Where an app's new windows open</td></tr>
       <tr><td><code>[restore] enabled</code></td><td>true</td><td>true, false</td><td>After a restart, put reopened windows back on their workspaces</td></tr>
       <tr><td><code>[restore] minutes</code></td><td>3</td><td>1 to 30</td><td>How long after sign in to do that</td></tr>
       <tr><td><code>[overview] animation</code></td><td>"off"</td><td>"off", "fade"</td><td>How the overview opens and closes: at once, or with a quick fade</td></tr>
@@ -238,7 +287,7 @@ cd des-k</code></pre></li>
 <section class="card">
   <h2>Good to know</h2>
   <ul>
-    <li>A hidden window leaves the taskbar and Alt+Tab, so each screen shows only what is on it. Admin windows, like Task Manager, still show in Alt+Tab.</li>
+    <li>A hidden window leaves the taskbar and Alt+Tab, so each screen shows only what is on it. Admin windows, like Task Manager, still show in Alt+Tab. Store apps, like Calculator, keep their taskbar button, because Windows ignores des-k there; clicking it takes you to the app's workspace.</li>
     <li>When a hidden window comes to the front by itself, des-k switches its screen to that workspace.</li>
     <li>After a restart of the PC, des-k puts reopened windows back where they were, for the first 3 minutes after sign in.</li>
     <li>When you unplug a screen or close the laptop lid, its windows move to the main display after 10 seconds (30 seconds just after a wake from sleep). Hidden windows keep their workspace number there. The windows you were looking at stay in view.</li>
