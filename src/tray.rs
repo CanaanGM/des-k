@@ -41,6 +41,7 @@ thread_local! {
     static ICON: Cell<Option<HICON>> = const { Cell::new(None) };
     static TASKBAR_CREATED: Cell<u32> = const { Cell::new(0) };
     static BROKEN: Cell<bool> = const { Cell::new(false) }; // warned that hiding does not work
+    static WAITING: Cell<bool> = const { Cell::new(false) }; // no taskbar yet, said so once
     /// What a click on the current balloon does, if anything.
     static BALLOON: RefCell<Option<Click>> = const { RefCell::new(None) };
     /// An update answer while the broken warning shows (spec 0015 AC-9, spec 0017 AC-TRY-7):
@@ -154,7 +155,18 @@ fn add(hwnd: HWND) {
     unsafe {
         // At login explorer may not be ready yet; its TaskbarCreated brings us back here.
         if !Shell_NotifyIconW(NIM_ADD, &nid).as_bool() && !Shell_NotifyIconW(NIM_MODIFY, &nid).as_bool() {
+            // No taskbar at all is explorer starting or stopped, not a failure: the icon comes
+            // with its TaskbarCreated (tried 2026-11-22, des-k started with explorer stopped).
+            if FindWindowW(w!("Shell_TrayWnd"), None).is_err() {
+                if !WAITING.replace(true) {
+                    info!("tray: waiting for the taskbar (explorer is starting)");
+                }
+                return;
+            }
             return error!("tray: icon not added");
+        }
+        if WAITING.replace(false) {
+            info!("tray: icon added");
         }
         // Set again after every add: a restarted explorer forgets it. Version 4 tells a
         // keyboard open from a click (spec 0017 AC-TRY-8).

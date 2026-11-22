@@ -1738,8 +1738,9 @@ pub struct View {
     pub removals: Vec<Vec<Moved>>,          // what each screen moves, one list per count asked
     pub waiting: Vec<Waiting>,              // screens not plugged in (spec 0016 AC-9)
     pub present: Vec<Present>,              // screens plugged in, left to right (spec 0020)
-    /// Every listed window, front first: its hwnd, its screen's device, and the workspace that
-    /// screen shows. The Apps section reads their apps with no lock held (spec 0027 AC-13).
+    /// Every listed window, front first: its hwnd, its screen's device, and its workspace (a
+    /// hidden one's own, not the one its screen shows). The Apps section reads their apps with no
+    /// lock held (spec 0027 AC-13).
     pub open: Vec<(isize, String, usize)>,
 }
 
@@ -1773,8 +1774,7 @@ pub fn view(counts: &[usize]) -> Option<View> {
     };
     let places = windows_in(&mut s);
     let windows = places.iter().map(|p| (p.device.clone(), p.workspace, real_rect(p.hwnd))).collect();
-    let shows = |device: &str| s.monitors.values().find(|m| m.device.as_deref() == Some(device)).map_or(0, |m| m.active);
-    let open = places.iter().map(|p| (p.hwnd.0 as isize, p.device.clone(), shows(&p.device))).collect();
+    let open = places.iter().map(|p| (p.hwnd.0 as isize, p.device.clone(), p.workspace)).collect();
     let active = s.monitors.values().filter_map(|m| Some((m.device.clone()?, m.active))).collect();
     let names = s.present.iter().map(|p| (p.device.clone(), label(&s, &p.id))).collect();
     let removals = counts.iter().map(|&n| moved(&s, n, label)).collect();
@@ -2218,6 +2218,12 @@ fn put(hwnd: HWND, to: Spot) -> windows::core::Result<()> {
                 SetWindowPlacement(hwnd, &wp)?;
                 let _ = ShowWindow(hwnd, SW_SHOWMAXIMIZED);
             }
+        }
+        // Crossing to a screen of another scaling, Windows rescales the restore rect, and each
+        // trip shrank it (1080x1872, 720x1248, 522x832; tried 2026-11-22). On its screen now, so no rescale.
+        if normal_rect(hwnd) != to.rect {
+            wp.showCmd = SW_SHOWMAXIMIZED.0 as u32;
+            unsafe { SetWindowPlacement(hwnd, &wp)? };
         }
         // There is no maximize without activation.
         if unsafe { GetForegroundWindow() } != fg && !fg.is_invalid() {
