@@ -11,6 +11,8 @@ Windows stay floating; des-k only hides and shows them.
 
 **The full guide, with pictures: <https://canaangm.github.io/des-k/>**
 
+How it works inside, for developers: <https://canaangm.github.io/des-k/how-it-works.html>
+
 ## Install
 
 1. Download the newest `des-k-…-setup.exe` from
