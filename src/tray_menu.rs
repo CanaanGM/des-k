@@ -18,6 +18,7 @@ use windows::Win32::{
 };
 use windows::core::{HSTRING, PCWSTR, w};
 
+use crate::install::InstallFail;
 use crate::settings::Combo;
 use crate::ui::{self, Bx, Canvas, F, Theme, mix, op};
 use crate::uia::{self, Node, Tree};
@@ -65,6 +66,8 @@ pub(crate) enum Check {
     Install(Version),
     Downloading(Version),
     Installing(Version),
+    /// Refused this run, with why (spec 0031 AC-5): a click checks again, never installs it.
+    Refused(Version, InstallFail),
 }
 
 /// What Quit does to the touchpad, from setup::state() (spec 0015 AC-1).
@@ -138,6 +141,10 @@ impl Menu {
             Check::Installing(v) => {
                 update.label = format!("Installing des-k {v}…");
                 update.on = false;
+            }
+            Check::Refused(v, f) => {
+                let line = if f == InstallFail::Mismatch { "Did not match its signed checksum" } else { "Not signed by des-k's publisher" };
+                update = Item { icon: "\u{E7BA}", label: format!("des-k {v} refused"), line: line.into(), ..update };
             }
         }
         let quit = match self.quit {
@@ -881,6 +888,17 @@ mod tests {
         assert_eq!((m.items()[3].label.as_str(), m.items()[3].on), ("Downloading des-k 0.4.2…", false));
         m.check = Check::Installing(Version(0, 4, 2));
         assert_eq!((m.items()[3].label.as_str(), m.items()[3].on), ("Installing des-k 0.4.2…", false));
+        // Spec 0031 AC-5: a refused release says so and why, and the item stays clickable so a
+        // check can find a newer one; it never reads as an offer (no New).
+        for (f, line) in [
+            (InstallFail::Unsigned, "Not signed by des-k's publisher"),
+            (InstallFail::BadSignature, "Not signed by des-k's publisher"),
+            (InstallFail::Mismatch, "Did not match its signed checksum"),
+        ] {
+            m.check = Check::Refused(Version(0, 9, 0), f);
+            let up = &m.items()[3];
+            assert_eq!((up.label.as_str(), up.line.as_str(), up.icon, up.new, up.on), ("des-k 0.9.0 refused", line, "\u{E7BA}", false, true), "{f:?}");
+        }
         m.check = Check::Failed(Fail::NoConnection);
         assert_eq!(m.items()[3].line, "Couldn't check: no connection to GitHub.");
         m.check = Check::Failed(Fail::Timeout);
@@ -925,6 +943,10 @@ mod tests {
             ("broken-newest", two(), Some(0), |s| {
                 s.menu.broken = true;
                 s.menu.check = Check::Newest(Version(0, 3, 0));
+            }),
+            ("refused", two(), Some(0), |s| {
+                s.menu.check = Check::Refused(Version(0, 9, 0), InstallFail::Unsigned);
+                s.hot = Some(3);
             }),
             ("broken-failed", two(), Some(0), |s| {
                 s.menu.broken = true;

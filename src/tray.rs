@@ -314,6 +314,12 @@ fn answered(a: Answer) {
     if BROKEN.get() && !ASKED.replace(false) {
         return;
     }
+    // Found again after a refusal: say so again, never download it (spec 0031 AC-5).
+    if let Answer::Newer(v) = a
+        && let Some(f) = refused(v)
+    {
+        return refused_balloon(v, f);
+    }
     match a {
         Answer::Newer(v) if install::can_install() => balloon("des-k update", &format!("des-k {v} is out (you have {ours}). Click here to install it."), false, Some(Click::Install(v))),
         Answer::Newer(v) => balloon("des-k update", &format!("des-k {v} is out (you have {ours}). Click here to open its page."), false, Some(Click::Open(update::page(v)))),
@@ -327,15 +333,27 @@ fn log_or_page(v: Version) -> Click {
     Click::Open(install::setup_log().map_or_else(|| update::page(v), |p| p.to_string_lossy().into_owned()))
 }
 
+/// The kind `v` was refused with this run, if it was.
+fn refused(v: Version) -> Option<InstallFail> {
+    install::refused().filter(|&(r, _)| r == v).map(|(_, f)| f)
+}
+
+/// A release that failed the publisher's proof (spec 0031 AC-5): no click, and never its page,
+/// which is exactly what an attacker would control.
+fn refused_balloon(v: Version, f: InstallFail) {
+    balloon(&format!("des-k refused {v}"), &f.reason(), true, None);
+}
+
 /// The install worker's word (spec 0018). Started only changes the item, which reads the
 /// phase. A failure says why, never over the broken warning (AC-9): the log has it, and the
-/// item offers the install again.
+/// item offers the install again, or says it was refused (spec 0031).
 fn install_said(m: Msg, v: Version) {
     let Msg::Failed(f) = m else { return };
     if BROKEN.get() {
         return info!("tray: no balloon over the hiding warning: the install of {v} failed ({f:?})");
     }
     match f {
+        f if f.refused() => refused_balloon(v, f),
         InstallFail::SetupStopped => balloon("des-k was not updated", &format!("The update to {v} did not install. Click here to open the setup's log."), true, Some(log_or_page(v))),
         InstallFail::Slow => balloon("des-k was not updated", "The setup is taking unusually long. des-k carries on.", true, Some(log_or_page(v))),
         f => balloon(&format!("Could not install des-k {v}"), &format!("{} Click here to open its page.", f.reason()), true, Some(Click::Open(update::page(v)))),
@@ -559,8 +577,11 @@ fn menu() -> Menu {
         (Phase::Downloading(v), _) => Check::Downloading(v),
         (Phase::Installing(v), _) => Check::Installing(v),
         _ if update::running() => Check::Busy,
-        (_, Some(Answer::Newer(v))) if install::can_install() => Check::Install(v),
-        (_, Some(Answer::Newer(v))) => Check::Newer(v),
+        (_, Some(Answer::Newer(v))) => match refused(v) {
+            Some(f) => Check::Refused(v, f),
+            None if install::can_install() => Check::Install(v),
+            None => Check::Newer(v),
+        },
         (_, Some(Answer::Newest(v))) => Check::Newest(ours.unwrap_or(v)),
         (_, Some(Answer::Failed(f))) => Check::Failed(f),
         (_, None) => Check::Ready,
@@ -596,8 +617,9 @@ pub fn act(id: Id) {
         Id::Settings => crate::settings_page::open(None),
         Id::Log => open(&log_path()),
         Id::Update => match ANSWER.get() {
-            Some(Answer::Newer(v)) if install::can_install() => install::start(hwnd, v),
-            Some(Answer::Newer(v)) => open(Path::new(&update::page(v))),
+            // A refused release is neither installed nor linked; its item checks again (spec 0031).
+            Some(Answer::Newer(v)) if refused(v).is_none() && install::can_install() => install::start(hwnd, v),
+            Some(Answer::Newer(v)) if refused(v).is_none() => open(Path::new(&update::page(v))),
             // A check you start answers anew: the old answer goes.
             _ => {
                 ANSWER.set(None);
