@@ -1110,6 +1110,31 @@ efDS0QSvmV8vGxpsgsWjyF+sMwzXr/UHEDfqaSzq7ApsyYS+TwJ2rmYl8IbuWjcTKHGDCoWk/l3o8VKJ
         assert_eq!(download(&release_path(v, "nope.exe"), SUMS_CAP, |_| Ok(())), Err(InstallFail::Missing));
     }
 
+    /// Checks the newest real release's signature the way the tray install does, downloading
+    /// only its checksum file and signature into memory: `cargo test live_release -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn live_release_is_signed() {
+        // Why: a release published without sign-release.ps1, or a check that disagrees with
+        // minisign, would refuse every update with no page link (AC-1, AC-8).
+        let v = update::newest().expect("the newest release");
+        let get = |file: &str, cap: u64| {
+            let mut bytes = Vec::new();
+            download(&release_path(v, file), cap, |b| {
+                bytes.extend_from_slice(b);
+                Ok(())
+            })
+            .expect(file);
+            bytes
+        };
+        let sums = get("SHA256SUMS.txt", SUMS_CAP);
+        let sig = get("SHA256SUMS.txt.minisig", SIG_CAP);
+        let key = check_sums(&sums, &sig, v);
+        println!("des-k {v}: {key:?}");
+        assert!(key.is_ok());
+        assert!(sums_line(std::str::from_utf8(&sums).unwrap(), &setup_name(v)).is_ok());
+    }
+
     #[test]
     fn every_install_message_survives() {
         // Why: the outcome crosses threads only in wParam and lParam; a lossy pack shows the
