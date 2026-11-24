@@ -241,12 +241,15 @@ pub fn warn_if_broken() {
         crate::cloak::Cause::Unknown(..) => {
             let build = crate::log::windows_build();
             // Nothing is hidden on this layout, so a listed window is one an earlier des-k hid (AC-10).
-            let stuck = match crate::ws::hidden_count() {
-                Some(1) => " 1 window an earlier des-k hid stays hidden until you sign out and in again.".to_string(),
-                Some(n) if n > 1 => format!(" {n} windows an earlier des-k hid stay hidden until you sign out and in again."),
-                _ => String::new(),
+            // Windows 11's toast shows 4 lines of text and cuts the rest, so with that note the
+            // same meaning goes in fewer words (tried 2026-11-24: the long form lost the note).
+            let text = match crate::ws::hidden_count() {
+                Some(n) if n > 0 => {
+                    let them = if n == 1 { "1 window".to_string() } else { format!("{n} windows") };
+                    format!("{build} is new to des-k, so switching hides nothing until an update. Click to check for one. Sign out and in to see {them} it hid.")
+                }
+                _ => format!("des-k does not know {build} yet, so switching hides nothing until des-k is updated. {check}"),
             };
-            let text = format!("des-k does not know {build} yet, so switching hides nothing until des-k is updated. {check}{stuck}");
             ("des-k does not know this Windows", text, format!("des-k: hiding is off, {build} is new to des-k"))
         }
         crate::cloak::Cause::Refused => {
