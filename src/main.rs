@@ -178,6 +178,13 @@ fn main() -> windows::core::Result<()> {
     unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok()? };
     indicator::init();
     settings::load(); // before anything that reads it: ws, keys, the indicator
+    // Lets you try a Windows des-k does not know on your own screens (spec 0030 AC-14).
+    #[cfg(debug_assertions)]
+    if std::env::args().any(|a| a == "--pretend-unknown-windows") {
+        cloak::pretend_unknown();
+    }
+    // Before ws::load, so adopting a saved layout already knows whether hiding works (AC-3).
+    cloak::check_at_start(&ws::app_windows());
     let restoring = ws::load();
     apps::sync(); // after ws::load, so the windows it adopted count as already open (spec 0027 AC-3)
     // Always on: the finder's recency needs it even with follow_activation off (spec 0007).

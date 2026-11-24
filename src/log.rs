@@ -245,7 +245,7 @@ fn header(quit: bool) -> String {
 }
 
 /// `Windows 25H2 build 26200.7019`. ProductName still says Windows 10 on 11, so it is not read.
-fn windows_build() -> String {
+pub(crate) fn windows_build() -> String {
     const KEY: PCWSTR = w!(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion");
     let text = |name: PCWSTR| {
         let mut buf = [0u16; 64];

@@ -625,7 +625,11 @@ pub fn rescue() {
         if !(unsafe { IsWindow(Some(h)) }.as_bool() && pid_of(h) == pid && cloaked(h) == 2 && on_current) {
             return None; // closed, reused handle, or not hidden by des-k
         }
-        Some(shell.hide(h, false).inspect_err(|e| error!("could not show saved window {raw:#x}: {e}")).is_ok())
+        // On an unknown layout it stays listed; cloak.rs logged why once (spec 0030 AC-10).
+        if crate::cloak::unknown() {
+            return Some(false);
+        }
+        Some(shell.hide(h, false).inspect_err(|e| if !crate::cloak::unknown() { error!("could not show saved window {raw:#x}: {e}") }).is_ok())
     });
     info!("des-k was not running: {shown} hidden window(s) shown, {left} could not be");
     write_state(out);
@@ -867,6 +871,10 @@ pub fn place_new(h: HWND, rule: &settings::Rule, name: String, shown: Option<u32
 fn place_in(s: &mut State, h: HWND, rule: &settings::Rule, name: String, shown: Option<u32>) -> Option<(HMONITOR, Card)> {
     let count = settings::get().workspaces;
     let (app, k, raw) = (who(h), rule.workspace, h.0 as isize);
+    if crate::cloak::unknown() {
+        info!("apps: {app} opened where Windows put it: hiding is off on this Windows");
+        return None;
+    }
     if k >= count {
         info!("apps: {app} opened where Windows put it: its rule's workspace {} waits, you have {count}", k + 1);
         return None;
@@ -959,6 +967,10 @@ fn focus_off(app: &str, mon: HMONITOR) {
 /// des-k never lists a visible window as hidden. des-k's own uncloaks take a window off its list
 /// first, under the lock, so this never undoes them.
 pub fn recloak(h: HWND) {
+    // Nothing a rule hid on this layout (spec 0030 AC-6).
+    if crate::cloak::unknown() {
+        return;
+    }
     let mut guard = state();
     let s = &mut *guard;
     let raw = h.0 as isize;
@@ -1218,13 +1230,17 @@ fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize, focus: Opt
     let mut fg_hidden = false;
     // Hide bottom-up: hiding the top window first briefly uncovers the ones behind it.
     let mut hid = Vec::new();
-    // A pinned window stays in view on every workspace (spec 0014).
-    for h in app_windows_on(mon).into_iter().rev().filter(|&h| Some(h) != keep && !s.pinned.contains(&(h.0 as isize))) {
+    // A pinned window stays in view on every workspace (spec 0014). On a Windows layout des-k
+    // does not know, nothing is hidden and the switch only changes the number (spec 0030 AC-5).
+    let hides = if crate::cloak::unknown() { Vec::new() } else { app_windows_on(mon) };
+    for h in hides.into_iter().rev().filter(|&h| Some(h) != keep && !s.pinned.contains(&(h.0 as isize))) {
         match shell.hide(h, true) {
             Ok(()) => {
                 hid.push(h.0 as isize);
                 fg_hidden |= h == fg;
             }
+            // This very hide found the layout unknown, and cloak.rs said so.
+            Err(_) if crate::cloak::unknown() => break,
             Err(e) => {
                 // The cloak can work and only the taskbar step fail: undo it, or nothing tracks it.
                 if cloaked(h) != 0 {
@@ -1237,6 +1253,7 @@ fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize, focus: Opt
     hid.reverse(); // keep top-first, so showing them is top-down (no flash either)
     m.hidden[m.active].extend(hid);
 
+    // uncloak keeps each one listed, silently, on an unknown layout.
     let (shown, stuck) = show_all(std::mem::take(&mut m.hidden[target]), |raw| uncloak(&shell, raw));
     // Still hidden, so still tracked: the next switch back here, quit or panic tries again.
     m.hidden[target] = stuck;
@@ -1262,7 +1279,11 @@ fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize, focus: Opt
         }
         None => {}
     }
-    info!("{name}: workspace {}/{count} ({} shown)", target + 1, shown.len());
+    if crate::cloak::unknown() {
+        info!("{name}: workspace {}/{count} (hiding is off on this Windows)", target + 1);
+    } else {
+        info!("{name}: workspace {}/{count} ({} shown)", target + 1, shown.len());
+    }
     indicator::show(mon, card(s, name, target, count));
     s.sent = None;
     save(s);
@@ -1290,7 +1311,11 @@ fn uncloak(shell: &Shell, raw: isize) -> Option<bool> {
     if !unsafe { IsWindow(Some(h)) }.as_bool() {
         return None;
     }
-    Some(shell.hide(h, false).inspect_err(|e| error!("uncloak {raw:#x} failed: {e}, kept to try again")).is_ok())
+    // On an unknown layout nothing can be shown: kept, and the caller says so once (spec 0030 AC-5).
+    if crate::cloak::unknown() {
+        return Some(false);
+    }
+    Some(shell.hide(h, false).inspect_err(|e| if !crate::cloak::unknown() { error!("uncloak {raw:#x} failed: {e}, kept to try again") }).is_ok())
 }
 
 /// Pin or unpin the focused window (spec 0014). A pinned window stays in view on every
@@ -1329,6 +1354,10 @@ pub enum To {
 /// the mouse. `follow` switches the screen along with it; otherwise it goes alone and you
 /// stay (specs 0004 and 0005).
 pub fn send(to: To, follow: bool) {
+    // A send that cannot hide would only move a window between lists (spec 0030 AC-6).
+    if crate::cloak::unknown() {
+        return info!("send: hiding is off on this Windows, nothing sent");
+    }
     let count = settings::get().workspaces;
     let mut s = state();
     let recent = |t: Instant| t.elapsed() < Duration::from_millis(FOLLOW_COOLDOWN_MS);
@@ -2312,6 +2341,13 @@ pub fn restore_after_panic() {
     }
 }
 
+/// How many windows every hidden list holds, for the tray's warning (spec 0030 AC-10); None
+/// while the layout is locked, and the warning then leaves the count out.
+pub fn hidden_count() -> Option<usize> {
+    let s = STATE.try_lock().ok()?;
+    Some(s.monitors.values().flat_map(|m| &m.hidden).map(Vec::len).sum())
+}
+
 /// Adopt the layout saved by a previous run (restart, update, hard kill). A saved window
 /// is ours only if it is still the same window (same pid) and still shell-cloaked on the
 /// CURRENT Windows desktop (windows on another Windows desktop are cloaked too). If its
@@ -2443,7 +2479,7 @@ pub fn load() -> Restoring {
             warn!("shell unavailable, saved layout not loaded");
             return restoring;
         };
-        let (mut kept, mut shown) = (0, 0);
+        let (mut kept, mut shown, mut stuck) = (0, 0, 0);
         let mut fold_now = HashSet::new();
         for (dev, ws, raw, pid) in adopt {
             let h = HWND(raw as *mut _);
@@ -2468,7 +2504,12 @@ pub fn load() -> Restoring {
                     Ok(()) => shown += 1,
                     Err(e) => {
                         // Still hidden: tracked, so a switch, quit or screen check tries again.
-                        error!("could not show saved window {raw:#x}: {e}, kept to try again");
+                        // On an unknown layout the one line below says it (spec 0030 AC-10).
+                        if crate::cloak::unknown() {
+                            stuck += 1;
+                        } else {
+                            error!("could not show saved window {raw:#x}: {e}, kept to try again");
+                        }
                         let m = mon_mut(s, &dev);
                         let ws = ws.min(m.hidden.len() - 1);
                         m.hidden[ws].push(raw);
@@ -2477,7 +2518,11 @@ pub fn load() -> Restoring {
                 },
             }
         }
-        info!("loaded saved layout: {kept} hidden window(s) adopted, {shown} shown again");
+        if crate::cloak::unknown() && kept + stuck > 0 {
+            error!("loaded saved layout: {} an earlier des-k hid stay hidden, this Windows' layout is unknown: signing out and in shows them", words(kept + stuck));
+        } else {
+            info!("loaded saved layout: {kept} hidden window(s) adopted, {shown} shown again");
+        }
         // At start: the log says it, no note.
         for id in fold_now {
             fold(s, &id, &mut Vec::new());
@@ -2500,7 +2545,8 @@ pub fn restore_tick() -> bool {
     let mut guard = state();
     let s = &mut *guard;
     let Some(r) = s.restore.as_mut() else { return false };
-    if Instant::now() >= r.deadline || r.pending.is_empty() {
+    // A restore only hides, so on a layout des-k does not know it ends here (spec 0030 AC-6).
+    if Instant::now() >= r.deadline || r.pending.is_empty() || crate::cloak::unknown() {
         finish_restore(s);
         return false;
     }
@@ -2687,6 +2733,11 @@ pub fn resync() {
         return;
     }
     RESYNC.store(tries - 1, Ordering::Relaxed);
+    // Nothing to hide again on a layout des-k does not know; the listed stay listed (spec 0030 AC-6).
+    if crate::cloak::unknown() {
+        RESYNC.store(0, Ordering::Relaxed);
+        return info!("explorer restarted: hiding is off on this Windows, nothing hidden again");
+    }
     let Ok(shell) = Shell::new() else { return }; // explorer not up yet
     let mut s = state();
     let (mut hidden, mut failed, mut in_view) = (0, 0, 0);
@@ -3029,7 +3080,8 @@ fn give_back(s: &mut State, id: &str, last: bool, notes: &mut Vec<Note>) -> bool
         }
         let to = Spot { rect: if saved == p.area { a.spot.rect } else { remap(saved, p.area, a.spot.rect) }, state: a.spot.state };
         let ws = a.ws.min(count - 1);
-        let in_view = a.pinned || ws == active;
+        // Nothing can be hidden on a layout des-k does not know: it goes home in view (spec 0030 AC-6).
+        let in_view = a.pinned || ws == active || crate::cloak::unknown();
         let done = match (in_view, hidden_on(s, raw)) {
             // Already home and in place (a short drop Windows undid): nothing to move.
             (true, None) if screen_now(s, raw).as_deref() == Some(id) && spot_of(h) == to => Some(false),

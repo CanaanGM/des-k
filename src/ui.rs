@@ -652,8 +652,8 @@ const FACES: [(u8, f32, i32); 13] = [
     (4, 14.0, 400),
 ];
 
-/// Every F at one scale; deleted when dropped.
-pub(crate) struct Fonts([HFONT; FACES.len()]);
+/// Every F at one scale, and the widths of text measured in each; deleted when dropped.
+pub(crate) struct Fonts([HFONT; FACES.len()], [RefCell<HashMap<String, i32>>; FACES.len()]);
 
 thread_local! {
     static GDIPLUS: Cell<Option<bool>> = const { Cell::new(None) };
@@ -672,7 +672,7 @@ pub(crate) fn fonts(scale: f32) -> Rc<Fonts> {
 impl Fonts {
     pub(crate) fn new(scale: f32) -> Fonts {
         let variable = variable();
-        Fonts(FACES.map(|(kind, size, weight)| {
+        let fonts = FACES.map(|(kind, size, weight)| {
             let face = match (variable, kind) {
                 (_, 2) => "Consolas",
                 (_, 4) => "Cascadia Mono",
@@ -689,7 +689,8 @@ impl Fonts {
             // Icons are thin lines: ClearType gives them colored fringes, so they get grey smoothing.
             let quality = if kind == 3 { ANTIALIASED_QUALITY } else { CLEARTYPE_QUALITY };
             font_with(PCWSTR(HSTRING::from(face).as_ptr()), size * scale, weight, quality)
-        }))
+        });
+        Fonts(fonts, std::array::from_fn(|_| RefCell::default()))
     }
 
     pub(crate) fn get(&self, f: F) -> HFONT {
@@ -800,6 +801,7 @@ pub(crate) struct Canvas<'a> {
     pub(crate) t: Theme,
     fonts: &'a Fonts,
     o: (i32, i32), // the pixel drawn at the DC's 0, 0 (see `shifted`)
+    rows: Option<(f32, f32)>, // the DC's pixel rows that show: a long page draws only those
 }
 
 impl Drop for Canvas<'_> {
@@ -813,6 +815,8 @@ impl Drop for Canvas<'_> {
 impl<'a> Canvas<'a> {
     pub(crate) fn new(dc: HDC, draw: bool, s: f32, t: Theme, fonts: &'a Fonts) -> Canvas<'a> {
         let mut g = std::ptr::null_mut();
+        let mut clip = windows::Win32::Foundation::RECT::default();
+        let rows = (draw && unsafe { GetClipBox(dc, &mut clip) }.0 > NULLREGION.0).then_some((clip.top as f32, clip.bottom as f32));
         if draw && GDIPLUS.get() == Some(true) {
             unsafe {
                 gp::GdipCreateFromHDC(dc, &mut g);
@@ -822,7 +826,7 @@ impl<'a> Canvas<'a> {
                 }
             }
         }
-        Canvas { dc, g, draw, s, t, fonts, o: (0, 0) }
+        Canvas { dc, g, draw, s, t, fonts, o: (0, 0), rows }
     }
 
     /// The same canvas drawing the part of the picture whose top left pixel is x, y: a back
@@ -837,7 +841,15 @@ impl<'a> Canvas<'a> {
 
     /// The same canvas, measuring only: a layout can size a part before drawing it.
     pub(crate) fn measuring(&self) -> Canvas<'a> {
-        Canvas { dc: self.dc, g: std::ptr::null_mut(), draw: false, s: self.s, t: self.t, fonts: self.fonts, o: self.o }
+        Canvas { dc: self.dc, g: std::ptr::null_mut(), draw: false, s: self.s, t: self.t, fonts: self.fonts, o: self.o, rows: None }
+    }
+
+    /// Whether dip rows y to y + h miss what the DC shows, with room for a stroke's edge.
+    fn unseen(&self, y: f32, h: f32) -> bool {
+        self.rows.is_some_and(|(top, bottom)| {
+            let (a, b) = (y * self.s - self.o.1 as f32, (y + h) * self.s - self.o.1 as f32);
+            b < top - 8.0 || a > bottom + 8.0
+        })
     }
 
     pub(crate) fn shapes(&self) -> bool {
@@ -856,15 +868,28 @@ impl<'a> Canvas<'a> {
         r
     }
 
+    /// Asks Windows once per text and font: a page lays itself out on each scroll step and
+    /// hover, measuring the same words every time.
     pub(crate) fn width(&self, text: &str, f: F) -> f32 {
+        let known = &self.fonts.1[f as usize];
+        if let Some(&cx) = known.borrow().get(text) {
+            return cx as f32 / self.s;
+        }
         let wide: Vec<u16> = text.encode_utf16().collect();
-        self.with_dc(|dc| unsafe {
+        let cx = self.with_dc(|dc| unsafe {
             let old = SelectObject(dc, self.fonts.get(f).into());
             let mut size = SIZE::default();
             let _ = GetTextExtentPoint32W(dc, &wide, &mut size);
             SelectObject(dc, old);
-            size.cx as f32 / self.s
-        })
+            size.cx
+        });
+        let mut known = known.borrow_mut();
+        // Window titles come and go in the finder and overview: forget them now and then.
+        if known.len() >= 4096 {
+            known.clear();
+        }
+        known.insert(text.to_string(), cx);
+        cx as f32 / self.s
     }
 
     /// `text` cut with … to fit `w`, or whole when it fits.
@@ -900,7 +925,7 @@ impl<'a> Canvas<'a> {
 
     /// One run of text, centered in a line box `lh` tall whose top is `y`.
     pub(crate) fn text(&self, x: f32, y: f32, lh: f32, text: &str, f: F, color: u32) {
-        if !self.draw {
+        if !self.draw || self.unseen(y, lh) {
             return;
         }
         let wide: Vec<u16> = text.encode_utf16().collect();
@@ -1006,7 +1031,7 @@ impl<'a> Canvas<'a> {
     }
 
     pub(crate) fn fill_rr(&self, (x, y, w, h): Bx, r: f32, argb: u32) {
-        if !self.shapes() || w <= 0.0 || h <= 0.0 {
+        if !self.shapes() || w <= 0.0 || h <= 0.0 || self.unseen(y, h) {
             return;
         }
         let (p, b) = (self.rr_path((x, y, w, h), r), self.brush(argb));
@@ -1019,7 +1044,7 @@ impl<'a> Canvas<'a> {
 
     /// Stroked along the shape itself (half inside, half outside), like SVG.
     pub(crate) fn stroke_rr(&self, (x, y, w, h): Bx, r: f32, width: f32, argb: u32) {
-        if !self.shapes() {
+        if !self.shapes() || self.unseen(y, h) {
             return;
         }
         let (p, pen) = (self.rr_path((x, y, w, h), r), self.pen(argb, width));
@@ -1071,7 +1096,7 @@ impl<'a> Canvas<'a> {
     }
 
     pub(crate) fn circle(&self, cx: f32, cy: f32, r: f32, fill: Option<u32>, edge: Option<(u32, f32)>) {
-        if !self.shapes() {
+        if !self.shapes() || self.unseen(cy - r, 2.0 * r) {
             return;
         }
         let s = self.s;
@@ -1279,7 +1304,7 @@ pub(crate) fn layered(hwnd: HWND, (x, y, w, h): (i32, i32, i32, i32), s: f32, t:
             gp::GdipSetSmoothingMode(g, gp::SmoothingModeAntiAlias);
             gp::GdipSetPixelOffsetMode(g, gp::PixelOffsetModeHalf);
             let fonts = fonts(s);
-            f(&Canvas { dc: mem, g, draw: true, s, t, fonts: &fonts, o: (0, 0) }); // its drop deletes g
+            f(&Canvas { dc: mem, g, draw: true, s, t, fonts: &fonts, o: (0, 0), rows: None }); // its drop deletes g
             let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8, ..Default::default() };
             let (at, size, from) = (POINT { x, y }, SIZE { cx: w, cy: h }, POINT::default());
             let _ = UpdateLayeredWindow(hwnd, Some(screen), Some(&at), Some(&size), Some(mem), Some(&from), COLORREF(0), Some(&blend), ULW_ALPHA);
