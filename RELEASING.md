@@ -18,15 +18,16 @@ The installed des-k runs as admin and can install an update from the tray with o
 1. Set the new version in `Cargo.toml` and run `cargo build`, so `Cargo.lock` follows. Add the release to `CHANGELOG.md`, and add its cards to `NEWS` in `src/whats_new.rs` if it has news. Add it to the Windows builds list in `README.md` and in the guide (`site/guide-content.html`, copied into `site/index.html`): in the row of the build you run the drill on, or in a new row for a build not listed yet.
 2. Commit, push `main`, and wait for CI to pass.
 3. Run the **recovery drill** (below) on that commit. Tag only when every fault passes.
-4. Tag that commit and push the tag: `git tag vX.Y.Z`, then `git push origin vX.Y.Z`. CI builds the setup and the zip and creates a **draft** release with them and `SHA256SUMS.txt`. Nobody else, and no copy of des-k, can download a draft's files.
-5. With your checkout on that commit and up to date, unlock Bitwarden if you use it (`$env:BW_SESSION = bw unlock --raw`), then run:
+4. For a minor release (`x.y.0`), also run the **stress run** (below) on that commit, and tag only on `PASS`. Patches skip it.
+5. Tag that commit and push the tag: `git tag vX.Y.Z`, then `git push origin vX.Y.Z`. CI builds the setup and the zip and creates a **draft** release with them and `SHA256SUMS.txt`. Nobody else, and no copy of des-k, can download a draft's files.
+6. With your checkout on that commit and up to date, unlock Bitwarden if you use it (`$env:BW_SESSION = bw unlock --raw`), then run:
 
    ```powershell
    pwsh -File sign-release.ps1 X.Y.Z
    ```
 
    It stops unless `Cargo.toml`'s version, the tag `vX.Y.Z`, your `HEAD`, `origin/main` and the CI run that made the draft all name the same commit, and unless every file in the draft matches its line in `SHA256SUMS.txt`. It shows the commit, the CI run and each file's size, and waits for you to type the version. minisign then asks for the key's password. The script checks the new signature with the key in `src/install.rs`, uploads `SHA256SUMS.txt.minisig`, and publishes the release.
-6. Recommended: check the published release by hand (below), and install it from the tray on a copy that has the previous release.
+7. Recommended: check the published release by hand (below), and install it from the tray on a copy that has the previous release.
 
 If the script stops, the release stays a draft. Fix what it names and run it again. If a draft's files are wrong, delete the draft and the tag on GitHub, then tag and push again.
 
@@ -61,6 +62,32 @@ Each fault ends with Quit (or `des-k.exe --quit`) and `drill.ps1 check` printing
 9. **Killed update**: build the setup (`cargo build --release`, then `iscc /DAppVersion=X.Y.Z des-k.iss`). In an admin terminal run `powershell -File drill.ps1 kill-setup target\setup\<setup exe>`: it starts the setup, waits until des-k has stopped, then kills the setup. Recover with the installed `des-k.exe --quit`, or start des-k from the Start menu and Quit. Write down whether `des-k.exe` survived.
 
 Write each run down on your PC, never in the repo, since it names your apps and screens: the commit (`git rev-parse --short HEAD`), the Windows build and the number of screens, then for each fault pass or fail, the way you recovered, the `check` output and the log lines from the fault (des-k's log never holds a window title). A fault that fails blocks the release until it is fixed.
+
+## Stress run
+
+Before each minor release, the stress run switches 10,000 times and saves `settings.toml` 10,000 times, and proves des-k's handles and memory don't keep growing. It also times every switch, so one release can be compared with the last. It takes about 3.5 hours of a PC nobody touches, so an evening start fits.
+
+It uses a **stress build**: the drill build, optimized like a release. It's built in its own folder, so the setup can never package it.
+
+```powershell
+cargo build --release --features drill --target-dir target\stress
+```
+
+1. Quit the installed des-k from the tray. In an **admin** terminal, start `target\stress\release\des-k.exe`.
+2. Move that terminal to another screen. Close the apps on your primary screen or move them to another screen. Keep the default `next` and `previous` keys (Ctrl+Win+Right and Ctrl+Win+Left) and at least two workspaces. If `settings.toml` has no `twice_ms` line, add `twice_ms = 300` under `[touchpad]` (the default, so nothing changes). Leave focus off a remote control app such as TeamViewer: while it has focus it swallows the Windows key, so des-k never hears a switch.
+3. In the same terminal, run `powershell -File drill.ps1 stress` and leave the PC alone. It opens 20 plain windows on the primary screen, switches between two workspaces every 1.2 s, and changes `twice_ms` between 300 and 301 each time. It keeps the PC awake. At the end it quits des-k and prints a result block.
+4. Start des-k again from the Start menu.
+
+The result is one of three:
+- **PASS**: from step 500 to 60 s after the last step, handles grew by 20 or fewer, GDI and USER objects by 10 or fewer each, and private bytes by 2 MB or less. Tag the release.
+- **FAIL**: something grew past its limit, or des-k stopped. The release waits until it is fixed.
+- **INVALID**: the run didn't go as planned. A switch or a save went missing, or a window was in the wrong state, as when the screen locks. It says nothing about des-k: run it again.
+
+Ctrl+C stops it early. It puts `twice_ms` back to 300, closes its windows and leaves des-k running.
+
+Keep each result block on your PC, never in the repo, since it names your hardware. Compare it with the last minor release's block from the same PC: a p95 more than 1.5 times the last one is worth looking into before you tag, but doesn't block, because timing on one PC moves with whatever else Windows is doing. A new PC starts a new comparison.
+
+After changing the script, `drill.ps1 stress -Steps 40` checks it in about 7 minutes.
 
 ## The public keys
 

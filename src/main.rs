@@ -275,7 +275,11 @@ fn main() -> windows::core::Result<()> {
         }
         match msg.message {
             WM_APP => {
+                #[cfg(feature = "drill")]
+                let started = std::time::Instant::now();
                 ws::switch(msg.wParam.0 as isize);
+                #[cfg(feature = "drill")]
+                drill::switched(started.elapsed());
                 welcome::tried(welcome::Try::Switch);
             }
             indicator::WM_DISPLAY_CHANGED => {
@@ -399,6 +403,8 @@ fn main() -> windows::core::Result<()> {
     ws::restore_all();
     setup::write_back(); // Quit and --quit
     tray::remove();
+    #[cfg(feature = "drill")]
+    drill::report();
     info!("des-k stopped, all windows shown");
     log::flush();
     Ok(())

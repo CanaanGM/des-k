@@ -8,7 +8,8 @@ repository = "https://github.com/CanaanGM/des-k"
 homepage = "https://canaangm.github.io/des-k/"
 
 [features]
-# Stop points for the recovery drill (src/drill.rs, spec 0034). Never in a release build.
+# The test build: stop points for the recovery drill and the stress run's switch timing
+# (src/drill.rs, specs 0034, 0037). Never in a release build.
 drill = []
 
 [build-dependencies]

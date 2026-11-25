@@ -145,6 +145,8 @@ pub(super) fn reload(source: Source) -> Result<Vec<Change>, String> {
     let changes = diff(old, &settings, source);
     if !changes.is_empty() || problems != *before {
         store(settings, problems);
+        #[cfg(feature = "drill")]
+        crate::drill::reloaded();
     }
     let moves = apply(old, &changes);
     if matches!(source, Source::File) && !changes.is_empty() {
