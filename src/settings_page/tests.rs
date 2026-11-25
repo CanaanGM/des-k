@@ -627,6 +627,7 @@ enabled = false
 #[ignore]
 fn render_settings() {
     assert!(ui::canvas::gdiplus());
+    let _one = SETTINGS.lock();
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("settings");
     std::fs::create_dir_all(&dir).unwrap();
     let night_sky = ui::high_contrast([0x000000, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);

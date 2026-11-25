@@ -131,6 +131,10 @@ pub(super) fn each_state(theme: Theme, scale: f32, f: &mut dyn FnMut(&str, &Win)
 #[ignore]
 fn render_first_run() {
     assert!(ui::canvas::gdiplus());
+    // render_settings swaps settings::get() state by state; drawn alongside it, a step here
+    // would show that page's test file instead of the defaults.
+    let _one = crate::settings_page::tests::SETTINGS.lock();
+    settings::store::use_for_test("");
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("welcome");
     std::fs::create_dir_all(&dir).unwrap();
     let night_sky = ui::high_contrast([0x000000, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);
