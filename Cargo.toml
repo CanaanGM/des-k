@@ -7,10 +7,15 @@ description = "Per monitor virtual desktops for Windows 11: each screen switches
 repository = "https://github.com/CanaanGM/des-k"
 homepage = "https://canaangm.github.io/des-k/"
 
+[features]
+# Stop points for the recovery drill (src/drill.rs, spec 0034). Never in a release build.
+drill = []
+
 [build-dependencies]
 embed-resource = "3" # the icon in res/des-k.rc (build.rs)
 
 [dependencies]
+arc-swap = "1.9.5" # the settings swap on reload (src/settings.rs, spec 0032)
 minisign-verify = "0.3.0" # the update's signature (src/install.rs, spec 0031)
 nucleo-matcher = "0.3.1"
 toml = "1.1.8"

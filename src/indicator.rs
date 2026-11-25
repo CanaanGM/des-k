@@ -79,12 +79,14 @@ pub enum Line {
     Wants { text: String, ws: usize },
     /// A new window of `app` went hidden onto `to` by its rule (spec 0027 AC-5); you stay.
     Opened { app: String, to: usize },
+    /// state.txt could not be saved, so a switch or send hid nothing (spec 0034 AC-2).
+    NotSaved,
 }
 
 impl Line {
     fn note(&self) -> bool {
-        // A popup comes unasked, like a screen note, so it holds as long.
-        matches!(self, Line::ScreenGone { .. } | Line::ScreenBack { .. } | Line::Wants { .. })
+        // A popup comes unasked, like a screen note, so it holds as long; so does a warning.
+        matches!(self, Line::ScreenGone { .. } | Line::ScreenBack { .. } | Line::Wants { .. } | Line::NotSaved)
     }
 }
 
@@ -172,6 +174,7 @@ fn words(card: &Card, line: &Line, named: bool) -> Words {
             sub: format!("You stay on {on}"),
             sub_chip: None,
         },
+        Line::NotSaved => Words { icon: '\u{E7BA}', ink: Ink::Warn, title: "Layout can't be saved".into(), chip: None, sub: "Nothing hidden".into(), sub_chip: None },
     }
 }
 
@@ -810,6 +813,7 @@ mod tests {
             ("pinned", Card::new(1, 4, dell()).with(Line::Pinned)),
             ("unpinned", Card::new(1, 4, dell()).with(Line::Unpinned)),
             ("past-count", Card::new(1, 4, dell()).with(Line::NoWorkspace { n: 7 })),
+            ("not-saved", Card::new(1, 4, dell()).with(Line::NotSaved)),
             ("unplugged", Card::new(0, 4, None).with(gone(None))),
             ("back", Card::new(1, 4, dell()).with(Line::ScreenBack { name: "DELL U2720Q".into(), moved: 5, left: 0, here: true })),
             ("back-some-left", Card::new(1, 4, dell()).with(Line::ScreenBack { name: "DELL U2720Q".into(), moved: 3, left: 2, here: true })),

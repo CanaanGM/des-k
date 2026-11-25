@@ -358,7 +358,7 @@ fn plan_pair(p: &'static str, n: &'static str, mods: u8, replace: bool, title: &
         let name = sp::name_of(key);
         let combo = Combo { mods, vk };
         let mut mine = s.list(name).to_vec();
-        let at = if replace { sp::shortcut(key).and_then(|sh| sp::drawn_order(s, sh).first().copied()) } else { None };
+        let at = if replace { sp::shortcut(key).and_then(|sh| sp::drawn_order(&s, sh).first().copied()) } else { None };
         match at {
             Some(i) if i < mine.len() => mine[i] = combo,
             _ => mine.push(combo),
@@ -407,7 +407,7 @@ fn plan_side(i: usize, desk: bool) -> Plan {
         [k] => sp::plan_give(k, desk),
         [p, n] if desk => {
             let s = settings::get();
-            if held(s, t.keys) == Held::Desk || matches!(held(s, t.keys), Held::Took(_)) {
+            if held(&s, t.keys) == Held::Desk || matches!(held(&s, t.keys), Held::Took(_)) {
                 return Plan::Nothing;
             }
             plan_pair(p, n, WIN | CTRL, false, t.title)
@@ -432,7 +432,7 @@ fn rec_for(f: Field) -> Option<Rec> {
     Some(match keys {
         [p, n] => Rec::Pair(p, n),
         [k] if sp::is_digits(k) => Rec::Digits(k),
-        [k] => Rec::List(k, sp::shortcut(k).and_then(|sh| sp::drawn_order(s, sh).first().copied())),
+        [k] => Rec::List(k, sp::shortcut(k).and_then(|sh| sp::drawn_order(&s, sh).first().copied())),
         _ => return None,
     })
 }
@@ -655,7 +655,7 @@ struct Out {
 struct Ctx<'a, 'f> {
     c: &'a mut Canvas<'f>,
     w: &'a Win,
-    s: &'static Settings,
+    s: &'a Settings, // from the paint's own handle, one version for the whole pass
     cw: f32,
     group: u8,
     out: Out,
@@ -1994,7 +1994,7 @@ fn words_of(r: &sp::Row) -> Vec<&'static str> {
 fn compose(c: &mut Canvas, w: &Win) -> Out {
     let s = settings::get();
     let cw = w.vw - 2.0 * X0;
-    let mut x = Ctx { c, w, s, cw, group: 0, out: Out { hits: vec![], content: 0.0, mid: (0.0, 0.0), said: vec![], texts: vec![] } };
+    let mut x = Ctx { c, w, s: &s, cw, group: 0, out: Out { hits: vec![], content: 0.0, mid: (0.0, 0.0), said: vec![], texts: vec![] } };
     let b = x.c.t.b;
     let head = x.measured(|c| c.head());
     let (top, bottom) = (head + 16.0, w.vh - FOOT - 8.0);
@@ -2397,10 +2397,10 @@ fn step_key(key: &'static str, up: bool) {
     let s = settings::get();
     let Some(sp::Row { kind: Kind::Step { lo, hi, by, .. }, .. }) = sp::find_row(key) else { return };
     // Greyed: kept but not in use, so − and + do nothing.
-    if !sp::unused(s, key).is_empty() {
+    if !sp::unused(&s, key).is_empty() {
         return;
     }
-    let v = sp::value(s, key);
+    let v = sp::value(&s, key);
     let n = sp::stepped(v, *lo, *hi, *by, up);
     if n != v {
         save(key, n);
@@ -2410,7 +2410,7 @@ fn step_key(key: &'static str, up: bool) {
 fn open_menu(row: usize, times: u8, family: Option<usize>) {
     let Some(at) = get(|w| w.hits.iter().find(|h| h.ctl == Ctl::Picker(row)).map(|h| h.at)).flatten() else { return };
     let m = Menu { row, times, family, at, focus: 0 };
-    let focus = sp::menu_lines(&m, settings::get()).iter().position(|l| l.on).unwrap_or(0);
+    let focus = sp::menu_lines(&m, &settings::get()).iter().position(|l| l.on).unwrap_or(0);
     let _ = set(|w| w.menu = Some(Menu { focus, ..m }));
     layout();
 }
@@ -2422,7 +2422,7 @@ fn close_menu() {
 
 fn choose(i: usize) {
     let Some(m) = get(|w| w.menu).flatten() else { return };
-    let lines = sp::menu_lines(&m, settings::get());
+    let lines = sp::menu_lines(&m, &settings::get());
     let Some(l) = lines.get(i) else { return };
     match l.does {
         Does::Set(a) => {
@@ -2485,7 +2485,7 @@ fn act(ctl: Ctl) {
             });
             layout();
         }
-        Ctl::Toggle(k) => save(k, 1 - sp::value(s, k)),
+        Ctl::Toggle(k) => save(k, 1 - sp::value(&s, k)),
         Ctl::Minus(k) => step_key(k, false),
         Ctl::Plus(k) => step_key(k, true),
         Ctl::Choice(k, i) => match sp::find_row(k).map(|r| r.kind) {
@@ -2530,9 +2530,9 @@ fn change(focus: Ctl, right: bool) {
         Ctl::Pick(k) => {
             let Some(r) = sp::find_row(k) else { return };
             let n = words_of(r).len();
-            let i = sp::value(s, k) as usize;
+            let i = sp::value(&s, k) as usize;
             let i = match r.kind {
-                Kind::Pair(..) => 1 - sp::value(s, k) as usize,
+                Kind::Pair(..) => 1 - sp::value(&s, k) as usize,
                 _ => i,
             };
             let to = if right { (i + 1).min(n - 1) } else { i.saturating_sub(1) };
@@ -2549,7 +2549,7 @@ fn change(focus: Ctl, right: bool) {
 /// The open menu's keys: Up and Down move, Enter or Space picks, Esc closes or goes back.
 fn menu_key(vk: VIRTUAL_KEY) {
     let Some(m) = get(|w| w.menu).flatten() else { return };
-    let n = sp::menu_lines(&m, settings::get()).len();
+    let n = sp::menu_lines(&m, &settings::get()).len();
     match vk {
         VK_ESCAPE if m.family.is_some() || m.times == 2 => open_menu(m.row, 1, None),
         VK_ESCAPE => close_menu(),

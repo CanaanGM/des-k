@@ -198,8 +198,8 @@ fn try_place(h: HWND, shown: Option<u32>) -> Try {
     match ws::app_window(h) {
         Err("no title") => return Try::Wait("no title"),
         // A Store app's frame window shows cloaked by Windows, which uncloaks it about 300 ms
-        // later, once the app has drawn (measured 2026-11-19). Its key is an app id, no path.
-        Err("cloaked") if !app.contains('\\') => return Try::Wait("still cloaked by Windows"),
+        // later, once the app has drawn (measured 2026-11-19). Its key is an app id, with a `!`.
+        Err("cloaked") if app.contains('!') => return Try::Wait("still cloaked by Windows"),
         Err(why) => {
             info!("apps: a {key} window left where it opened: {why}");
             return Try::Done;

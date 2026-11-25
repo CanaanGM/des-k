@@ -7,8 +7,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::Write;
-use std::sync::LazyLock;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use arc_swap::{ArcSwap, Guard};
+use std::ops::Deref;
+use std::sync::{Arc, LazyLock};
 use std::time::SystemTime;
 use toml::{Table, Value};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
@@ -624,13 +625,42 @@ impl Problem {
 struct Loaded {
     settings: Settings,
     problems: Vec<Problem>,
+    version: u64, // 0 for the defaults, one more on each store
 }
 
-// Swapped whole on each reload. The old one is leaked, never freed, so every `&'static` a
-// reader on any thread still holds stays valid (a few KB per save). Null until load().
-static CURRENT: AtomicPtr<Loaded> = AtomicPtr::new(std::ptr::null_mut());
-// What get() gives before load(), kept apart so an early get() never waits on load().
-static DEFAULTS: LazyLock<Settings> = LazyLock::new(Settings::default);
+// Swapped whole on each reload, without a lock, so the key hook never waits (spec 0032). An old
+// one is freed once the last handle to it lets go. The defaults until load().
+static CURRENT: LazyLock<ArcSwap<Loaded>> =
+    LazyLock::new(|| ArcSwap::from_pointee(Loaded { settings: Settings::default(), problems: Vec::new(), version: 0 }));
+
+/// The settings in force when it was taken: one whole version, whatever saves come after. Hold
+/// it for one event or one paint, never in a struct or across a message pump; anything longer
+/// lived would keep that copy, and slow every later read on its thread.
+pub struct Current(Guard<Arc<Loaded>>);
+
+impl Current {
+    /// Changes on every reload that changed something, so a reader can tell it missed one.
+    pub fn version(&self) -> u64 {
+        self.0.version
+    }
+}
+
+impl Deref for Current {
+    type Target = Settings;
+    fn deref(&self) -> &Settings {
+        &self.0.settings
+    }
+}
+
+/// The problems of the version in force when it was taken, held like `Current`.
+pub struct Problems(Guard<Arc<Loaded>>);
+
+impl Deref for Problems {
+    type Target = [Problem];
+    fn deref(&self) -> &[Problem] {
+        &self.0.problems
+    }
+}
 
 thread_local! {
     // The file's write time when des-k last read it. Main thread only (spec 0012, file watch).
@@ -645,22 +675,23 @@ pub fn parse_error() -> Option<String> {
     PARSE_ERROR.with_borrow(Clone::clone)
 }
 
-fn current() -> Option<&'static Loaded> {
-    // SAFETY: CURRENT is null or a leaked Box that is never freed.
-    unsafe { CURRENT.load(Ordering::Acquire).as_ref() }
-}
-
-pub fn get() -> &'static Settings {
-    current().map_or(&DEFAULTS, |l| &l.settings)
+pub fn get() -> Current {
+    Current(CURRENT.load())
 }
 
 /// What is wrong in the file right now, for the settings page.
-pub fn problems() -> &'static [Problem] {
-    current().map_or(&[], |l| &l.problems)
+pub fn problems() -> Problems {
+    Problems(CURRENT.load())
 }
 
 fn store(settings: Settings, problems: Vec<Problem>) {
-    CURRENT.store(Box::into_raw(Box::new(Loaded { settings, problems })), Ordering::Release);
+    put(&CURRENT, settings, problems);
+}
+
+// The swap itself, apart from CURRENT so a test can count what it frees.
+fn put(cell: &ArcSwap<Loaded>, settings: Settings, problems: Vec<Problem>) {
+    let version = cell.load().version + 1; // only main stores, so nothing comes between
+    cell.store(Arc::new(Loaded { settings, problems, version }));
 }
 
 fn modified(path: &std::path::Path) -> Option<SystemTime> {
@@ -739,15 +770,17 @@ pub fn reload(source: Source) -> Result<Vec<Change>, String> {
         }
     };
     PARSE_ERROR.set(None);
-    let old = get();
+    // An Arc, not a handle: it outlives the store below, through apply.
+    let old_loaded = CURRENT.load_full();
+    let old = &old_loaded.settings;
     // Only new problems are logged, so one bad value is not logged again on every save.
-    let before = problems();
+    let before = &old_loaded.problems;
     for w in warnings.iter().filter(|w| !before.iter().any(|p| &p.message == *w)) {
         warn!("settings: {w}");
     }
     let problems: Vec<Problem> = warnings.into_iter().map(Problem::new).collect();
     let changes = diff(old, &settings, source);
-    if !changes.is_empty() || problems != before {
+    if !changes.is_empty() || problems != *before {
         store(settings, problems);
     }
     let moves = apply(old, &changes);
@@ -1264,15 +1297,16 @@ fn parse(text: &str) -> (Settings, Vec<String>) {
 }
 
 impl Settings {
-    /// The once and twice rules for a gesture, as indexes into `gestures`.
-    fn rules(&self, fingers: usize, motion: Motion) -> (Option<usize>, Option<usize>) {
-        let rule = |times| self.gestures.iter().position(|g| g.fingers as usize == fingers && g.motion == motion && g.times == times);
+    /// The once and twice rules for a gesture.
+    fn rules(&self, fingers: usize, motion: Motion) -> (Option<Gesture>, Option<Gesture>) {
+        let rule = |times| self.gestures.iter().find(|g| g.fingers as usize == fingers && g.motion == motion && g.times == times).copied();
         (rule(1), rule(2))
     }
 }
 
-/// The touchpad thread asks this for each gesture it recognizes (spec 0011).
-pub fn rules_for(fingers: usize, motion: Motion) -> (Option<usize>, Option<usize>) {
+/// The touchpad thread asks this once per gesture it recognizes (spec 0011) and keeps the rules
+/// themselves, so a save before it posts never swaps one for another (spec 0032 AC-4).
+pub fn rules_for(fingers: usize, motion: Motion) -> (Option<Gesture>, Option<Gesture>) {
     get().rules(fingers, motion)
 }
 
@@ -1417,32 +1451,32 @@ fn gestures(v: &Value, warn: &mut Vec<String>) -> Option<Vec<Gesture>> {
 
 fn gesture(t: &Table) -> Result<Gesture, String> {
     if let Some(key) = t.keys().find(|k| !GESTURE_KEYS.contains(&k.as_str())) {
-        return Err(format!("unknown field {key}"));
+        return Err(format!("unknown field {}", key_shown(key)));
     }
     let fingers = match t.get("fingers") {
         Some(Value::Integer(n @ 3..=4)) => *n as u8,
-        Some(v) => return Err(format!("fingers = {v}, not 3 or 4")),
+        Some(v) => return Err(format!("fingers = {}, not 3 or 4", shown(v))),
         None => return Err("no fingers".into()),
     };
     let motion = match (t.get("swipe"), t.get("tap")) {
         (Some(Value::String(w)), None) => match SWIPES.iter().find(|(s, _)| s.eq_ignore_ascii_case(w)) {
             Some((_, m)) => *m,
-            None => return Err(format!("swipe = \"{w}\", not \"left\", \"right\", \"up\" or \"down\"")),
+            None => return Err(format!("swipe = {}, not \"left\", \"right\", \"up\" or \"down\"", quoted(w))),
         },
-        (Some(v), None) => return Err(format!("swipe = {v}, not \"left\", \"right\", \"up\" or \"down\"")),
+        (Some(v), None) => return Err(format!("swipe = {}, not \"left\", \"right\", \"up\" or \"down\"", shown(v))),
         (None, Some(Value::Boolean(true))) => Motion::Tap,
-        (None, Some(v)) => return Err(format!("tap = {v}, only tap = true works")),
+        (None, Some(v)) => return Err(format!("tap = {}, only tap = true works", shown(v))),
         (Some(_), Some(_)) => return Err("both swipe and tap".into()),
         (None, None) => return Err("neither swipe nor tap".into()),
     };
     let times = match t.get("times") {
         None => 1,
         Some(Value::Integer(n @ 1..=2)) => *n as u8,
-        Some(v) => return Err(format!("times = {v}, not 1 or 2")),
+        Some(v) => return Err(format!("times = {}, not 1 or 2", shown(v))),
     };
     let action = match t.get("do") {
         Some(Value::String(text)) => action(text)?,
-        Some(v) => return Err(format!("do = {v}, not text")),
+        Some(v) => return Err(format!("do = {}, not text", shown(v))),
         None => return Err("no do".into()),
     };
     Ok(Gesture { fingers, motion, times, action })
@@ -1464,7 +1498,34 @@ fn action(text: &str) -> Result<Action, String> {
     if let Some(i) = digit("jump_") {
         return Ok(Action::Jump(i));
     }
+    if has_path(text) {
+        return Err(format!("do = {PATH_VALUE} is not an action name or a key combo"));
+    }
     parse_combo(text).map(Action::Combo).map_err(|why| format!("do = \"{text}\" is not an action name, and as a key combo it {why}"))
+}
+
+/// What a warn line says in place of a value with a path in it. Repeating a typo helps you find
+/// it, but a path can name your user folder, and a log is safe to share (SECURITY.md).
+const PATH_VALUE: &str = "a value with a path in it";
+
+fn has_path(text: &str) -> bool {
+    text.contains(['\\', '/', ':'])
+}
+
+/// Text from the file, quoted for a warn line, unless it has a path in it.
+fn quoted(text: &str) -> String {
+    if has_path(text) { PATH_VALUE.to_string() } else { format!("\"{text}\"") }
+}
+
+/// A key des-k does not know, for a warn line, unless it has a path in it.
+fn key_shown(key: &str) -> String {
+    if has_path(key) { "a key with a path in it".to_string() } else { key.to_string() }
+}
+
+/// A value of the wrong type, as TOML writes it, for a warn line, unless it has a path in it.
+fn shown(v: &Value) -> String {
+    let text = v.to_string();
+    if has_path(&text) { PATH_VALUE.to_string() } else { text }
 }
 
 /// One word out of `options`, any case. A bad value keeps `default`.
@@ -1476,7 +1537,7 @@ fn choice<T: Copy + PartialEq>(t: &Table, key: &str, name: &str, options: &[(&st
         Some(Value::String(text)) => match options.iter().find(|(w, _)| w.eq_ignore_ascii_case(text)) {
             Some((_, v)) => *v,
             None => {
-                warn.push(format!("{name}: \"{text}\" is not one of {}, using default \"{fallback}\"", words()));
+                warn.push(format!("{name}: {} is not one of {}, using default \"{fallback}\"", quoted(text), words()));
                 default
             }
         },
@@ -1489,7 +1550,7 @@ fn choice<T: Copy + PartialEq>(t: &Table, key: &str, name: &str, options: &[(&st
 
 fn unknown_keys(t: &Table, prefix: &str, known: &[&str], warn: &mut Vec<String>) {
     for key in t.keys().filter(|k| !known.contains(&k.as_str())) {
-        warn.push(format!("unknown key {prefix}{key}, ignored"));
+        warn.push(format!("unknown key {prefix}{}, ignored", key_shown(key)));
     }
 }
 
@@ -1597,7 +1658,7 @@ fn color(t: &Table, key: &str, name: &str, fallback: &str, warn: &mut Vec<String
     };
     let rgb = text.strip_prefix('#').filter(|h| h.len() == 6 && h.bytes().all(|b| b.is_ascii_hexdigit())).and_then(|h| u32::from_str_radix(h, 16).ok());
     if rgb.is_none() {
-        warn.push(format!("{name}: \"{text}\" is not a \"#RRGGBB\" color, using {fallback}"));
+        warn.push(format!("{name}: {} is not a \"#RRGGBB\" color, using {fallback}", quoted(text)));
     }
     rgb
 }
@@ -1821,7 +1882,7 @@ fn app_key(key: &str) -> bool {
 /// somewhere you did not ask for.
 fn rule(t: &Table, full: &str) -> Result<Rule, String> {
     if let Some(k) = t.keys().find(|k| !RULE_KEYS.contains(&k.as_str())) {
-        return Err(format!("{full}: unknown key {k}, rule ignored"));
+        return Err(format!("{full}: unknown key {}, rule ignored", key_shown(k)));
     }
     let workspace = match t.get("workspace") {
         Some(Value::Integer(n)) if (1..=9).contains(n) => *n as usize - 1,
@@ -1854,13 +1915,13 @@ fn combos(t: &Table, key: &str, name: &str, default: &[Combo], warn: &mut Vec<St
     let mut out = Vec::new();
     for item in items {
         let Some(text) = item.as_str() else {
-            warn.push(format!("{name}: entry {item} is not text, dropped"));
+            warn.push(format!("{name}: entry {} is not text, dropped", shown(item)));
             continue;
         };
         match parse_combo(text) {
             Ok(c) if !out.contains(&c) => out.push(c),
             Ok(_) => {} // listed twice: harmless
-            Err(why) => warn.push(format!("{name}: \"{text}\" {why}, dropped")),
+            Err(why) => warn.push(format!("{name}: {} {why}, dropped", quoted(text))),
         }
     }
     if out.is_empty() && !items.is_empty() {
@@ -1883,7 +1944,7 @@ fn mods(t: &Table, key: &str, default: Option<u8>, warn: &mut Vec<String>) -> Op
     match parse_mods(text) {
         Ok(m) => m,
         Err(why) => {
-            warn.push(format!("shortcuts.{key}: \"{text}\" {why}, using {}", mods_text(default)));
+            warn.push(format!("shortcuts.{key}: {} {why}, using {}", quoted(text), mods_text(default)));
             default
         }
     }
@@ -1893,6 +1954,9 @@ fn mods(t: &Table, key: &str, default: Option<u8>, warn: &mut Vec<String>) -> Op
 fn parse_mods(text: &str) -> Result<Option<u8>, String> {
     if text.trim().is_empty() {
         return Ok(None);
+    }
+    if has_path(text) {
+        return Err("is not Win, Ctrl, Alt or Shift".into());
     }
     let mut mods = 0u8;
     for part in text.split('+').map(str::trim) {
@@ -1929,6 +1993,9 @@ fn mod_bit(name: &str) -> u8 {
 
 /// "Win+Ctrl+Left": parts joined by `+`, any order, any case, at least one modifier.
 fn parse_combo(text: &str) -> Result<Combo, String> {
+    if has_path(text) {
+        return Err("is not a key combo".into());
+    }
     let (mut mods, mut vk) = (0u8, None);
     for part in text.split('+').map(str::trim) {
         let bit = mod_bit(part);
@@ -2766,13 +2833,44 @@ do = "previous"
         assert_eq!(warn, ["gesture rule 1: Windows never lets a program type Win+L, so it does nothing"]);
     }
 
+    // Spec 0032 AC-1, AC-7: a save used to leak the copy it replaced, a few KB each time. Every
+    // replaced copy must be freed, except one a reader still holds, which must stay whole and
+    // readable until that reader lets go.
+    #[test]
+    fn a_save_frees_the_copy_it_replaced_once_no_reader_holds_it() {
+        let cell = ArcSwap::from_pointee(Loaded { settings: Settings::default(), problems: Vec::new(), version: 0 });
+        let held = Current(cell.load());
+        let mut replaced = Vec::new();
+        for i in 0..1000 {
+            replaced.push(Arc::downgrade(&cell.load_full()));
+            let (mut s, _) = parse("");
+            s.twice_ms = 100 + i % 2;
+            put(&cell, s, vec![Problem::new(format!("problem {i}"))]);
+        }
+        assert_eq!(cell.load().version, 1000);
+        assert!(replaced[1..].iter().all(|w| w.upgrade().is_none()), "a replaced copy was never freed");
+        assert!(replaced[0].upgrade().is_some(), "a copy was freed while a reader held it");
+        assert_eq!((held.version(), held.twice_ms), (0, Settings::default().twice_ms));
+        drop(held);
+        assert!(replaced[0].upgrade().is_none(), "the held copy outlived its reader");
+    }
+
+    // Spec 0032 AC-2: before load(), every reader gets the defaults and no problems. Only the
+    // ignored render tests store into the real settings (use_for_test), never this run.
+    #[test]
+    fn get_before_load_gives_the_defaults() {
+        assert_eq!(*get(), Settings::default());
+        assert!(problems().is_empty());
+        assert_eq!(get().version(), 0);
+    }
+
     // AC-5: the reader must find both rules of a gesture, so it knows to wait for the second go.
     #[test]
     fn a_twice_rule_is_kept_beside_the_once_rule() {
         let (s, warn) = parse("[[gesture]]\nfingers = 4\nswipe = \"left\"\ndo = \"next\"\n[[gesture]]\nfingers = 4\nswipe = \"left\"\ntimes = 2\ndo = \"jump_1\"\n[[gesture]]\nfingers = 3\ntap = true\ntimes = 2\ndo = \"finder\"\n");
         assert!(warn.is_empty(), "{warn:?}");
-        assert_eq!(s.rules(4, Motion::Left), (Some(0), Some(1)));
-        assert_eq!(s.rules(3, Motion::Tap), (None, Some(2)));
+        assert_eq!(s.rules(4, Motion::Left), (Some(s.gestures[0]), Some(s.gestures[1])));
+        assert_eq!(s.rules(3, Motion::Tap), (None, Some(s.gestures[2])));
         assert_eq!(s.rules(4, Motion::Right), (None, None));
     }
 
@@ -3107,6 +3205,62 @@ do = "previous"
         let (s, warn) = parse("[wallpaper]\nws2 = \"forest.jpg\"\nscreens = \"secret\"\n");
         assert!(warn.len() == 1 && warn[0].contains("wallpaper.screens") && !warn[0].contains("secret"), "{warn:?}");
         assert_eq!(s.wall_name("internal", 1), Some("forest.jpg"));
+    }
+
+    // SECURITY.md (review H-02): the admin des-k reads settings.toml, which anything running as
+    // you can rewrite, so no value in it may steer des-k to a program or a file outside its own
+    // folders. Every value des-k turns into a name it acts on gets a program and a path here;
+    // one that kept any of them would be a way in.
+    #[test]
+    fn no_setting_names_a_program_or_a_path() {
+        let cmd = r"C:\\Windows\\System32\\cmd.exe";
+        let text = format!(
+            r#"
+[wallpaper]
+ws1 = "{cmd}"
+ws2 = "..\\..\\secret.jpg"
+ws3 = ["{cmd}", "\\\\server\\share\\a.png", "C:/x/b.jpg", "..\\c.png"]
+ws4 = "C:"
+[wallpaper.screens.internal]
+ws1 = "{cmd}"
+ws5 = "/etc/d.png"
+[apps]
+"{cmd}" = {{ workspace = 2 }}
+"\\\\server\\share\\slack.exe" = {{ workspace = 2 }}
+"../slack.exe" = {{ workspace = 2 }}
+"C:slack.exe" = {{ workspace = 2 }}
+[[gesture]]
+fingers = 3
+swipe = "up"
+do = "{cmd}"
+[[gesture]]
+fingers = ["{cmd}"]
+swipe = "{cmd}"
+"#
+        );
+        let (s, warn) = parse(&text);
+        assert!((0..9).all(|i| s.wallpaper_for("internal", i).is_none() && s.wallpaper_for("other", i).is_none()), "{:?} {:?}", s.wallpaper, s.wallpaper_screens);
+        assert!(s.apps.is_empty(), "{:?}", s.apps);
+        assert!(s.gestures.is_empty(), "{:?}", s.gestures);
+        assert!(warn.iter().any(|w| w.starts_with("gesture rule 1:") && w.ends_with("skipped")), "{warn:?}");
+        // A refusal names the key, never the path: a log you share never carries one (it could
+        // name your user folder). Typed paths into every kind of value a warn line could repeat.
+        let more = format!(
+            r#"
+[shortcuts]
+next = ["{cmd}", 7, ["{cmd}"]]
+jump = "{cmd}"
+[indicator]
+style = "{cmd}"
+"{cmd}" = 1
+[colors]
+accent = "{cmd}"
+"#
+        );
+        let (s2, warn2) = parse(&more);
+        assert_eq!(s2.next, Settings::default().next);
+        let all: Vec<&String> = warn.iter().chain(&warn2).collect();
+        assert!(all.len() == 20 && all.iter().all(|w| !w.contains("cmd.exe") && !w.contains("server") && !w.contains("System32")), "{all:#?}");
     }
 
     // Spec 0026 AC-4, AC-5, AC-18: fit, transition and dim are one value for every screen, and

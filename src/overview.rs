@@ -270,7 +270,7 @@ impl Screen {
             // pinned window is in the shown workspace's tile only.
             let here = |p: &&&ws::Place| if p.pinned { i == self.shown } else { p.workspace == i };
             let minis = mine.iter().rev().filter(here).filter_map(|p| self.mini(rect, p.hwnd)).collect();
-            let file = tile_file(s, &id, i);
+            let file = tile_file(&s, &id, i);
             self.tiles.push(Tile { rect, minis, name: names.get(i).cloned().unwrap_or_default(), file, picture: None });
         }
         let labels = settings::get().overview_labels;
@@ -1335,7 +1335,7 @@ fn slides_moved() {
         for sc in &mut s.screens {
             let id = ws::id(&sc.device);
             for (i, t) in sc.tiles.iter_mut().enumerate() {
-                let file = tile_file(st, &id, i);
+                let file = tile_file(&st, &id, i);
                 any |= t.file != file;
                 t.file = file;
             }

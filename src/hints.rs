@@ -260,7 +260,7 @@ fn read(s: &Settings, st: &State, back: Option<GaveBack>) -> View {
 }
 
 fn read_now() -> View {
-    read(settings::get(), &setup::state(), crate::welcome::gave_back())
+    read(&settings::get(), &setup::state(), crate::welcome::gave_back())
 }
 
 /// "three-finger swipes" from setup's "3-finger swipes".
@@ -1044,7 +1044,7 @@ pub fn recorded(vk: u16, mods: u8) {
     let Some(h) = hwnd() else { return };
     crate::keys::record(h, false);
     let combo = Combo { mods, vk };
-    match recorded_rec(settings::get(), combo) {
+    match recorded_rec(&settings::get(), combo) {
         None => stop_rec(),
         Some(Rec::Idle) => {
             let _ = set(|w| w.rec = Rec::Idle);

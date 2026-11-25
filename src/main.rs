@@ -18,6 +18,8 @@ mod log; // first: its info!, warn! and error! macros reach only the modules aft
 mod apps;
 mod backdrop;
 mod cloak;
+#[cfg(feature = "drill")]
+mod drill;
 mod finder;
 mod gestures;
 mod hints;
@@ -111,10 +113,11 @@ fn start_task() {
 }
 
 /// Hands the backdrop each screen's pictures when its shown workspace or the settings changed
-/// since `seen` (spec 0026). A reload puts new settings at a new address.
-fn backdrop_check(seen: &mut Option<(u64, usize)>) {
+/// since `seen` (spec 0026). Each reload gets a new version number; never its address, which a
+/// freed copy can hand on (spec 0032).
+fn backdrop_check(seen: &mut Option<(u64, u64)>) {
     let s = settings::get();
-    let now = (ws::SHOWN.load(std::sync::atomic::Ordering::Relaxed), std::ptr::from_ref(s) as usize);
+    let now = (ws::SHOWN.load(std::sync::atomic::Ordering::Relaxed), s.version());
     if *seen == Some(now) {
         return;
     }
@@ -167,6 +170,8 @@ fn main() -> windows::core::Result<()> {
         return Ok(());
     }
     log::open(false); // only now: a second copy must not truncate the running one's log
+    #[cfg(feature = "drill")]
+    drill::arm();
     match elevated() {
         Ok(true) => info!("des-k runs as admin: its keys work whatever window has focus"),
         Ok(false) => info!("des-k runs without admin: its keys stop while an admin window (Task Manager, an admin terminal) has focus"),
@@ -363,6 +368,9 @@ fn main() -> windows::core::Result<()> {
                 ws::check_screens(true);
                 ws::resync();
                 tray::warn_if_broken();
+                if ws::cant_save_due() {
+                    tray::cant_save();
+                }
                 settings_page::tick();
                 welcome::tick();
                 whats_new::tick(); // opens What's new once you're not busy (spec 0029 AC-7)

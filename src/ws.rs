@@ -318,7 +318,7 @@ fn mon_of(s: &State, id: &str) -> Option<HMONITOR> {
 /// share it. A screen that is not present keeps its last name. Never for a log line: the log
 /// names a screen by Windows' name and id, so no rename reaches it (AC-15).
 fn label(s: &State, id: &str) -> String {
-    label_by(settings::get(), s, id)
+    label_by(&settings::get(), s, id)
 }
 
 fn label_by(set: &settings::Settings, s: &State, id: &str) -> String {
@@ -468,8 +468,15 @@ fn pid_of(hwnd: HWND) -> u32 {
 /// `V <screen id> <spot>` TAB fingerprint (a visible one), and
 /// `A <home id> <workspace> <hwnd> <pid> <spot> <pinned>` TAB fingerprint (an away one).
 /// While a restore runs, its pending entries are written too (hwnd 0), so another restart
-/// still has them.
+/// still has them. The closing save of an action: a failure is logged, the action stands.
 fn save(s: &mut State) {
+    if let Err(e) = try_save(s) {
+        error!("state.txt not saved: {e}");
+    }
+}
+
+/// `save`, telling the caller whether state.txt was written, and why not (spec 0034 AC-3).
+fn try_save(s: &mut State) -> Result<(), String> {
     // Every change to where windows live ends here, so a mark leaves with its window on any path
     // (spec 0022 AC-4).
     let wants = std::mem::take(&mut s.wants);
@@ -481,24 +488,66 @@ fn save(s: &mut State) {
     s.ruled = ruled.into_iter().filter(|&(h, _)| hidden_on(s, h).is_some()).collect();
     // A closed window's handle can come back for a new window, which must count as new.
     s.opened.retain(|&(h, pid)| unsafe { IsWindow(Some(HWND(h as *mut _))) }.as_bool() && pid_of(HWND(h as *mut _)) == pid);
-    save_lines(s, true);
+    save_lines(s, true)
+}
+
+/// Listed before cloaked (spec 0034 AC-1): puts each window (screen id, workspace, hwnd) in front
+/// of its workspace's hidden list and saves, before any of them is cloaked, so a kill at any
+/// moment after leaves each one where `--quit` and the next start look. If the save fails they
+/// come off the lists again and nothing may be hidden: the reason is logged once here, and the
+/// next save that works lets hiding work again. An empty list saves nothing.
+fn list_then_save(s: &mut State, list: &[(String, usize, isize)]) -> Result<(), String> {
+    if list.is_empty() {
+        return Ok(());
+    }
+    // In reverse, so each workspace's list keeps `list`'s order, top first.
+    for (id, ws, raw) in list.iter().rev() {
+        mon_mut(s, id).hidden[*ws].insert(0, *raw);
+    }
+    try_save(s).inspect_err(|e| {
+        for (_, _, raw) in list {
+            unlist(s, *raw);
+        }
+        error!("state.txt not saved, nothing hidden: {e}");
+        CANT_SAVE.fetch_max(1, Ordering::Relaxed);
+    })
+}
+
+/// Takes a window listed by `list_then_save` off again, after its hide failed.
+fn unlist(s: &mut State, raw: isize) {
+    for m in s.monitors.values_mut() {
+        for l in &mut m.hidden {
+            l.retain(|&w| w != raw);
+        }
+    }
+}
+
+// A refused hide sets 1 under the lock; main's 1 s timer shows the tray's balloon and sets 2, so
+// it shows once a run (spec 0034 AC-2).
+static CANT_SAVE: AtomicU32 = AtomicU32::new(0);
+
+/// Whether the tray's "can't save your layout" balloon is due: true once a run, after the first
+/// refused hide.
+pub fn cant_save_due() -> bool {
+    CANT_SAVE.compare_exchange(1, 2, Ordering::Relaxed, Ordering::Relaxed).is_ok()
 }
 
 /// Without fingerprints: only L, M and A lines (an exit that showed everything). A lines stay,
 /// so windows still go home to a screen that returns after a quit (spec 0016 AC-8).
-fn save_lines(s: &mut State, fingerprints: bool) {
+fn save_lines(s: &mut State, fingerprints: bool) -> Result<(), String> {
     let mut out = String::new();
     if let Some((id, time)) = s.logon {
         out += &format!("L {id:x} {time}\n");
     }
-    let line = |f: &Fp| format!("\t{}\t{}\t{}\n", f.app, f.class, f.title);
+    let restore_on = settings::get().restore_enabled;
+    let line = |f: &Fp| fp_text(f, restore_on);
     // Only the apps of windows still listed carry over, so the cache never outgrows them.
     let (mut old, mut apps) = (std::mem::take(&mut s.apps), HashMap::new());
     let mut fp = |h: HWND, pid: u32| {
         let key = (h.0 as isize, pid);
         let app = old.remove(&key).unwrap_or_else(|| restore::app(h, pid));
         // A Store window's app id may not be readable yet: ask again next save.
-        if !app.is_empty() && !app.ends_with("\\applicationframehost.exe") {
+        if !app.is_empty() && app != "applicationframehost.exe" {
             apps.insert(key, app.clone());
         }
         line(&Fp { app, class: restore::clean(&class_name(h)), title: restore::clean(&title(h)) })
@@ -506,6 +555,8 @@ fn save_lines(s: &mut State, fingerprints: bool) {
     s.pinned.retain(|&raw| unsafe { IsWindow(Some(HWND(raw as *mut _))) }.as_bool());
     // The spot of the last check: a hidden window of a screen just unplugged keeps its old one.
     let spot = |raw: isize| s.spots.get(&raw).map_or_else(|| spot_of(HWND(raw as *mut _)), |x| x.1).text();
+    // A window listed but not cloaked yet (spec 0034 AC-1) is still in view: its W line is its only one.
+    let listed: HashSet<isize> = s.monitors.values().flat_map(|m| m.hidden.iter().flatten().copied()).collect();
     for (id, m) in &s.monitors {
         let a = m.area;
         out += &format!("M {id} {} {} {} {} {}\t{}\n", m.active, a.left, a.top, a.right, a.bottom, restore::clean(&m.name));
@@ -521,7 +572,7 @@ fn save_lines(s: &mut State, fingerprints: bool) {
         }
         if let Some(mon) = mon_of(s, id) {
             // An away window's A line says where it belongs.
-            for h in app_windows_on(mon).into_iter().filter(|h| !s.away.contains_key(&(h.0 as isize))) {
+            for h in app_windows_on(mon).into_iter().filter(|h| !s.away.contains_key(&(h.0 as isize)) && !listed.contains(&(h.0 as isize))) {
                 let (raw, pid) = (h.0 as isize, pid_of(h));
                 if s.pinned.contains(&raw) {
                     out += &format!("P {id} {raw} {pid} {}{}", spot(raw), fp(h, pid));
@@ -547,7 +598,14 @@ fn save_lines(s: &mut State, fingerprints: bool) {
         }
     }
     s.apps = apps;
-    write_state(out);
+    write_state(out)
+}
+
+/// A line's fingerprint, after its first tab: app, class and title. Only a restore reads a title,
+/// so with Restore off the title field stays empty (spec 0033 AC-4); the line keeps all three
+/// fields, so it still reads back as a line with a fingerprint.
+fn fp_text(f: &Fp, restore_on: bool) -> String {
+    format!("\t{}\t{}\t{}\n", f.app, f.class, if restore_on { f.title.as_str() } else { "" })
 }
 
 /// One state.txt line, read. Lines from an older des-k name Windows' device (DISPLAY2) and
@@ -572,7 +630,8 @@ fn parse_line(line: &str, upgrade: &dyn Fn(&str) -> Option<String>) -> Option<Li
     let (head, tail) = line.split_once('\t').unwrap_or((line, ""));
     // The fingerprint follows the first tab; a line without one is from an older des-k.
     let fp = match tail.splitn(3, '\t').collect::<Vec<_>>().as_slice() {
-        [app, class, title] => Some(Fp { app: app.to_string(), class: class.to_string(), title: title.to_string() }),
+        // An older des-k wrote the full path: read as the file name, it still matches (spec 0033 AC-2).
+        [app, class, title] => Some(Fp { app: restore::program(app), class: class.to_string(), title: title.to_string() }),
         _ => None,
     };
     let n = |v: &str| v.parse::<i64>().ok();
@@ -603,12 +662,11 @@ fn parse_line(line: &str, upgrade: &dyn Fn(&str) -> Option<String>) -> Option<Li
     })
 }
 
-fn write_state(text: String) {
+/// Writes state.txt whole; the caller logs a failure (spec 0034 AC-3).
+fn write_state(text: String) -> Result<(), String> {
     // A crash or power loss mid write must never leave half a file.
     let tmp = data_dir().join("state.tmp");
-    if let Err(e) = write_new(&tmp, &text).and_then(|()| std::fs::rename(&tmp, state_file())) {
-        error!("state.txt not saved: {e}");
-    }
+    write_new(&tmp, &text).and_then(|()| std::fs::rename(&tmp, state_file())).map_err(|e| e.to_string())
 }
 
 /// `des-k --quit` with no des-k running (after a crash or kill, or from the uninstaller):
@@ -632,7 +690,9 @@ pub fn rescue() {
         Some(shell.hide(h, false).inspect_err(|e| if !crate::cloak::unknown() { error!("could not show saved window {raw:#x}: {e}") }).is_ok())
     });
     info!("des-k was not running: {shown} hidden window(s) shown, {left} could not be");
-    write_state(out);
+    if let Err(e) = write_state(out) {
+        error!("state.txt not saved: {e}");
+    }
 }
 
 /// rescue's pass over state.txt, apart so it can be tested. `show` gets each saved hidden
@@ -901,14 +961,18 @@ fn place_in(s: &mut State, h: HWND, rule: &settings::Rule, name: String, shown: 
     let from_area = work_area(from_mon);
     let spot = Spot { rect: remap(from_area, land.area, now.rect), state: now.state };
     let was_fg = unsafe { GetForegroundWindow() } == h;
-    let m = s.monitors.entry(land.id.clone()).or_insert_with(|| Monitor::of(&land));
-    let hide = m.active != k;
+    let hide = s.monitors.entry(land.id.clone()).or_insert_with(|| Monitor::of(&land)).active != k;
     let mut how = String::from("visible");
     if hide {
         let Ok(shell) = Shell::new() else {
             warn!("apps: {app} opened where Windows put it: the shell is not available");
             return None;
         };
+        // Listed and saved before the cloak, so every exit path shows it again (spec 0034 AC-1,
+        // spec 0027 AC-12). Front = top. Refused: it stays where Windows put it.
+        if list_then_save(s, &[(land.id.clone(), k, raw)]).is_err() {
+            return None;
+        }
         match hide_new(&shell, h) {
             Ok(retries) => {
                 how = match shown {
@@ -917,12 +981,15 @@ fn place_in(s: &mut State, h: HWND, rule: &settings::Rule, name: String, shown: 
                 }
             }
             Err(e) => {
+                // hide_new showed it again if it could; one that may still be cloaked stays listed.
+                if cloaked(h) == 0 {
+                    unlist(s, raw);
+                }
+                save(s);
                 warn!("apps: {app} opened where Windows put it: could not hide it ({e})");
                 return None;
             }
         }
-        // In a list straight away, so every exit path shows it again (AC-12). Front = top.
-        m.hidden[k].insert(0, raw);
         s.ruled.insert(raw, Ruled { at: Instant::now(), recloaks: 0, from: from.clone() });
         if was_fg {
             focus_off(&app, from_mon);
@@ -1123,7 +1190,7 @@ pub fn jump(index: usize) {
         let Some(target) = back else {
             return indicator::show(mon, card(&s, &name, active, count));
         };
-        if switch_to(&mut s, mon, &name, target, None, None) {
+        if switch_to(&mut s, mon, &name, target, None, None) == Switch::Switched {
             info!("jump: {name} already on workspace {}, back to {}/{count}", index + 1, target + 1);
         }
         return;
@@ -1144,7 +1211,7 @@ pub fn back() {
         info!("back: {name} has no last workspace");
         return indicator::show(mon, card(&s, &name, active, count));
     };
-    if switch_to(&mut s, mon, &name, target, None, None) {
+    if switch_to(&mut s, mon, &name, target, None, None) == Switch::Switched {
         info!("back: {name} -> workspace {}/{count}", target + 1);
     }
 }
@@ -1198,7 +1265,7 @@ pub fn follow(hwnd: HWND) {
     if m.last_follow.is_some_and(recent) {
         return info!("follow: {name} cooling down, ignored {app}");
     }
-    if switch_to(&mut s, mon, &name, ws, Some(hwnd), None) {
+    if switch_to(&mut s, mon, &name, ws, Some(hwnd), None) == Switch::Switched {
         s.monitors.get_mut(&name).expect("switch_to keeps the monitor").last_follow = Some(Instant::now());
         info!("follow: {name} -> workspace {}/{} for {app}", ws + 1, settings::get().workspaces);
     }
@@ -1208,19 +1275,17 @@ pub fn follow(hwnd: HWND) {
 /// in front; `None` focuses the first shown window, but only if we hid the focused one or the
 /// desktop has focus.
 /// `keep` is a visible window that comes along instead of being hidden (a follow send).
-/// Returns whether it switched.
-fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize, focus: Option<HWND>, keep: Option<HWND>) -> bool {
+fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize, focus: Option<HWND>, keep: Option<HWND>) -> Switch {
     let count = settings::get().workspaces;
-    mon_mut(s, name);
-    let m = s.monitors.get_mut(name).expect("made above");
-    if target == m.active {
-        return false;
+    let active = mon_mut(s, name).active;
+    if target == active {
+        return Switch::Already;
     }
     let shell = match Shell::new() {
         Ok(sh) => sh,
         Err(e) => {
             warn!("shell unavailable: {e}");
-            return false;
+            return Switch::Refused;
         }
     };
 
@@ -1228,30 +1293,55 @@ fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize, focus: Opt
     // Leaving an empty workspace left focus on the desktop; nobody's focus to keep there.
     let fg_desktop = fg.is_invalid() || fg == unsafe { GetShellWindow() } || matches!(class_name(fg).as_str(), "Progman" | "WorkerW");
     let mut fg_hidden = false;
-    // Hide bottom-up: hiding the top window first briefly uncovers the ones behind it.
-    let mut hid = Vec::new();
     // A pinned window stays in view on every workspace (spec 0014). On a Windows layout des-k
     // does not know, nothing is hidden and the switch only changes the number (spec 0030 AC-5).
-    let hides = if crate::cloak::unknown() { Vec::new() } else { app_windows_on(mon) };
-    for h in hides.into_iter().rev().filter(|&h| Some(h) != keep && !s.pinned.contains(&(h.0 as isize))) {
+    let hides: Vec<HWND> = if crate::cloak::unknown() { Vec::new() } else { app_windows_on(mon) };
+    let hides: Vec<HWND> = hides.into_iter().filter(|&h| Some(h) != keep && !s.pinned.contains(&(h.0 as isize))).collect();
+    // Top first, as a hidden list keeps them, so showing them later is top-down (no flash).
+    let list: Vec<(String, usize, isize)> = hides.iter().map(|h| (name.to_string(), active, h.0 as isize)).collect();
+    if list_then_save(s, &list).is_err() {
+        indicator::show(mon, card(s, name, active, count).with(Says::NotSaved));
+        return Switch::Refused;
+    }
+    // Hide bottom-up: hiding the top window first briefly uncovers the ones behind it.
+    #[cfg(feature = "drill")]
+    let (mut done, half) = (0, hides.len().div_ceil(2));
+    for (i, &h) in hides.iter().enumerate().rev() {
         match shell.hide(h, true) {
             Ok(()) => {
-                hid.push(h.0 as isize);
                 fg_hidden |= h == fg;
+                #[cfg(feature = "drill")]
+                {
+                    done += 1;
+                    if done == 1 {
+                        crate::drill::at(crate::drill::Stop::KillAfterHide);
+                    }
+                    if done == half {
+                        crate::drill::at(crate::drill::Stop::PauseMidSwitch);
+                    }
+                }
             }
-            // This very hide found the layout unknown, and cloak.rs said so.
-            Err(_) if crate::cloak::unknown() => break,
+            // This very hide found the layout unknown, and cloak.rs said so: the rest stay in view.
+            Err(_) if crate::cloak::unknown() => {
+                for h in &hides[..=i] {
+                    unlist(s, h.0 as isize);
+                }
+                break;
+            }
             Err(e) => {
                 // The cloak can work and only the taskbar step fail: undo it, or nothing tracks it.
                 if cloaked(h) != 0 {
                     let _ = shell.hide(h, false);
                 }
+                // A window that may still be cloaked is never dropped (AGENTS.md).
+                if cloaked(h) == 0 {
+                    unlist(s, h.0 as isize);
+                }
                 warn!("cloak {:?} failed: {e}", h.0);
             }
         }
     }
-    hid.reverse(); // keep top-first, so showing them is top-down (no flash either)
-    m.hidden[m.active].extend(hid);
+    let m = s.monitors.get_mut(name).expect("made above");
 
     // uncloak keeps each one listed, silently, on an unknown layout.
     let (shown, stuck) = show_all(std::mem::take(&mut m.hidden[target]), |raw| uncloak(&shell, raw));
@@ -1287,7 +1377,16 @@ fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize, focus: Opt
     indicator::show(mon, card(s, name, target, count));
     s.sent = None;
     save(s);
-    true
+    Switch::Switched
+}
+
+/// What `switch_to` did. Refused: nothing was shown or hidden, because the windows it would hide
+/// could not be saved first, or the shell was not there (spec 0034 AC-2).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Switch {
+    Switched,
+    Already,
+    Refused,
 }
 
 /// Shows the windows of `list`, top first. `show` gets each one: None if it is closed, else
@@ -1396,41 +1495,63 @@ pub fn send(to: To, follow: bool) {
         }
     };
     let t = who(h);
-    let unpinned = s.pinned.remove(&(h.0 as isize));
-    if unpinned {
-        info!("send: {t} unpinned, it goes to one workspace");
-    }
+    let raw = h.0 as isize;
     // Without this, a stay press would hide the window into the shown workspace's own list.
     if !is_repeat && target == from {
+        if s.pinned.remove(&raw) {
+            info!("send: {t} unpinned, it goes to one workspace");
+        }
         info!("send: {t} already on {name} workspace {}/{count}", from + 1);
         return indicator::show(mon, card(&s, &name, from, count).with(Says::Already));
     }
     let line = |how: &str| format!("send: {t} {name} workspace {}/{count} -> {}/{count}, {how}", from + 1, target + 1);
-    claim(&mut s, h.0 as isize, "you sent it");
+    // Only once its move stands, so a send refused for a failed save changes nothing (spec 0034 AC-2).
+    let sent = |s: &mut State| {
+        let unpinned = s.pinned.remove(&raw);
+        if unpinned {
+            info!("send: {t} unpinned, it goes to one workspace");
+        }
+        claim(s, raw, "you sent it");
+        unpinned
+    };
 
     if follow {
+        let marked = s.pinned.contains(&raw) || s.away.contains_key(&raw);
         // Already in front, so it stays on top of the workspace it lands on.
-        if switch_to(&mut s, mon, &name, target, Some(h), Some(h)) {
+        if switch_to(&mut s, mon, &name, target, Some(h), Some(h)) == Switch::Switched {
+            sent(&mut s);
             info!("{}", line("follow"));
+            if marked {
+                save(&mut s);
+            }
         }
         return;
     }
 
     let shell = || Shell::new().inspect_err(|e| warn!("shell unavailable: {e}")).ok();
-    let raw = h.0 as isize;
-    let m = s.monitors.get_mut(&name).expect("found or created above");
-    let active = m.active;
+    let active = s.monitors[&name].active;
+    let unpinned;
     if !is_repeat {
         let Some(shell) = shell() else { return };
+        // Listed and saved before the cloak (spec 0034 AC-1). Front = top.
+        if list_then_save(&mut s, &[(name.clone(), target, raw)]).is_err() {
+            return indicator::show(mon, card(&s, &name, active, count).with(Says::NotSaved));
+        }
         if let Err(e) = shell.hide(h, true) {
             // The cloak can work and only the taskbar step fail: undo it, so nothing changes.
             if cloaked(h) != 0 {
                 let _ = shell.hide(h, false);
             }
+            // A window that may still be cloaked is never dropped (AGENTS.md).
+            if cloaked(h) == 0 {
+                unlist(&mut s, raw);
+            }
+            save(&mut s);
             return warn!("send: could not hide {t}: {e}");
         }
-        // In a list straight away, so the panic hook can always show it again. Front = top.
-        m.hidden[target].insert(0, raw);
+        #[cfg(feature = "drill")]
+        crate::drill::at(crate::drill::Stop::KillAfterSend);
+        unpinned = sent(&mut s);
         // It is cloaked now, so the filter skips it.
         let next = app_windows_on(mon).first().copied().unwrap_or(unsafe { GetShellWindow() });
         unsafe { let _ = SetForegroundWindow(next); }
@@ -1439,13 +1560,16 @@ pub fn send(to: To, follow: bool) {
         if let Err(e) = shell.hide(h, false) {
             return error!("send: could not show {t}: {e}");
         }
-        m.hidden[from].retain(|&w| w != raw);
+        unpinned = sent(&mut s);
+        s.monitors.get_mut(&name).expect("found above").hidden[from].retain(|&w| w != raw);
         unsafe { let _ = SetForegroundWindow(h); }
     } else {
+        unpinned = sent(&mut s);
+        let m = s.monitors.get_mut(&name).expect("found above");
         m.hidden[from].retain(|&w| w != raw);
         m.hidden[target].insert(0, raw);
     }
-    m.desktop.clear();
+    s.monitors.get_mut(&name).expect("found above").desktop.clear();
     s.sent = Some((raw, Instant::now()));
     let said = if target == active { Says::SentBack } else { Says::Sent { to: target, unpinned } };
     indicator::show(mon, card(&s, &name, active, count).with(said));
@@ -2060,7 +2184,10 @@ pub fn go_to(hwnd: HWND) -> Result<(), Miss> {
         Some((name, ws)) => {
             // Its screen left: check_screens folds it onto the main display if the screen stays gone.
             let Some(mon) = mon_of(&s, &name) else { return Err(Miss::Unplugged) };
-            switch_to(&mut s, mon, &name, ws, Some(hwnd), None);
+            // Refused: it stays hidden, and focus must not go to it.
+            if switch_to(&mut s, mon, &name, ws, Some(hwnd), None) == Switch::Refused {
+                return Err(Miss::CantMove);
+            }
             (name, ws)
         }
         None => {
@@ -2179,15 +2306,28 @@ pub fn place(hwnd: HWND, device: &str, ws: usize) -> Result<(), Miss> {
         warn!("overview: shell unavailable: {e}");
         Miss::CantMove
     })?;
-    if hidden.is_none()
-        && let Err(e) = shell.hide(hwnd, true)
-    {
-        // The cloak can work and only the taskbar step fail: undo it, so nothing changes.
-        if cloaked(hwnd) != 0 {
-            let _ = shell.hide(hwnd, false);
+    let id = id_of(&mut s, device);
+    if hidden.is_none() {
+        // Listed and saved before the cloak (spec 0034 AC-1). Front = top, as a send puts it.
+        if list_then_save(&mut s, &[(id.clone(), ws, raw)]).is_err() {
+            let active = mon_mut(&mut s, &id).active;
+            if let Some(mon) = monitor_named(device) {
+                indicator::show(mon, card(&s, &id, active, count).with(Says::NotSaved));
+            }
+            return Err(Miss::CantMove);
         }
-        warn!("overview: could not hide {t}: {e}");
-        return Err(Miss::CantMove);
+        if let Err(e) = shell.hide(hwnd, true) {
+            // The cloak can work and only the taskbar step fail: undo it, so nothing changes.
+            if cloaked(hwnd) != 0 {
+                let _ = shell.hide(hwnd, false);
+            }
+            if cloaked(hwnd) == 0 {
+                unlist(&mut s, raw);
+            }
+            save(&mut s);
+            warn!("overview: could not hide {t}: {e}");
+            return Err(Miss::CantMove);
+        }
     }
     if from != device {
         let moved = match (monitor_named(&from), monitor_named(device)) {
@@ -2196,7 +2336,11 @@ pub fn place(hwnd: HWND, device: &str, ws: usize) -> Result<(), Miss> {
         };
         if let Err(e) = moved {
             if hidden.is_none() {
-                let _ = shell.hide(hwnd, false);
+                // Shown again where it was, so off the list it was saved in.
+                if shell.hide(hwnd, false).is_ok() {
+                    unlist(&mut s, raw);
+                }
+                save(&mut s);
             }
             warn!("overview: {e}");
             return Err(Miss::CantMove);
@@ -2204,14 +2348,13 @@ pub fn place(hwnd: HWND, device: &str, ws: usize) -> Result<(), Miss> {
     }
     if let Some((dev, w)) = &hidden {
         s.monitors.get_mut(dev).expect("found above").hidden[*w].retain(|&x| x != raw);
+        // Front = top, as a send puts it.
+        mon_mut(&mut s, &id).hidden[ws].insert(0, raw);
     }
     if s.pinned.remove(&raw) {
         info!("overview: {t} unpinned, it goes to one workspace");
     }
     claim(&mut s, raw, "you dropped it on a workspace");
-    // Front = top, as a send puts it.
-    let id = id_of(&mut s, device);
-    mon_mut(&mut s, &id).hidden[ws].insert(0, raw);
     info!("overview: {t} -> {device} workspace {}/{count}, hidden", ws + 1);
     save(&mut s);
     Ok(())
@@ -2321,7 +2464,9 @@ fn restore_in(s: &mut State) {
     if left > 0 {
         error!("{left} window(s) could not be shown: state.txt keeps them, the next start shows or adopts them");
     }
-    save_lines(s, left > 0);
+    if let Err(e) = save_lines(s, left > 0) {
+        error!("state.txt not saved: {e}");
+    }
 }
 
 /// The panic hook's restore_all. The hook runs before unwinding drops a lock guard, so a
@@ -2565,7 +2710,7 @@ pub fn restore_tick() -> bool {
             None => {
                 let ac = (restore::app(h, key.1), restore::clean(&class_name(h)));
                 // A Store window's app id may not be readable yet: ask again next tick.
-                if !ac.0.ends_with("\\applicationframehost.exe") {
+                if ac.0 != "applicationframehost.exe" {
                     r.cache.insert(key, ac.clone());
                 }
                 ac
@@ -2575,6 +2720,8 @@ pub fn restore_tick() -> bool {
     }
 
     let mut changed = false;
+    // The windows this tick hides: listed and saved once, before any is cloaked (spec 0034 AC-1).
+    let mut plan: Vec<Hide> = Vec::new();
     for pass in [1, 2] {
         let mut rest = Vec::new();
         for (h, key, fp) in left {
@@ -2609,34 +2756,27 @@ pub fn restore_tick() -> bool {
                 let (home_active, name, from) = (home.active, home.name.clone(), home.area);
                 let ws = e.ws.unwrap_or(home_active).min(count - 1);
                 let main = s.present.iter().find(|p| p.primary).cloned();
-                if here.is_none()
-                    && !(e.pin || e.ws.is_none() || ws == home_active)
-                    && let Some(main) = main
-                {
-                    let m = s.monitors.entry(main.id.clone()).or_insert_with(|| Monitor::of(&main));
-                    if m.active != ws {
-                        // A brand new window fails to cloak for a moment: nothing used up, next tick retries.
-                        if shell.hide(h, true).is_err() {
-                            if cloaked(h) != 0 {
-                                let _ = shell.hide(h, false);
-                            }
-                            continue;
-                        }
-                        m.hidden[ws].insert(0, raw);
-                        s.restored.retain(|_, t| t.elapsed() < RESTORED_IGNORE);
-                        s.restored.insert(raw, Instant::now());
-                    }
-                    if !hung(h)
-                        && let Err(err) = put(h, Spot { rect: remap(from, main.area, spot.rect), state: spot.state })
-                    {
-                        warn!("restore: could not place {}: {err}", fp.app);
-                    }
-                }
                 if e.pin {
                     s.pinned.insert(raw);
                 }
                 s.away.insert(raw, Away { home: e.dev.clone(), ws, spot, pinned: e.pin, pid: key.1 });
                 r.pending.retain(|&p| p != i);
+                if here.is_none()
+                    && !(e.pin || e.ws.is_none() || ws == home_active)
+                    && let Some(main) = main
+                {
+                    let to = Spot { rect: remap(from, main.area, spot.rect), state: spot.state };
+                    if s.monitors.entry(main.id.clone()).or_insert_with(|| Monitor::of(&main)).active != ws {
+                        // Moved once hidden, so it never crosses screens where you can see it.
+                        plan.push(Hide { h, key, i, app: fp.app.clone(), to: (main.id.clone(), ws), then: After::Away { put: to, name } });
+                        continue;
+                    }
+                    if !hung(h)
+                        && let Err(err) = put(h, to)
+                    {
+                        warn!("restore: could not place {}: {err}", fp.app);
+                    }
+                }
                 r.resolved.insert(key);
                 r.kept += 1;
                 changed = true;
@@ -2663,38 +2803,73 @@ pub fn restore_tick() -> bool {
                 // Apps often open on the main screen and move a moment later.
                 _ if device_name(unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) }) != p.device => {}
                 _ => {
-                    let was_fg = unsafe { GetForegroundWindow() } == h;
-                    // A brand new window fails to cloak for a moment: nothing used up, next tick retries.
-                    if shell.hide(h, true).is_err() {
-                        // The cloak can work and only the taskbar step fail: undo it, or nothing tracks it.
-                        if cloaked(h) != 0 {
-                            let _ = shell.hide(h, false);
-                        }
-                        continue;
-                    }
-                    m.hidden[ws].insert(0, raw);
-                    s.restored.retain(|_, t| t.elapsed() < RESTORED_IGNORE);
-                    s.restored.insert(raw, Instant::now());
                     r.pending.retain(|&p| p != i);
-                    r.resolved.insert(key);
-                    r.hidden += 1;
-                    changed = true;
-                    info!("restore: {} -> {dev} workspace {}/{count}", fp.app, ws + 1);
-                    if was_fg {
-                        let mon = unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) };
-                        let next = app_windows_on(mon).first().copied().unwrap_or(unsafe { GetShellWindow() });
-                        unsafe {
-                            let _ = SetForegroundWindow(next);
-                            if GetForegroundWindow() != next {
-                                warn!("restore: could not move focus");
-                            }
-                        }
-                    }
+                    plan.push(Hide { h, key, i, app: fp.app.clone(), to: (dev.clone(), ws), then: After::Home { was_fg: unsafe { GetForegroundWindow() } == h } });
                 }
             }
         }
         left = rest;
     }
+
+    let list: Vec<(String, usize, isize)> = plan.iter().map(|p| (p.to.0.clone(), p.to.1, p.h.0 as isize)).collect();
+    if list_then_save(s, &list).is_err() {
+        // Nothing hidden, nothing used up: a later tick tries again (spec 0034 AC-2).
+        for p in &plan {
+            unplan(s, p);
+        }
+        plan.clear();
+    }
+    for p in plan {
+        let raw = p.h.0 as isize;
+        // A brand new window fails to cloak for a moment: nothing used up, next tick retries.
+        if shell.hide(p.h, true).is_err() {
+            // The cloak can work and only the taskbar step fail: undo it, or nothing tracks it.
+            if cloaked(p.h) != 0 {
+                let _ = shell.hide(p.h, false);
+            }
+            // One that may still be cloaked stays listed, as hidden (AGENTS.md).
+            if cloaked(p.h) == 0 {
+                unlist(s, raw);
+                unplan(s, &p);
+                changed = true;
+                continue;
+            }
+        }
+        #[cfg(feature = "drill")]
+        crate::drill::at(crate::drill::Stop::KillMidRestore);
+        s.restored.retain(|_, t| t.elapsed() < RESTORED_IGNORE);
+        s.restored.insert(raw, Instant::now());
+        let r = s.restore.as_mut().expect("this tick's restore");
+        r.resolved.insert(p.key);
+        changed = true;
+        let (dev, ws) = p.to;
+        match p.then {
+            After::Home { was_fg } => {
+                r.hidden += 1;
+                info!("restore: {} -> {dev} workspace {}/{count}", p.app, ws + 1);
+                if was_fg {
+                    let mon = unsafe { MonitorFromWindow(p.h, MONITOR_DEFAULTTONEAREST) };
+                    let next = app_windows_on(mon).first().copied().unwrap_or(unsafe { GetShellWindow() });
+                    unsafe {
+                        let _ = SetForegroundWindow(next);
+                        if GetForegroundWindow() != next {
+                            warn!("restore: could not move focus");
+                        }
+                    }
+                }
+            }
+            After::Away { put: to, name } => {
+                r.kept += 1;
+                if !hung(p.h)
+                    && let Err(err) = put(p.h, to)
+                {
+                    warn!("restore: could not place {}: {err}", p.app);
+                }
+                info!("restore: {} waits for {name}, workspace {}/{count}", p.app, ws + 1);
+            }
+        }
+    }
+    let r = s.restore.as_ref().expect("this tick's restore");
     if r.pending.is_empty() {
         finish_restore(s);
         return false;
@@ -2703,6 +2878,36 @@ pub fn restore_tick() -> bool {
         save(s);
     }
     true
+}
+
+/// A window a restore tick hides (spec 0034 AC-1): listed on `to` (screen id, workspace) and its
+/// entry `i` out of `pending` before the one save, cloaked after.
+struct Hide {
+    h: HWND,
+    key: (isize, u32),
+    i: usize,
+    app: String,
+    to: (String, usize),
+    then: After,
+}
+
+/// What follows a restore's cloak: home, on its own screen; or away, onto the main display's
+/// workspace while its screen is not plugged in, moved there once hidden.
+enum After {
+    Home { was_fg: bool },
+    Away { put: Spot, name: String },
+}
+
+/// A planned restore hide that did not happen: its entry goes back to `pending` (in order, as
+/// it started), and an away one loses the record it was given, so a later tick retries. A
+/// pinned entry is never planned: it stays in view.
+fn unplan(s: &mut State, p: &Hide) {
+    if let After::Away { .. } = p.then {
+        s.away.remove(&(p.h.0 as isize));
+    }
+    let r = s.restore.as_mut().expect("this tick's restore");
+    let at = r.pending.partition_point(|&x| x < p.i);
+    r.pending.insert(at, p.i);
 }
 
 /// Unmatched entries are dropped: a window that reopens later is never hidden (AC-6).
@@ -3071,18 +3276,31 @@ fn give_back(s: &mut State, id: &str, last: bool, notes: &mut Vec<Note>) -> bool
         (m.area, m.active)
     };
     let fg = unsafe { GetForegroundWindow() };
-    let mine: Vec<(isize, Away)> = s.away.iter().filter(|(_, a)| a.home == id).map(|(&raw, a)| (raw, a.clone())).collect();
-    let (mut moved, mut changed, mut fg_hidden) = (0, false, false);
-    for (raw, a) in mine {
+    // Each window's way home, worked out before any moves: a hung one counts as a try.
+    // (hwnd, record, home workspace, goes home in view, the list it is in now)
+    let mine: Vec<_> = s
+        .away
+        .iter()
+        .filter(|&(&raw, a)| a.home == id && !hung(HWND(raw as *mut _)))
+        .map(|(&raw, a)| {
+            let ws = a.ws.min(count - 1);
+            // Nothing can be hidden on a layout des-k does not know: it goes home in view (spec 0030 AC-6).
+            let in_view = a.pinned || ws == active || crate::cloak::unknown();
+            (raw, a.clone(), ws, in_view, hidden_on(s, raw))
+        })
+        .collect();
+    // The ones in view now that go home hidden: listed and saved before any is cloaked (spec 0034
+    // AC-1). Refused: nothing moves, each keeps its away record, and the next check tries again.
+    let list: Vec<(String, usize, isize)> = mine.iter().filter(|m| !m.3 && m.4.is_none()).map(|m| (id.to_string(), m.2, m.0)).collect();
+    if list_then_save(s, &list).is_err() {
+        return false;
+    }
+    // A listed window whose hide then failed comes off its list: the closing save must say so.
+    let (mut moved, mut changed, mut fg_hidden) = (0, !list.is_empty(), false);
+    for (raw, a, ws, in_view, hidden) in mine {
         let h = HWND(raw as *mut _);
-        if hung(h) {
-            continue; // counts as a try
-        }
         let to = Spot { rect: if saved == p.area { a.spot.rect } else { remap(saved, p.area, a.spot.rect) }, state: a.spot.state };
-        let ws = a.ws.min(count - 1);
-        // Nothing can be hidden on a layout des-k does not know: it goes home in view (spec 0030 AC-6).
-        let in_view = a.pinned || ws == active || crate::cloak::unknown();
-        let done = match (in_view, hidden_on(s, raw)) {
+        let done = match (in_view, hidden) {
             // Already home and in place (a short drop Windows undid): nothing to move.
             (true, None) if screen_now(s, raw).as_deref() == Some(id) && spot_of(h) == to => Some(false),
             (true, None) => put(h, to).inspect_err(|e| warn!("return: could not move {}: {e}", who(h))).ok().map(|()| true),
@@ -3103,25 +3321,29 @@ fn give_back(s: &mut State, id: &str, last: bool, notes: &mut Vec<Note>) -> bool
                 ok.then_some(true)
             }
             (false, None) => {
-                // Hidden first, then moved, so it never flashes on its way home.
+                // Hidden first, then moved, so it never flashes on its way home. Already listed
+                // on its home workspace above; off again if it ends up in view where it was.
                 if let Err(e) = shell.hide(h, true) {
                     if cloaked(h) != 0 {
                         let _ = shell.hide(h, false);
+                    }
+                    // One that may still be cloaked stays listed (AGENTS.md); its record stays too.
+                    if cloaked(h) == 0 {
+                        unlist(s, raw);
                     }
                     warn!("return: could not hide {}: {e}", who(h));
                     None
                 } else if let Err(e) = put(h, to) {
                     warn!("return: could not move {}: {e}", who(h));
                     if shell.hide(h, false).is_err() {
-                        // Still cloaked: it must stay listed, so its home workspace takes it.
-                        mon_mut(s, id).hidden[ws].push(raw);
+                        // Still cloaked: it stays listed, so its home workspace takes it.
                         Some(true)
                     } else {
+                        unlist(s, raw);
                         None
                     }
                 } else {
                     fg_hidden |= h == fg;
-                    mon_mut(s, id).hidden[ws].push(raw);
                     Some(true)
                 }
             }
@@ -3539,6 +3761,38 @@ screen = \"Desk\"
         assert_eq!(lines[0], Line::M { id: "DEL-4123-ABC".into(), active: 1, area: rect(0, 0, 2560, 1400), name: "DELL U2720Q".into() });
         assert_eq!(lines[1], Line::A { raw: 77, away, fp: Some(Fp { app: "a".into(), class: "c".into(), title: "t".into() }) });
         assert!(matches!(&lines[2], Line::V { spot: None, .. }), "a zero size is a spot nobody knew");
+    }
+
+    // A layout saved by an older des-k, with full exe paths, must still restore after the upgrade
+    // and still adopt its away window: read back, a path is its file name, which is what a live
+    // window gives now (spec 0033 AC-2).
+    #[test]
+    fn an_old_full_path_reads_back_as_its_file_name() {
+        let sp = spot(0, 'n').text();
+        let text = format!(
+            "W DEL-1 2 0 0 {sp}\tc:\\users\\x\\appdata\\local\\programs\\microsoft vs code\\code.exe\tChrome_WidgetWin_1\tnotes.md\nA DEL-1 1 77 44 {sp} 0\tC:\\Windows\\notepad.exe\tNotepad\tt\n"
+        );
+        let lines = parse_state(&text, |_| None);
+        let Line::W { fp: Some(saved), .. } = &lines[0] else { panic!("{:?}", lines[0]) };
+        assert_eq!(saved.app, "code.exe");
+        assert!(matches!(&lines[1], Line::A { fp: Some(f), .. } if f.app == "notepad.exe"));
+        let entry = restore::Entry { dev: "DEL-1".into(), ws: Some(2), pin: false, away: false, spot: None, fp: saved.clone() };
+        let live = Fp { app: "code.exe".into(), class: "Chrome_WidgetWin_1".into(), title: "notes.md".into() };
+        assert_eq!(restore::pick(&[entry], &[0], &live, 1), restore::Pick::Take(0));
+    }
+
+    // Nothing reads a title with Restore off, so none is kept (spec 0033 AC-4). The line still has
+    // all three fields: with fewer it would read as an older des-k's line with no fingerprint,
+    // and a restore turned back on, or an away window's adoption, would lose the window.
+    #[test]
+    fn restore_off_keeps_no_title_but_a_whole_fingerprint() {
+        let f = Fp { app: "code.exe".into(), class: "Chrome_WidgetWin_1".into(), title: "salary 2027.xlsx".into() };
+        assert!(fp_text(&f, true).contains("salary"));
+        let off = fp_text(&f, false);
+        assert!(!off.contains("salary"));
+        let line = format!("V DEL-1 {}{off}", spot(0, 'n').text());
+        let read = parse_state(&line, |_| None);
+        assert!(matches!(&read[..], [Line::V { fp: Some(Fp { app, class, title }), .. }] if app == "code.exe" && class == "Chrome_WidgetWin_1" && title.is_empty()));
     }
 
     // --quit after a crash shows what it can, but an away window's line stays: its screen may

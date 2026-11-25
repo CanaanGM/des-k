@@ -94,9 +94,21 @@ The [guide](https://canaangm.github.io/des-k/) explains each of these in full.
 ## Your data
 
 des-k keeps its layout, settings and log in `%LOCALAPPDATA%\des-k`, on this PC only. The log
-names windows by their app (`chrome.exe`), never by their title, so it is safe to share. The only
-thing des-k sends out is the update check you click: a request to github.com that carries your
-address and des-k's version, nothing else.
+names windows by their app (`chrome.exe`), never by their title or folder, so it is safe to share.
+The only thing des-k sends out is the update check you click: a request to github.com that
+carries your address and des-k's version, nothing else.
+
+The layout lives in `state.txt`, so des-k can put your windows back after a restart or a reboot.
+It holds:
+
+- each screen: its model and serial number, its area, and which workspace it shows
+- each window des-k tracks: its app's file name (`code.exe`, never its folder), its window class,
+  its place and size, its window handle and process id, and its title, only while **Restore** is
+  on in settings (restore uses the title to tell two windows of one app apart)
+
+While des-k runs, every tracked window is in there. **Quit** leaves only your screens and the
+windows waiting for an unplugged screen. To clear it, Quit from the tray, then delete
+`state.txt`. Deleting it while des-k runs does nothing: des-k writes it again at the next change.
 
 ## Stop or uninstall
 

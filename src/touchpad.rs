@@ -38,7 +38,7 @@ static READER: AtomicIsize = AtomicIsize::new(0); // the reader's window, once i
 struct Pending {
     fingers: usize,
     motion: Motion,
-    once: Option<usize>,
+    once: Option<settings::Gesture>, // the rule itself: a save during the wait can't swap it
 }
 
 /// One axis: its logical minimum and how many mm one logical unit is.
@@ -316,10 +316,10 @@ impl Session {
     }
 }
 
-/// Hands rule `rule`'s gesture to the main thread, or logs that the gesture has none. The
-/// gesture, not the index: a settings reload before the main thread reads it may reorder rules.
-fn post(fingers: usize, motion: Motion, rule: Option<usize>) {
-    match rule.and_then(|i| settings::get().gestures.get(i)) {
+/// Hands `rule`'s gesture to the main thread, or logs that the gesture has none. The gesture,
+/// not an index: a settings reload before the main thread reads it may reorder rules.
+fn post(fingers: usize, motion: Motion, rule: Option<settings::Gesture>) {
+    match rule {
         Some(g) => {
             info!("gesture {g} → {}", g.action);
             unsafe {

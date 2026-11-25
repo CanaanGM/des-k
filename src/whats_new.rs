@@ -540,7 +540,7 @@ fn repaint() {
 fn layout() {
     let Some(out) = get(|w| unsafe {
         let dc = GetDC(Some(w.hwnd));
-        let out = compose(&mut Canvas::new(dc, false, w.scale, w.theme, &w.fonts), w, settings::get());
+        let out = compose(&mut Canvas::new(dc, false, w.scale, w.theme, &w.fonts), w, &settings::get());
         ReleaseDC(Some(w.hwnd), dc);
         out
     }) else {
@@ -561,7 +561,7 @@ fn wanted(w: &Win, cap: f32) -> f32 {
     let probe = Win { vh: 10_000.0, hits: vec![], news: w.news.clone(), fonts: Fonts::new(w.scale), ..*w };
     let out = unsafe {
         let dc = GetDC(None);
-        let out = compose(&mut Canvas::new(dc, false, w.scale, w.theme, &probe.fonts), &probe, settings::get());
+        let out = compose(&mut Canvas::new(dc, false, w.scale, w.theme, &probe.fonts), &probe, &settings::get());
         ReleaseDC(None, dc);
         out
     };
@@ -761,7 +761,7 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                     buffered(dc, 0, 0, r.right, r.bottom, |mem| {
                         let mut c = Canvas::new(mem, true, w.scale, w.theme, &w.fonts);
                         c.boxed((0.0, 0.0, r.right as f32 / w.scale + 1.0, r.bottom as f32 / w.scale + 1.0), 0.0, w.theme.b.bg, None);
-                        compose(&mut c, w, settings::get());
+                        compose(&mut c, w, &settings::get());
                     })
                 });
                 let _ = EndPaint(h, &ps);

@@ -273,6 +273,12 @@ pub fn screens_changed(lines: &[String]) {
     balloon("Screens changed", &lines.join("\n"), false, None);
 }
 
+/// state.txt could not be saved, so des-k hid nothing (spec 0034 AC-2). Once a run, from main's
+/// 1 s timer, never under the ws lock.
+pub fn cant_save() {
+    balloon("des-k can't save your layout", "Check the free space on your system drive. Until it can save, des-k hides nothing.", true, None);
+}
+
 /// What a balloon click does: open a page or file through explorer, install a release, or
 /// check for updates (the hiding warning's).
 #[derive(Clone, Debug)]

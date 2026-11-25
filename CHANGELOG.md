@@ -16,6 +16,13 @@ What changed in each release, newest first. Downloads are on
   public documentation. It now checks that part's fixed id before calling anything in it. On a
   Windows where the id changed, des-k calls nothing there, keeps switching workspaces without
   hiding windows, and the tray tells you why and offers to check for an update.
+- **Ending des-k at any moment loses no window.** des-k now writes a window into its layout file
+  before it hides it, not after. If des-k is ended halfway through a switch (Task Manager, a
+  crash), `des-k --quit` or the next start still finds every window it hid. If it can't write that
+  file, on a full disk for example, it hides nothing and says so on screen and in the tray.
+  Each release is now tested this way before it ships ([RELEASING.md](RELEASING.md)).
+- [SECURITY.md](SECURITY.md) now says what runs as admin, each file des-k reads from your data
+  folder, and why no setting can name a program or a path.
 
 ## 0.9.0 (2026-11-22)
 

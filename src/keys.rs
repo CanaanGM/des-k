@@ -156,11 +156,11 @@ fn recorder(vk: u16, up: bool) -> bool {
 }
 
 /// The recorder while it is on or still owns this key, else the shortcuts.
-fn route(vk: u16, up: bool) -> bool {
+fn route(vk: u16, up: bool, st: &settings::Settings) -> bool {
     if RECORDING.load(Ordering::Relaxed) || SWALLOWED.with_borrow(|keys| keys[vk as usize & 0xFF]) {
         return recorder(vk, up);
     }
-    shortcut(vk, up)
+    shortcut(vk, up, st)
 }
 
 /// One key event; `extra` is MAGIC for des-k's own input, 0 for a combo the hook should see.
@@ -275,7 +275,7 @@ fn decide(st: &settings::Settings, combo: Combo) -> Option<(u32, isize, isize)> 
 }
 
 /// A switch or send shortcut: act on key down, and swallow its down, repeats and up.
-fn shortcut(vk: u16, up: bool) -> bool {
+fn shortcut(vk: u16, up: bool, st: &settings::Settings) -> bool {
     // A held send acts once, even if a modifier is let go meanwhile: otherwise a held
     // Win+Ctrl+Shift+Left would turn into Win+Ctrl+Left switches.
     match SEND_HELD.get() {
@@ -289,7 +289,6 @@ fn shortcut(vk: u16, up: bool) -> bool {
         Some(_) if !up => SEND_HELD.set(None),
         _ => {}
     }
-    let st = settings::get();
     if digit(vk).is_none() && !settings::LISTS.iter().any(|l| st.list(l).iter().any(|c| c.vk == vk)) {
         return false; // most keys: skip the modifier lookups
     }
@@ -316,8 +315,10 @@ fn shortcut(vk: u16, up: bool) -> bool {
 
 /// true = swallow the event.
 fn handle(vk: u16, up: bool) -> bool {
-    if !settings::get().copilot_as_right_ctrl {
-        return route(vk, up);
+    // One read per key event: a save in between can never mix two versions (spec 0032 AC-3).
+    let st = settings::get();
+    if !st.copilot_as_right_ctrl {
+        return route(vk, up, &st);
     }
     STATE.with_borrow_mut(|s| {
         // Copilot key in progress: its own LWin/LShift repeats and ups must not reach anyone.
@@ -335,7 +336,7 @@ fn handle(vk: u16, up: bool) -> bool {
                     s.copilot = false;
                     return true;
                 }
-                _ => return route(vk, up), // e.g. Copilot as Ctrl, with Win+Left
+                _ => return route(vk, up, &st), // e.g. Copilot as Ctrl, with Win+Left
             }
         }
 
@@ -381,7 +382,7 @@ fn handle(vk: u16, up: bool) -> bool {
             _ => {}
         }
 
-        route(vk, up)
+        route(vk, up, &st)
     })
 }
 

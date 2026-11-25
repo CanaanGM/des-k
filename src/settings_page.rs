@@ -1686,7 +1686,7 @@ enum Tone {
 struct Ctx<'a, 'f> {
     c: &'a mut Canvas<'f>,
     w: &'a Win,
-    s: &'static Settings,
+    s: &'a Settings, // from the paint's own handle, one version for the whole pass
     ro: bool,
     cw: f32,  // the column's width
     top0: f32, // where the column starts in the window, after scrolling
@@ -2073,7 +2073,8 @@ impl Ctx<'_, '_> {
 
     /// Problems whose key is this row's, as its in-row note (AC-SET-5).
     fn bad(&self, key: &str) -> Option<NoteSpec> {
-        let p = settings::problems().iter().find(|p| p.key == key)?;
+        let problems = settings::problems();
+        let p = problems.iter().find(|p| p.key == key)?;
         let mut lines = vec![P::Mono(p.message.clone())];
         if find_row(key).is_some() {
             lines.push(t(format!(" {}", fix_line(key, self.s))));
@@ -2202,7 +2203,8 @@ impl Ctx<'_, '_> {
     fn section_notes(&mut self, sec: Section, y: f32) -> f32 {
         let mut h = 0.0;
         let owned = |k: &str| find_row(k).is_some() || shortcut(k).is_some() || k == "workspaces" || shown_in_row(k);
-        let list: Vec<&Problem> = settings::problems().iter().filter(|p| home(&p.key) == Some(sec) && !owned(&p.key)).collect();
+        let problems = settings::problems();
+        let list: Vec<&Problem> = problems.iter().filter(|p| home(&p.key) == Some(sec) && !owned(&p.key)).collect();
         for p in list {
             let fix = match sec {
                 Section::Shortcuts => "Set a key for it below to fix the file. ",
@@ -3848,7 +3850,8 @@ impl Ctx<'_, '_> {
     }
 
     fn place_bad(&self, key: &str, ch: &ScreenChoice) -> Option<NoteSpec> {
-        let p = settings::problems().iter().find(|p| p.key == Self::place_problem(key, ch.id.as_deref()))?;
+        let problems = settings::problems();
+        let p = problems.iter().find(|p| p.key == Self::place_problem(key, ch.id.as_deref()))?;
         let (title, fix) = match &ch.id {
             None => {
                 let d = Self::place_shown(key, pos_get(DEFAULTS.indicator_pos, key));
@@ -4126,7 +4129,8 @@ impl Ctx<'_, '_> {
 
     /// A bad color in the file, as its row's note.
     fn color_bad(&self, key: &str) -> Option<NoteSpec> {
-        let p = settings::problems().iter().find(|p| p.key == key)?;
+        let problems = settings::problems();
+        let p = problems.iter().find(|p| p.key == key)?;
         let what = ws_index(key).map_or("Windows' accent".to_string(), |i| format!("des-k's {}", WS_NAMES[i]));
         Some(NoteSpec { tone: Tone::Warn, icon: I_WARN, title: format!("des-k can't use this value, so it uses {what}"), lines: vec![P::Mono(p.message.clone()), t(" Type a color here, or Reset takes the line out.")], buttons: vec![], group: 1 })
     }
@@ -5483,7 +5487,7 @@ fn escape(prompt: Option<&Prompt>, error: bool, edited: bool) -> Option<Ctl> {
 fn compose(c: &mut Canvas, w: &Win) -> Out {
     let s = settings::get();
     let cw = (w.vw - X0 - PAD_R).min(COL_MAX);
-    let mut x = Ctx { c, w, s, ro: settings::parse_error().is_some(), cw, top0: 0.0, out: Out { hits: vec![], height: 0.0, fixed: 0.0, tops: vec![], cards: vec![], said: vec![], geo: Geo::default() } };
+    let mut x = Ctx { c, w, s: &s, ro: settings::parse_error().is_some(), cw, top0: 0.0, out: Out { hits: vec![], height: 0.0, fixed: 0.0, tops: vec![], cards: vec![], said: vec![], geo: Geo::default() } };
     let fixed = x.measured(|c| c.banners());
     x.out.fixed = fixed;
     let top0 = fixed - w.scroll;
@@ -5493,12 +5497,13 @@ fn compose(c: &mut Canvas, w: &Win) -> Out {
     x.c.text(X0, y, 32.0, "Settings", F::Heading, b.tx);
     y += 36.0;
     y += x.c.para(X0, y, cw, 20.0, &[("Every change saves to settings.toml and works at once. Restore waits for des-k's next start.", F::Body, b.tx2)]);
-    let notes: Vec<&Problem> = settings::problems().iter().filter(|p| home(&p.key).is_none()).collect();
+    let problems = settings::problems();
+    let notes: Vec<&Problem> = problems.iter().filter(|p| home(&p.key).is_none()).collect();
     if !notes.is_empty() {
         y += 32.0;
         y += x.heading(None, y);
         for p in notes {
-            let n = NoteSpec { tone: Tone::Warn, icon: I_WARN, title: title(p, s), lines: vec![P::Mono(p.message.clone())], buttons: vec![(Ctl::Open, "Open settings.toml")], group: 1 };
+            let n = NoteSpec { tone: Tone::Warn, icon: I_WARN, title: title(p, &s), lines: vec![P::Mono(p.message.clone())], buttons: vec![(Ctl::Open, "Open settings.toml")], group: 1 };
             y += x.note(X0, y, cw, &n) + 8.0;
         }
     }
@@ -5589,7 +5594,7 @@ fn place_box() {
         let (want, held, hint) = match w.focus {
             Some(Ctl::Words) if can && s.attention_enabled => (Some((Ctl::Words, None)), s.attention_text.clone(), (String::new(), 0)),
             Some(Ctl::Name(row)) if can => {
-                let l = name_look(w, s, row);
+                let l = name_look(w, &s, row);
                 (Some((Ctl::Name(row), l.screen)), l.shown, (l.hint, painted(w).b.hint))
             }
             _ => (None, String::new(), (String::new(), 0)),
@@ -5668,7 +5673,7 @@ fn save_words(text: &str) {
 /// as Not saved, until a good save or Esc; a save, or text that writes nothing, forgets it.
 fn save_name(screen: Option<String>, row: Nm, text: &str, enter: bool) {
     let _ = set(|w| w.unsaved.retain(|u| !(u.0 == screen && u.1 == row)));
-    match name_edit(settings::get(), screen.as_deref(), row, text, enter) {
+    match name_edit(&settings::get(), screen.as_deref(), row, text, enter) {
         None => layout(),
         Some(edit) => {
             if !wrote(edit, &name_title(row)) {
@@ -5693,7 +5698,7 @@ fn box_saved() -> (String, bool) {
     match BOX_FOR.with_borrow(|f| f.clone()) {
         Some((Ctl::Name(row), screen)) => {
             let failed = get(|w| w.unsaved.iter().any(|u| u.0 == screen && u.1 == row)) == Some(true);
-            (name_held(settings::get(), screen.as_deref(), row).1, failed)
+            (name_held(&settings::get(), screen.as_deref(), row).1, failed)
         }
         _ => (settings::get().attention_text.clone(), false),
     }
@@ -6182,7 +6187,7 @@ pub(crate) fn plan_give(key: &'static str, desk: bool) -> Plan {
     let Some(sh) = shortcut(key) else { return Plan::Nothing };
     let Some((wk, _)) = sh.win else { return Plan::Nothing };
     let s = settings::get();
-    if desk == has_win(s, sh) || (desk && took(s, sh).is_some()) {
+    if desk == has_win(&s, sh) || (desk && took(&s, sh).is_some()) {
         return Plan::Nothing;
     }
     match (wk, desk) {
@@ -6250,7 +6255,7 @@ pub(crate) fn gesture_edit(row: usize, times: u8, action: Option<Action>) -> Opt
 fn open_menu(row: usize, times: u8, family: Option<usize>) {
     let Some(at) = get(|w| w.hits.iter().find(|h| h.ctl == Ctl::Picker(row)).map(|h| h.at)).flatten() else { return };
     let m = Menu { row, times, family, at, focus: 0 };
-    let focus = menu_lines(&m, settings::get()).iter().position(|l| l.on).unwrap_or(0);
+    let focus = menu_lines(&m, &settings::get()).iter().position(|l| l.on).unwrap_or(0);
     let _ = set(|w| w.menu = Some(Menu { focus, ..m }));
     layout();
 }
@@ -6271,7 +6276,7 @@ fn menu_open(w: &Win) -> bool {
 /// A menu line chosen, by click or Enter.
 fn choose(i: usize) {
     let Some(m) = get(|w| w.menu).flatten() else { return };
-    let lines = menu_lines(&m, settings::get());
+    let lines = menu_lines(&m, &settings::get());
     let Some(l) = lines.get(i) else { return };
     match l.does {
         Does::Set(a) => {
@@ -6294,7 +6299,7 @@ fn act(ctl: Ctl) {
         Ctl::Welcome => crate::welcome::show(),
         Ctl::WhatsNew => crate::whats_new::show_current(),
         Ctl::Open => crate::tray::open(&settings::path()),
-        Ctl::Toggle(key) if unused(s, key).is_empty() => save(key, 1 - value(s, key)),
+        Ctl::Toggle(key) if unused(&s, key).is_empty() => save(key, 1 - value(&s, key)),
         Ctl::Toggle(_) => {} // greyed: kept but not in use
         Ctl::Choice(ACCENT, i) => set_accent(i == 1),
         Ctl::Choice(MODE, i) => set_mode(i == 1),
@@ -6308,7 +6313,7 @@ fn act(ctl: Ctl) {
         Ctl::Spot(i) => set_place(SPOT, i as f64),
         Ctl::Screens | Ctl::NameScreens | Ctl::WallScreens | Ctl::WallPick(_) | Ctl::AppAdd | Ctl::AppWs(_) | Ctl::AppScreen(_) => open_chooser(ctl),
         Ctl::WallSame(k) => {
-            if let Some(screen) = get(|w| wall_screen(w, settings::get())).flatten() {
+            if let Some(screen) = get(|w| wall_screen(w, &settings::get())).flatten() {
                 commit(Edit::Remove(wall_path(Some(&screen), k)), &format!("Workspace {} wallpaper", k + 1));
             }
         }
@@ -6321,7 +6326,7 @@ fn act(ctl: Ctl) {
         Ctl::WallTick(i) => tick_wall(i),
         Ctl::WallUse(k) => {
             let ids: Vec<String> = get(|w| w.pics.view.present.iter().map(|p| p.id.clone()).collect()).unwrap_or_default();
-            if let Some(edit) = wall_use_edit(settings::get(), &ids, k) {
+            if let Some(edit) = wall_use_edit(&settings::get(), &ids, k) {
                 commit(edit, &format!("Workspace {} wallpaper", k + 1));
             }
         }
@@ -6332,7 +6337,7 @@ fn act(ctl: Ctl) {
         Ctl::Stepper(_) | Ctl::Pick(_) | Ctl::Tiles => {} // focus only: Left and Right change them
         Ctl::Choice(key, i) => match find_row(key).map(|r| r.kind) {
             Some(Kind::Pair(..)) => save(key, (i == 0) as i64),
-            _ if !unused(s, key).is_empty() => {}
+            _ if !unused(&s, key).is_empty() => {}
             _ => save(key, i as i64),
         },
         Ctl::Reset("workspaces") => save("workspaces", DEFAULTS.workspaces as i64),
@@ -6400,13 +6405,13 @@ fn act(ctl: Ctl) {
 
 fn step_key(key: &'static str, up: bool) {
     if let Some(k) = IV_KEYS.iter().position(|x| *x == key) {
-        if let Some(edit) = wall_interval_edit(settings::get(), k, up) {
+        if let Some(edit) = wall_interval_edit(&settings::get(), k, up) {
             commit(edit, &format!("Workspace {} time per picture", k + 1));
         }
         return;
     }
     if let Some(Row { kind: Kind::Ladder(ladder), .. }) = find_row(key) {
-        let v = value(settings::get(), key);
+        let v = value(&settings::get(), key);
         let n = ladder_step(ladder, v, up);
         if n != v {
             save(key, n);
@@ -6415,10 +6420,10 @@ fn step_key(key: &'static str, up: bool) {
     }
     if let Some(Row { kind: Kind::Step { lo, hi, by, .. }, .. }) = find_row(key) {
         // Greyed: kept but not in use, so − and + do nothing (AC-SET-8).
-        if !unused(settings::get(), key).is_empty() {
+        if !unused(&settings::get(), key).is_empty() {
             return;
         }
-        let v = value(settings::get(), key);
+        let v = value(&settings::get(), key);
         let n = stepped(v, *lo, *hi, *by, up);
         if n != v {
             save(key, n);
@@ -6472,7 +6477,7 @@ fn enter_hex(key: &'static str, caret: Option<usize>) {
             return;
         }
         if !w.hexes.iter().any(|x| x.key == key) {
-            let digits = shown_digits(w.theme, settings::get(), key).unwrap_or_default();
+            let digits = shown_digits(w.theme, &settings::get(), key).unwrap_or_default();
             w.hexes.push(Hex { key, caret: digits.len(), anchor: 0, digits, line: None });
         }
         if let Some(x) = w.hexes.iter_mut().find(|x| x.key == key) {
@@ -6491,7 +6496,7 @@ fn enter_if_new(key: &'static str) {
 /// Focus left a hex box: six digits save; fewer keep the digits and the line until you fix
 /// them or press Esc.
 fn leave_hex(key: &'static str) {
-    let Some((x, shown)) = get(|w| Some((w.hexes.iter().find(|x| x.key == key)?.clone(), shown_digits(w.theme, settings::get(), key)))).flatten() else { return };
+    let Some((x, shown)) = get(|w| Some((w.hexes.iter().find(|x| x.key == key)?.clone(), shown_digits(w.theme, &settings::get(), key)))).flatten() else { return };
     match hex_color(&x.digits) {
         Some(_) if Some(&x.digits) == shown.as_ref() => {
             let _ = set(|w| w.hexes.retain(|x| x.key != key));
@@ -6594,7 +6599,7 @@ fn hex_key(key: &'static str, vk: VIRTUAL_KEY) -> bool {
         }),
         VK_RETURN => save_hex(key),
         VK_ESCAPE => {
-            let shown = get(|w| shown_digits(w.theme, settings::get(), key)).flatten().unwrap_or_default();
+            let shown = get(|w| shown_digits(w.theme, &settings::get(), key)).flatten().unwrap_or_default();
             edit(&mut |x| {
                 if x.digits != shown || x.line.is_some() {
                     (x.digits, x.line, x.caret, x.anchor) = (shown.clone(), None, shown.len(), 0);
@@ -7043,7 +7048,7 @@ fn outside(now: Option<u32>, file: u32, written: Option<u32>) -> bool {
 fn must_close(w: &Win) -> bool {
     let Some(p) = &w.pick else { return false };
     let s = settings::get();
-    w.theme.hc || settings::parse_error().is_some() || ws_index(p.key).is_some_and(|i| i >= s.workspaces) || outside(file_color(s, p.key), p.file, p.written)
+    w.theme.hc || settings::parse_error().is_some() || ws_index(p.key).is_some_and(|i| i >= s.workspaces) || outside(file_color(&s, p.key), p.file, p.written)
 }
 
 /// The page's theme with `color` for `key`, while the page doesn't show that color already.
@@ -7071,7 +7076,7 @@ fn show_color(w: &mut Win, color: u32, hsv: ui::Hsv) {
 fn pick_open(key: &'static str, anchor: Anchor, from: Option<Ctl>) {
     ease_finish();
     let s = settings::get();
-    let Some(color) = file_color(s, key) else { return };
+    let Some(color) = file_color(&s, key) else { return };
     if ws_index(key).is_some_and(|i| i >= s.workspaces) || settings::parse_error().is_some() {
         return;
     }
@@ -7469,7 +7474,7 @@ fn opens(w: &Win, ctl: Option<Ctl>) -> bool {
 /// The screen Where it shows changes; None: All screens.
 fn screen_id() -> Option<String> {
     get(|w| {
-        let (list, i) = chosen(w, settings::get());
+        let (list, i) = chosen(w, &settings::get());
         list[i].id.clone()
     })
     .flatten()
@@ -7481,7 +7486,7 @@ fn set_place(key: &'static str, v: f64) {
     if !s.indicator_enabled {
         return;
     }
-    if let Some(e) = place_edit(s, screen_id().as_deref(), key, v) {
+    if let Some(e) = place_edit(&s, screen_id().as_deref(), key, v) {
         commit(e, "Where it shows");
     }
 }
@@ -7489,7 +7494,7 @@ fn set_place(key: &'static str, v: f64) {
 /// − and + on the distance, Across or Down; a decimal in the file lands on a whole number.
 fn step_place(key: &'static str, up: bool) {
     let s = settings::get();
-    let pos = pos_of(s, screen_id().as_deref());
+    let pos = pos_of(&s, screen_id().as_deref());
     if key == GAP && matches!(pos.spot, settings::Spot::Center | settings::Spot::Custom) {
         return;
     }
@@ -7510,7 +7515,7 @@ fn nearest(x: f64, y: f64) -> usize {
 /// Spots or Custom. Spots picks the spot nearest the card and keeps x and y in the file, so
 /// Custom comes back where it was.
 fn set_mode(custom: bool) {
-    let pos = pos_of(settings::get(), screen_id().as_deref());
+    let pos = pos_of(&settings::get(), screen_id().as_deref());
     if custom != (pos.spot == settings::Spot::Custom) {
         set_place(SPOT, if custom { 9.0 } else { nearest(pos.x, pos.y) as f64 });
     }
@@ -7519,7 +7524,7 @@ fn set_mode(custom: bool) {
 /// Left and Right on the picture: the nine spots in reading order, stopping at the ends; with
 /// Custom, the card 1 % across.
 fn walk_picture(right: bool) {
-    let pos = pos_of(settings::get(), screen_id().as_deref());
+    let pos = pos_of(&settings::get(), screen_id().as_deref());
     if pos.spot == settings::Spot::Custom {
         let n = if right { (pos.x.floor() + 1.0).min(100.0) } else { (pos.x.ceil() - 1.0).max(0.0) };
         set_place(ACROSS, n);
@@ -7547,7 +7552,7 @@ fn reset_place(key: &'static str) {
 /// Same as all screens on a Names row: the screen's key goes, so the row follows all screens
 /// again, and any text of yours that failed to save there goes with it.
 fn same_name(k: usize) {
-    let Some(screen) = get(|w| name_look(w, settings::get(), Nm::Ws(k)).screen).flatten() else { return };
+    let Some(screen) = get(|w| name_look(w, &settings::get(), Nm::Ws(k)).screen).flatten() else { return };
     let _ = set(|w| w.unsaved.retain(|u| !(u.0.as_deref() == Some(screen.as_str()) && u.1 == Nm::Ws(k))));
     if let Some(path) = name_path(Some(&screen), Nm::Ws(k)) {
         commit(Edit::Remove(path), &name_title(Nm::Ws(k)));
@@ -7565,7 +7570,7 @@ fn same_as_all() {
 /// chooser to All screens with the focus on it, or on Place when the chooser itself went.
 fn after_table(keep_focus: bool) {
     let _ = set(|w| {
-        let list = screen_choices(&w.pics.view, settings::get());
+        let list = screen_choices(&w.pics.view, &settings::get());
         let gone = w.screen.as_ref().is_some_and(|id| !list.iter().any(|c| c.id.as_ref() == Some(id)));
         if gone {
             w.screen = None;
@@ -7586,9 +7591,9 @@ fn open_chooser(from: Ctl) {
             w.wall_files = files;
             w.wall_dirs = dirs;
         }
-        let (_, i) = chooser_lines(w, settings::get(), from);
+        let (_, i) = chooser_lines(w, &settings::get(), from);
         // A set checks no line: the focus starts on its first ticked picture.
-        let i = i.or_else(|| match chooser_wall(w).map(|k| wall_held(settings::get(), wall_screen(w, settings::get()).as_deref(), k).1) {
+        let i = i.or_else(|| match chooser_wall(w).map(|k| wall_held(&settings::get(), wall_screen(w, &settings::get()).as_deref(), k).1) {
             Some(Pick::Set(v)) => w.wall_files.iter().position(|f| v.contains(f)).map(|p| p + 1),
             _ => None,
         });
@@ -7627,7 +7632,7 @@ fn choose_wall(k: usize, i: usize) {
             i if i <= n + m => Some(Pick::Folder(w.wall_dirs[i - n - 1].0.clone())),
             _ => None,
         };
-        (pick, wall_screen(w, settings::get()))
+        (pick, wall_screen(w, &settings::get()))
     }) else { return };
     let _ = set(|w| {
         w.chooser = None;
@@ -7637,7 +7642,7 @@ fn choose_wall(k: usize, i: usize) {
     match pick {
         None => open_wallpapers(),
         Some(p) => {
-            if let Some(edit) = wall_edit(settings::get(), screen.as_deref(), k, &p) {
+            if let Some(edit) = wall_edit(&settings::get(), screen.as_deref(), k, &p) {
                 commit(edit, &format!("Workspace {} wallpaper", k + 1));
             }
         }
@@ -7647,13 +7652,13 @@ fn choose_wall(k: usize, i: usize) {
 /// A picture's tick box in an open Wallpaper menu: adds it to the row's set or takes it out,
 /// and the menu stays open for more (spec 0028 AC-11).
 fn tick_wall(i: usize) {
-    let Some(Some((k, file, screen))) = get(|w| Some((chooser_wall(w)?, w.wall_files.get(i.checked_sub(1)?)?.clone(), wall_screen(w, settings::get())))) else { return };
+    let Some(Some((k, file, screen))) = get(|w| Some((chooser_wall(w)?, w.wall_files.get(i.checked_sub(1)?)?.clone(), wall_screen(w, &settings::get())))) else { return };
     let _ = set(|w| {
         if let Some((from, at, _)) = w.chooser {
             w.chooser = Some((from, at, i));
         }
     });
-    if let Some(edit) = wall_tick(settings::get(), screen.as_deref(), k, &file) {
+    if let Some(edit) = wall_tick(&settings::get(), screen.as_deref(), k, &file) {
         commit(edit, &format!("Workspace {} wallpaper", k + 1));
     } else {
         layout();
@@ -7690,7 +7695,7 @@ fn wall_wheel(delta: f32) {
 /// they are (AC-13). Nothing is asked again once each was tried.
 fn wall_previews() {
     let s = settings::get();
-    let Some((want, waiting)) = get(|w| (wall_wanted(w, s), w.wall_waiting)) else { return };
+    let Some((want, waiting)) = get(|w| (wall_wanted(w, &s), w.wall_waiting)) else { return };
     let missing = want.as_ref().is_some_and(|(r, size, files)| crate::wallpaper::cached(*r, *size).is_none() || files.iter().any(|f| !crate::wallpaper::tried_ws(*r, f, *size, s.wallpaper_fit)));
     if missing && let Some(want) = want {
         crate::wallpaper::check(vec![want], s.wallpaper_fit);
@@ -7708,7 +7713,7 @@ fn choose_screen(i: usize) {
         return choose_wall(k, i);
     }
     let apps = |c: Ctl| matches!(c, Ctl::AppAdd | Ctl::AppWs(_) | Ctl::AppScreen(_));
-    if let Some((from, edit)) = get(|w| w.chooser.filter(|(from, ..)| apps(*from)).map(|(from, ..)| (from, app_choice(w, settings::get(), from, i)))).flatten() {
+    if let Some((from, edit)) = get(|w| w.chooser.filter(|(from, ..)| apps(*from)).map(|(from, ..)| (from, app_choice(w, &settings::get(), from, i)))).flatten() {
         let _ = set(|w| {
             w.chooser = None;
             w.focus = Some(from);
@@ -7732,7 +7737,7 @@ fn choose_screen(i: usize) {
             if let Some(c) = wall_chosen(w).0.get(i) {
                 w.wall_screen = c.id.clone();
             }
-        } else if let Some(c) = chosen(w, settings::get()).0.get(i) {
+        } else if let Some(c) = chosen(w, &settings::get()).0.get(i) {
             w.screen = c.id.clone();
         }
         w.chooser = None;
@@ -7743,7 +7748,7 @@ fn choose_screen(i: usize) {
 
 /// The screen menu's keys: Up and Down move, Enter or Space picks, Esc closes.
 fn chooser_key(vk: VIRTUAL_KEY) {
-    let Some((from, at, f, n)) = get(|w| w.chooser.map(|(from, at, f)| (from, at, f, chooser_lines(w, settings::get(), from).0.len()))).flatten() else { return };
+    let Some((from, at, f, n)) = get(|w| w.chooser.map(|(from, at, f)| (from, at, f, chooser_lines(w, &settings::get(), from).0.len()))).flatten() else { return };
     match vk {
         VK_ESCAPE => close_menu(),
         VK_UP | VK_DOWN | VK_HOME | VK_END => {
@@ -7774,7 +7779,7 @@ fn show_there() {
         return;
     }
     let target = get(|w| {
-        let (list, i) = chosen(w, s);
+        let (list, i) = chosen(w, &s);
         match (&list[i].id, list[i].present) {
             (None, _) => Some(None),
             (Some(_), Some(p)) => w.pics.view.present.get(p).map(|p| Some(p.full)),
@@ -7881,7 +7886,7 @@ fn change(focus: Ctl, right: bool) {
     let s = settings::get();
     match focus {
         Ctl::Toggle(k) => {
-            if value(s, k) != right as i64 && unused(s, k).is_empty() {
+            if value(&s, k) != right as i64 && unused(&s, k).is_empty() {
                 save(k, right as i64);
             }
         }
@@ -7892,9 +7897,9 @@ fn change(focus: Ctl, right: bool) {
         Ctl::Stepper(k) => step_key(k, right),
         Ctl::Tiles => step_key("workspaces", right),
         Ctl::Pick(k) => match find_row(k).map(|r| r.kind) {
-            Some(Kind::Pair(..)) if value(s, k) != !right as i64 => save(k, !right as i64),
-            Some(Kind::Choice(words)) if unused(s, k).is_empty() => {
-                let i = value(s, k) as usize;
+            Some(Kind::Pair(..)) if value(&s, k) != !right as i64 => save(k, !right as i64),
+            Some(Kind::Choice(words)) if unused(&s, k).is_empty() => {
+                let i = value(&s, k) as usize;
                 let n = if right { (i + 1).min(words.len() - 1) } else { i.saturating_sub(1) };
                 if n != i {
                     save(k, n as i64);
@@ -7911,7 +7916,7 @@ fn change(focus: Ctl, right: bool) {
 /// The open menu's keys: Up and Down move, Enter or Space picks, Esc closes or goes back.
 fn menu_key(vk: VIRTUAL_KEY) {
     let Some(m) = get(|w| w.menu).flatten() else { return };
-    let n = menu_lines(&m, settings::get()).len();
+    let n = menu_lines(&m, &settings::get()).len();
     match vk {
         VK_ESCAPE if m.family.is_some() || m.times == 2 => open_menu(m.row, 1, None),
         VK_ESCAPE => close_menu(),
@@ -7977,7 +7982,7 @@ fn on_key(h: HWND, vk: VIRTUAL_KEY) {
             Some(Ctl::KeyRow(k)) if settings::parse_error().is_none() => {
                 let s = settings::get();
                 if let Some(sh) = shortcut(k)
-                    && let Some(&i) = drawn_order(s, sh).last()
+                    && let Some(&i) = drawn_order(&s, sh).last()
                 {
                     remove(k, i);
                 }
@@ -9168,7 +9173,7 @@ mod tests {
     /// Decoded stand ins for the Wallpaper card's previews: a gradient per picture, and a blue
     /// one for the screen's Windows wallpaper, as the approved design draws them.
     fn fake_wall(w: &Win) {
-        let Some((rect, size, files)) = wall_wanted(w, settings::get()) else { return };
+        let Some((rect, size, files)) = wall_wanted(w, &settings::get()) else { return };
         let pic = |top: u32, bottom: u32| {
             let (pw, ph) = size;
             let px = (0..ph).flat_map(|y| std::iter::repeat_n(0xFF00_0000 | mix(top, bottom, y as f32 / (ph - 1).max(1) as f32), pw as usize)).collect();
@@ -9205,7 +9210,7 @@ mod tests {
 
     /// An open picker for `key`, showing `color` and holding it in the file.
     fn picking(key: &'static str, anchor: Anchor, color: u32) -> ColorPick {
-        let start = file_color(settings::get(), key).unwrap_or(color);
+        let start = file_color(&settings::get(), key).unwrap_or(color);
         ColorPick {
             key, from: None, anchor, before: None, start, file: color, color, hsv: ui::hsv_of(color, (0.0, 0.0, 0.0)), preview: None, written: None, failed: None,
             saved: false, held_edit: None, placed: None, scroll0: 0.0, guard: None, focus: Stop::Ring, last_swatch: 0, drag: None, held: None,
