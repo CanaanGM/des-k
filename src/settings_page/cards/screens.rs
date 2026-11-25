@@ -109,7 +109,7 @@ impl Ctx<'_, '_> {
             for m in 0..marks {
                 let mx = tx + tw - 4.0 - (marks - m) as f32 * 10.0 + 2.0;
                 let col = if away { b.tx3 } else if t.hc { if cur { b.on_acc } else { b.tx } } else { b.mk_ws[i] };
-                self.cx.c.fill_rr((mx, y + 4.0, 8.0, 10.0), 2.0, ui::alpha(col, if away || t.hc { 1.0 } else { 0.9 }));
+                self.cx.c.fill_rr((mx, y + 4.0, 8.0, 10.0), 2.0, ui::color::alpha(col, if away || t.hc { 1.0 } else { 0.9 }));
             }
             if gone.contains(&i) && !away {
                 self.cx.c.stroke_dash((tx + 1.0, y + 1.0, tw - 2.0, 32.0), 3.0, 2.0, op(b.tx), DashStyleDash);

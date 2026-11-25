@@ -35,8 +35,8 @@ impl Ctx<'_, '_> {
                     if t.hc {
                         self.cx.c.boxed((x, yy, tw, th), 4.0, b.bez, Some(b.card));
                     } else {
-                        self.cx.c.fill_rr((x, yy, tw, th), 4.0, ui::alpha(white, 0.06));
-                        self.cx.c.stroke_rr((x + 0.5, yy + 0.5, tw - 1.0, th - 1.0), 3.5, 1.0, ui::alpha(white, 0.22));
+                        self.cx.c.fill_rr((x, yy, tw, th), 4.0, ui::color::alpha(white, 0.06));
+                        self.cx.c.stroke_rr((x + 0.5, yy + 0.5, tw - 1.0, th - 1.0), 3.5, 1.0, ui::color::alpha(white, 0.22));
                     }
                     continue;
                 }
@@ -51,7 +51,7 @@ impl Ctx<'_, '_> {
                 let k = self.w.pics.view.windows.iter().filter(|(d, ws, _)| *d == sc.device && *ws == i).count().min(3);
                 for (j, sample) in samples.iter().enumerate().take(k) {
                     let (wx, wy) = (x + 6.0 + j as f32 * 20.0, yy + 6.0 + j as f32 * 4.0);
-                    self.cx.c.fill_rr((wx, wy, 34.0, 22.0), 2.0, ui::alpha(if t.hc { b.tx } else { white }, if t.hc { 1.0 } else { 0.92 }));
+                    self.cx.c.fill_rr((wx, wy, 34.0, 22.0), 2.0, ui::color::alpha(if t.hc { b.tx } else { white }, if t.hc { 1.0 } else { 0.92 }));
                     let show = labels == "always" || (labels == "hover" && r == 0 && i == a && j + 1 == k);
                     if show {
                         self.cx.c.fill_rr((wx - 4.0, wy + 23.0, 42.0, 16.0), 3.0, op(chip));

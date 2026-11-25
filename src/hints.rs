@@ -23,7 +23,7 @@ use windows::core::{HSTRING, PCWSTR, w};
 use crate::controls::record;
 use crate::settings::{self, Action, Combo, Motion, Owner, Settings, edit::Edit};
 use crate::setup::{self, GaveBack, Row as PadRow, State};
-use crate::ui::{self, Bx, Canvas, F, Theme, buffered, dark_title, mix, op};
+use crate::ui::{self, Theme, canvas::{Bx, Canvas, buffered}, color::{mix, op}, dark_title, fonts::F};
 use crate::uia::{self, Node, Tree};
 
 mod draw;
@@ -174,7 +174,7 @@ fn relayout(to: Option<RECT>) {
     let cap = work.map_or(H, |r| client_cap(r.bottom - r.top, dpi, s));
     let height = H.min(cap).max(MIN_H);
     let Some((places, buttons, tree)) = set(|w| {
-        let fonts = ui::fonts(w.scale);
+        let fonts = ui::fonts::fonts(w.scale);
         let mut places = vec![];
         unsafe {
             let dc = GetDC(None);
@@ -368,7 +368,7 @@ pub fn toggle() {
 }
 
 fn open() {
-    ui::gdiplus();
+    ui::canvas::gdiplus();
     unsafe {
         let Ok(inst) = GetModuleHandleW(None) else { return };
         let wc = WNDCLASSW { lpfnWndProc: Some(wndproc), hInstance: inst.into(), lpszClassName: CLASS, hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(), ..Default::default() };
@@ -529,7 +529,7 @@ fn on_draw_item(dis: &DRAWITEMSTRUCT) {
         let r = dis.rcItem;
         let (pw, ph) = (r.right - r.left, r.bottom - r.top);
         let state = dis.itemState;
-        let fonts = ui::fonts(w.scale);
+        let fonts = ui::fonts::fonts(w.scale);
         buffered(dis.hDC, r.left, r.top, pw, ph, |dc| {
             let c = Canvas::new(dc, true, w.scale, w.theme, &fonts);
             let (bw, bh) = (pw as f32 / w.scale, ph as f32 / w.scale);
@@ -549,7 +549,7 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                 let mut r = RECT::default();
                 let _ = GetClientRect(h, &mut r);
                 let _ = get(|w| {
-                    let fonts = ui::fonts(w.scale);
+                    let fonts = ui::fonts::fonts(w.scale);
                     buffered(dc, 0, 0, r.right, r.bottom, |mem| {
                         let c = Canvas::new(mem, true, w.scale, w.theme, &fonts);
                         compose(&c, &mut vec![], &w.view, &w.rec, w.error.as_deref(), w.fit.height, w.scroll);

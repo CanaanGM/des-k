@@ -6,7 +6,7 @@
 pub(crate) mod record;
 pub(crate) mod widgets;
 
-use crate::ui::{Bx, Canvas};
+use crate::ui::canvas::{Bx, Canvas};
 use crate::uia::Node;
 use windows::Win32::UI::Accessibility::UIA_CONTROLTYPE_ID;
 

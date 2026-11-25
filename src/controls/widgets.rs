@@ -2,7 +2,7 @@
 // labels, chips and notes, drawn through `Ctx`; and rows, cards and their headers, drawn through
 // a screen's own context (spec 0017, 0035).
 use super::{Ctx, Id, NoteSpec, P, Screen, Style, Tone};
-use crate::ui::{self, Bx, F, mix, op};
+use crate::ui::{self, canvas::Bx, color::{mix, op}, fonts::F};
 use windows::Win32::Graphics::GdiPlus::DashStyleDash;
 use windows::Win32::UI::Accessibility::{UIA_ButtonControlTypeId, UIA_CheckBoxControlTypeId, UIA_ComboBoxControlTypeId, UIA_HyperlinkControlTypeId};
 
@@ -14,7 +14,7 @@ const ROW: f32 = 52.0; // a row's least height
 impl<C: Id, E: Copy> Ctx<'_, '_, C, E> {
     /// The hover cue on a tile or swatch that opens the picker: an inset 1.5 dip edge in `ink`.
     pub(crate) fn cue(&self, (x, y, w, h): Bx, ink: u32) {
-        self.c.stroke_rr((x + 0.75, y + 0.75, w - 1.5, h - 1.5), 3.25, 1.5, ui::alpha(ink, 0.6));
+        self.c.stroke_rr((x + 0.75, y + 0.75, w - 1.5, h - 1.5), 3.25, 1.5, ui::color::alpha(ink, 0.6));
     }
 
     /// The focus ring: 2 dip in the text color, 2 dip out (AC-SET-9).

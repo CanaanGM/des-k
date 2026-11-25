@@ -482,12 +482,12 @@ fn cover(x: i32, y: i32, c: f32, half: f32, r: f32, grow: f32) -> f32 {
 /// Windows' own hinted grayscale glyph for `ch`, `em` px: its width, height and coverage (0 to 64),
 /// row by row. The same shape Windows draws grey smoothed text with, so a 9 px digit stays sharp.
 fn glyph(ch: char, em: f32, small: bool) -> Option<(i32, i32, Vec<u8>)> {
-    let face = match (crate::ui::variable(), small) {
+    let face = match (crate::ui::fonts::variable(), small) {
         (true, true) => "Segoe UI Variable Small Semibold",
         (true, false) => "Segoe UI Variable Display Semibold",
         (false, _) => "Segoe UI Semibold",
     };
-    let font = crate::ui::font(PCWSTR(windows::core::HSTRING::from(face).as_ptr()), em, 600);
+    let font = crate::ui::fonts::font(PCWSTR(windows::core::HSTRING::from(face).as_ptr()), em, 600);
     let one = FIXED { fract: 0, value: 1 };
     let mat = MAT2 { eM11: one, eM22: one, ..Default::default() };
     let mut gm = GLYPHMETRICS::default();
@@ -671,7 +671,7 @@ unsafe fn open_by_explorer(path: &Path) -> windows::core::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::{self, Theme, mix};
+    use crate::ui::{self, Theme, color::mix};
     use windows::Win32::Graphics::GdiPlus as gp;
 
     /// The design pass's candidates (spec 0025 build plan task 1): the approved one stays.
@@ -715,7 +715,7 @@ mod tests {
     #[test]
     #[ignore]
     fn render_icons() {
-        ui::gdiplus();
+        ui::canvas::gdiplus();
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("tray").join("icon");
         std::fs::create_dir_all(&dir).unwrap();
         let aquatic = ui::high_contrast([0x202020, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);

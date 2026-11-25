@@ -16,7 +16,7 @@ use windows::Win32::{
 use windows::core::w;
 
 use crate::settings::{self, Pos, Spot, Style};
-use crate::ui::{self, Canvas, F, Theme, mix, op};
+use crate::ui::{self, Theme, canvas::Canvas, color::{mix, op}, fonts::F};
 
 /// Also how `--quit` and the single-instance check find the running des-k.
 pub const CLASS: windows::core::PCWSTR = w!("des-k-indicator");
@@ -463,11 +463,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 let mut rc = RECT::default();
                 let _ = GetClientRect(hwnd, &mut rc);
                 ui::get(&SHOWN, "indicator paint", |s| {
-                    ui::buffered(hdc, 0, 0, rc.right, rc.bottom, |mem| {
-                        let bg = CreateSolidBrush(ui::cref(s.theme.b.card));
+                    ui::canvas::buffered(hdc, 0, 0, rc.right, rc.bottom, |mem| {
+                        let bg = CreateSolidBrush(ui::color::cref(s.theme.b.card));
                         FillRect(mem, &rc, bg);
                         let _ = DeleteObject(bg.into());
-                        let fonts = ui::fonts(s.scale);
+                        let fonts = ui::fonts::fonts(s.scale);
                         draw(&Canvas::new(mem, true, s.scale, s.theme, &fonts), 0.0, 0.0, s.style, &s.card, false);
                     });
                 });
@@ -532,7 +532,7 @@ fn window() -> Option<HWND> {
     if let Some(h) = WND.get() {
         return Some(h);
     }
-    ui::gdiplus();
+    ui::canvas::gdiplus();
     // No-activate and see-through to the mouse: never steals focus, never takes a click.
     let h = ui::popup(CLASS, Some(wndproc), WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT, true)?;
     // An admin des-k would drop `des-k --quit` from a normal terminal otherwise (spec 0008).
@@ -578,7 +578,7 @@ pub fn show(mon: HMONITOR, card: Card) {
     let (mut dx, mut dy) = (96u32, 96u32);
     unsafe { let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy); }
     let scale = dx as f32 / 96.0;
-    let fonts = ui::fonts(scale);
+    let fonts = ui::fonts::fonts(scale);
     let (w, ht) = unsafe {
         let dc = GetDC(None);
         let size = draw(&Canvas::new(dc, false, scale, theme, &fonts), 0.0, 0.0, style, &card, false);
@@ -650,7 +650,7 @@ pub(crate) fn place(work: RECT, w: i32, h: i32, pos: Pos, scale: f32) -> (i32, i
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::{DARK, Fonts, LIGHT, Theme};
+    use crate::ui::{DARK, LIGHT, Theme, fonts::Fonts};
 
     const WORK: RECT = RECT { left: 0, top: 0, right: 1920, bottom: 1040 };
 
@@ -792,7 +792,7 @@ mod tests {
     #[test]
     #[ignore]
     fn render() {
-        ui::gdiplus();
+        ui::canvas::gdiplus();
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("indicator");
         std::fs::create_dir_all(&dir).unwrap();
         let dell = || Some("DELL U2720Q".to_string());
@@ -901,7 +901,7 @@ mod tests {
                     let (pw, ph) = (((w + 48.0) * s).ceil() as i32, ((h + 48.0) * s).ceil() as i32);
                     let path = dir.join(format!("{sname}-{name}-{tname}.png"));
                     ui::tests::save_png(pw, ph, &path, |dc| unsafe {
-                        let bg = CreateSolidBrush(ui::cref(backdrop(&t)));
+                        let bg = CreateSolidBrush(ui::color::cref(backdrop(&t)));
                         FillRect(dc, &RECT { left: 0, top: 0, right: pw, bottom: ph }, bg);
                         let _ = DeleteObject(bg.into());
                         draw_preview(&Canvas::new(dc, true, s, t, &fonts), 24.0, 24.0, style, card);

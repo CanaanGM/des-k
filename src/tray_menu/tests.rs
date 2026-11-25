@@ -1,7 +1,7 @@
 // Tests for the tray menu: the chip lines, the screen map, the item words, and the render states.
 use super::*;
 use crate::settings::{CTRL, WIN};
-use crate::ui::{DARK, Fonts, LIGHT};
+use crate::ui::{DARK, LIGHT, fonts::Fonts};
 
 fn screen(name: &str, (x, y, w, h): (i32, i32, i32, i32), active: usize, main: bool) -> TrayScreen {
     TrayScreen { name: name.into(), rect: RECT { left: x, top: y, right: x + w, bottom: y + h }, active, main, ws_name: String::new() }
@@ -122,7 +122,7 @@ fn twelve_mixed() -> Vec<TrayScreen> {
 #[test]
 #[ignore]
 fn render() {
-    ui::gdiplus();
+    ui::canvas::gdiplus();
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("tray");
     std::fs::create_dir_all(&dir).unwrap();
     let two = || vec![screen("DELL U2720Q", (0, 0, 3840, 2160), 1, true), screen("Built-in display", (3840, 600, 2560, 1600), 0, false)];

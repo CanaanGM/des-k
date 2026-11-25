@@ -106,7 +106,7 @@ fn fake_wall(w: &Win) {
     let pic = |top: u32, bottom: u32| {
         let (pw, ph) = size;
         let px = (0..ph).flat_map(|y| std::iter::repeat_n(0xFF00_0000 | mix(top, bottom, y as f32 / (ph - 1).max(1) as f32), pw as usize)).collect();
-        ui::Picture { w: pw, h: ph, px }
+        ui::canvas::Picture { w: pw, h: ph, px }
     };
     crate::wallpaper::put_for_test(rect, None, size, pic(0x9CD0FF, 0x0B2C6B));
     for f in files {
@@ -141,7 +141,7 @@ pub(super) fn take(win: &mut Win, out: Out) {
 fn picking(key: &'static str, anchor: Anchor, color: u32) -> ColorPick {
     let start = file_color(&settings::get(), key).unwrap_or(color);
     ColorPick {
-        key, from: None, anchor, before: None, start, file: color, color, hsv: ui::hsv_of(color, (0.0, 0.0, 0.0)), preview: None, written: None, failed: None,
+        key, from: None, anchor, before: None, start, file: color, color, hsv: ui::color::hsv_of(color, (0.0, 0.0, 0.0)), preview: None, written: None, failed: None,
         saved: false, held_edit: None, placed: None, scroll0: 0.0, guard: None, focus: Stop::Ring, last_swatch: 0, drag: None, held: None,
     }
 }
@@ -626,7 +626,7 @@ enabled = false
 #[test]
 #[ignore]
 fn render_settings() {
-    assert!(ui::gdiplus());
+    assert!(ui::canvas::gdiplus());
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("settings");
     std::fs::create_dir_all(&dir).unwrap();
     let night_sky = ui::high_contrast([0x000000, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);
@@ -652,7 +652,7 @@ fn render_settings() {
 #[ignore]
 fn snapshot_settings() {
     use std::fmt::Write;
-    assert!(ui::gdiplus());
+    assert!(ui::canvas::gdiplus());
     let _one = SETTINGS.lock();
     let night_sky = ui::high_contrast([0x000000, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);
     let mut got = String::new();

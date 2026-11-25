@@ -20,7 +20,7 @@ use windows::core::{HSTRING, PCWSTR, w};
 
 use crate::install::InstallFail;
 use crate::settings::Combo;
-use crate::ui::{self, Bx, Canvas, F, Theme, mix, op};
+use crate::ui::{self, Theme, canvas::{Bx, Canvas}, color::{mix, op}, fonts::F};
 use crate::uia::{self, Node, Tree};
 use crate::update::{Fail, Version};
 use crate::ws::TrayScreen;
@@ -365,7 +365,7 @@ pub(crate) fn just_lost() -> bool {
 /// rectangle; a keyboard open starts from the icon and puts focus on the first item.
 pub(crate) fn open(menu: Menu, at: POINT, icon: Option<RECT>, keyboard: bool) {
     let Some(popup) = window() else { return warn!("tray menu: window not created") };
-    ui::gdiplus();
+    ui::canvas::gdiplus();
     let anchor = match (keyboard, icon) {
         (true, Some(r)) => POINT { x: (r.left + r.right) / 2, y: r.top },
         _ => at,
@@ -374,7 +374,7 @@ pub(crate) fn open(menu: Menu, at: POINT, icon: Option<RECT>, keyboard: bool) {
     let mon = unsafe { MonitorFromPoint(anchor, MONITOR_DEFAULTTONEAREST) };
     unsafe { let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dpi, &mut dy); }
     let (scale, theme) = (dpi as f32 / 96.0, ui::system_theme());
-    let fonts = ui::fonts(scale);
+    let fonts = ui::fonts::fonts(scale);
     let lay = unsafe {
         let dc = GetDC(None);
         let lay = layout(&Canvas::new(dc, false, scale, theme, &fonts), &menu);
@@ -546,7 +546,7 @@ fn show_tip(popup: HWND) {
     let Some(Some((words, scale, theme))) = with(|s| s.tip.map(|i| (s.screen_words(i, false), s.scale, s.theme))) else { return };
     let Some(tip) = tip_window() else { return };
     TIP_TEXT.set(words.clone());
-    let fonts = ui::fonts(scale);
+    let fonts = ui::fonts::fonts(scale);
     let tw = unsafe {
         let dc = GetDC(None);
         let w = Canvas::new(dc, false, scale, theme, &fonts).width(&words, F::Small);
@@ -675,9 +675,9 @@ fn paint(hwnd: HWND) {
         let hdc = BeginPaint(hwnd, &mut ps);
         let mut rc = RECT::default();
         let _ = GetClientRect(hwnd, &mut rc);
-        ui::buffered(hdc, 0, 0, rc.right, rc.bottom, |mem| {
+        ui::canvas::buffered(hdc, 0, 0, rc.right, rc.bottom, |mem| {
             let _ = ui::get(&SESSION, "tray menu paint", |s| {
-                let fonts = ui::fonts(s.scale);
+                let fonts = ui::fonts::fonts(s.scale);
                 draw(&Canvas::new(mem, true, s.scale, s.theme, &fonts), s);
             });
         });
@@ -757,8 +757,8 @@ unsafe extern "system" fn tip_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
                 let _ = GetClientRect(hwnd, &mut rc);
                 let scale = ui::get(&SESSION, "tray tip paint", |s| (s.scale, s.theme));
                 if let Some((scale, t)) = scale {
-                    ui::buffered(hdc, 0, 0, rc.right, rc.bottom, |mem| {
-                        let fonts = ui::fonts(scale);
+                    ui::canvas::buffered(hdc, 0, 0, rc.right, rc.bottom, |mem| {
+                        let fonts = ui::fonts::fonts(scale);
                         let c = Canvas::new(mem, true, scale, t, &fonts);
                         c.fill_rr((0.0, 0.0, rc.right as f32 / scale, rc.bottom as f32 / scale), 0.0, op(t.b.card));
                         TIP_TEXT.with_borrow(|words| c.text(8.0, 0.0, rc.bottom as f32 / scale, words, F::Small, t.b.tx));

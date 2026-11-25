@@ -36,7 +36,7 @@ impl Ctx<'_, '_> {
         crate::indicator::draw_preview(self.cx.c, wx + (ww - pw) / 2.0, wy + 16.0, style, &card);
         let on = self.s.attention_enabled;
         if !on && !self.cx.c.t.hc {
-            self.cx.c.fill_rr((wx + 1.0, wy + 1.0, ww - 2.0, well_h - 2.0), 5.0, ui::alpha(b.track, 0.6));
+            self.cx.c.fill_rr((wx + 1.0, wy + 1.0, ww - 2.0, well_h - 2.0), 5.0, ui::color::alpha(b.track, 0.6));
         }
         let line = if on {
             format!("When {SAMPLE_APP} flashes on workspace {}, its screen shows this for 3 s.", ws + 1)

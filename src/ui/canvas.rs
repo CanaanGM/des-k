@@ -1,6 +1,8 @@
 // The Canvas that draws shapes through GDI+ and text through GDI, in dip (1/96 inch), plus
 // GDI+ startup, the back buffer and per pixel alpha popups.
 use super::*;
+use super::color::op;
+use super::fonts::{F, Fonts, fonts};
 
 thread_local! {
     static GDIPLUS: Cell<Option<bool>> = const { Cell::new(None) };

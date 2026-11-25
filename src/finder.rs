@@ -34,7 +34,7 @@ use windows::Win32::{
 use windows::core::{HSTRING, PCWSTR, PWSTR, w};
 
 use crate::restore;
-use crate::ui::{self, Canvas, F, alpha, mix, op};
+use crate::ui::{self, canvas::Canvas, color::{alpha, mix, op}, fonts::F};
 use crate::uia::{self, Node, Tree};
 use crate::ws::{self, Miss};
 
@@ -669,7 +669,7 @@ pub fn toggle() {
 
 fn open() {
     let Some((popup, edit)) = window() else { return warn!("finder: window not created") };
-    ui::gdiplus();
+    ui::canvas::gdiplus();
     let (mon, device) = ws::under_mouse();
     let came_from = unsafe { GetForegroundWindow() };
     used(came_from);
@@ -689,7 +689,7 @@ fn open() {
         ui::border(popup, ui::theme().b.edge);
         // Placed first: moving to another screen can change the popup's dpi, then the font matches it.
         let _ = SetWindowPos(popup, Some(HWND_TOPMOST), x, y, w, h, SWP_NOACTIVATE);
-        SendMessageW(edit, WM_SETFONT, Some(WPARAM(ui::fonts(scale).get(F::Body).0 as usize)), Some(LPARAM(0)));
+        SendMessageW(edit, WM_SETFONT, Some(WPARAM(ui::fonts::fonts(scale).get(F::Body).0 as usize)), Some(LPARAM(0)));
         refresh();
         let _ = ShowWindow(popup, SW_SHOW);
         let _ = SetForegroundWindow(popup);
@@ -955,7 +955,7 @@ pub(crate) fn edit_brush(color: u32) -> HBRUSH {
     {
         return b;
     }
-    let b = unsafe { CreateSolidBrush(ui::cref(color)) };
+    let b = unsafe { CreateSolidBrush(ui::color::cref(color)) };
     if let Some((old, _)) = BRUSH.replace(Some((b, color))) {
         unsafe { let _ = DeleteObject(old.into()); }
     }
@@ -1213,10 +1213,10 @@ fn paint(hwnd: HWND) {
         let mut rc = RECT::default();
         let _ = GetClientRect(hwnd, &mut rc);
         // Drawn off screen first: the list repaints on every key, and would flicker otherwise.
-        ui::buffered(hdc, 0, 0, rc.right, rc.bottom, |mem| {
+        ui::canvas::buffered(hdc, 0, 0, rc.right, rc.bottom, |mem| {
             SESSION.with_borrow(|s| {
                 if let Some(s) = s {
-                    let fonts = ui::fonts(s.scale);
+                    let fonts = ui::fonts::fonts(s.scale);
                     draw(&Canvas::new(mem, true, s.scale, ui::theme(), &fonts), s, None);
                 }
             });
@@ -1232,7 +1232,7 @@ unsafe fn placeholder(edit: HWND) {
         let dc = GetDC(Some(edit));
         let font = HFONT(SendMessageW(edit, WM_GETFONT, None, None).0 as *mut _);
         let old = SelectObject(dc, font.into());
-        SetTextColor(dc, ui::cref(ui::theme().b.tx2));
+        SetTextColor(dc, ui::color::cref(ui::theme().b.tx2));
         SetBkMode(dc, TRANSPARENT);
         let left = (SendMessageW(edit, EM_GETMARGINS, None, None).0 & 0xFFFF) as i32;
         let one = (GetDpiForWindow(edit) as i32 + 95) / 96; // after the caret
@@ -1272,8 +1272,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             WM_ERASEBKGND => LRESULT(1),
             WM_CTLCOLOREDIT => {
                 let (dc, b) = (HDC(wp.0 as *mut _), ui::theme().b);
-                SetTextColor(dc, ui::cref(b.tx));
-                SetBkColor(dc, ui::cref(b.card));
+                SetTextColor(dc, ui::color::cref(b.tx));
+                SetBkColor(dc, ui::color::cref(b.card));
                 LRESULT(edit_brush(b.card).0 as isize)
             }
             WM_COMMAND if (wp.0 >> 16) as u32 == EN_CHANGE => {
@@ -1344,7 +1344,7 @@ fn window() -> Option<(HWND, HWND)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::{DARK, Fonts, LIGHT, Theme};
+    use crate::ui::{DARK, LIGHT, Theme, fonts::Fonts};
     use std::time::Duration;
 
     fn row(on_screen: bool, screen: usize, workspace: usize, used: Option<Instant>) -> Row {
@@ -1631,7 +1631,7 @@ mod tests {
     #[test]
     #[ignore]
     fn render() {
-        ui::gdiplus();
+        ui::canvas::gdiplus();
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("finder");
         std::fs::create_dir_all(&dir).unwrap();
         type Setup = fn(&mut Session);

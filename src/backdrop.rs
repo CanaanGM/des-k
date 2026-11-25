@@ -32,7 +32,7 @@ use windows::Win32::{
 use windows::core::w;
 
 use crate::settings::{Fit, Pick, parse::name_order};
-use crate::ui::Picture;
+use crate::ui::canvas::Picture;
 use crate::wallpaper::Problem;
 
 const CLASS: windows::core::PCWSTR = w!("des-k-backdrop");
@@ -312,7 +312,7 @@ fn run() {
     let _ = THREAD.set(unsafe { GetCurrentThreadId() });
     // MTA, like main: the bar color is asked of explorer, and an STA would pump messages there.
     unsafe { let _ = CoInitializeEx(None, COINIT_MULTITHREADED); }
-    crate::ui::gdiplus();
+    crate::ui::canvas::gdiplus();
     unsafe {
         if let Ok(inst) = GetModuleHandleW(None) {
             RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(wndproc), hInstance: inst.into(), lpszClassName: CLASS, ..Default::default() });

@@ -18,13 +18,13 @@ impl Ctx<'_, '_> {
         let wi = ws_index(p.key);
         // The page's popup, as its menus are: edge, shadow, card.
         if !t.hc {
-            self.cx.c.fill_rr((x, y + 4.0, PICK_W, PICK_H), 8.0, ui::alpha(0, if t.dark { 0.30 } else { 0.08 }));
+            self.cx.c.fill_rr((x, y + 4.0, PICK_W, PICK_H), 8.0, ui::color::alpha(0, if t.dark { 0.30 } else { 0.08 }));
         }
         self.cx.c.fill_rr((x - 1.0, y - 1.0, PICK_W + 2.0, PICK_H + 2.0), 9.0, op(if t.hc { b.tx } else { mix(b.bg, b.tx, 0.10) }));
         self.cx.c.fill_rr((x, y, PICK_W, PICK_H), 8.0, op(b.card));
         // Header: the chip (start and now once they differ), the title, the hex.
         let changed = p.color != p.start;
-        let pale = if t.hc { op(b.tx) } else if t.dark { op(mix(b.bg, b.tx, 0.10)) } else { ui::alpha(0, 0.10) };
+        let pale = if t.hc { op(b.tx) } else if t.dark { op(mix(b.bg, b.tx, 0.10)) } else { ui::color::alpha(0, 0.10) };
         let (hx, hy) = (x + 16.0, y + 12.0);
         let chip_w = match wi {
             None => 22.0,
@@ -72,7 +72,7 @@ impl Ctx<'_, '_> {
             }
             if c == p.color {
                 let (cx, cy) = (sx + 28.0, sy + 12.0);
-                self.cx.c.circle(cx, cy, 9.0, Some(op(b.card)), Some((ui::alpha(0, 0.12), 1.0)));
+                self.cx.c.circle(cx, cy, 9.0, Some(op(b.card)), Some((ui::color::alpha(0, 0.12), 1.0)));
                 let iw = self.cx.c.width(I_OK, F::IconTiny);
                 self.cx.icon(cx - iw / 2.0, cy - 9.0, 18.0, I_OK, F::IconTiny, b.tx);
             }
@@ -104,14 +104,14 @@ impl Ctx<'_, '_> {
             }
         });
         if !t.dark && !t.hc {
-            let line = ui::alpha(0, 0.10);
+            let line = ui::color::alpha(0, 0.10);
             self.cx.c.circle(cx, cy, ro / s - 0.5, None, Some((line, 1.0)));
             self.cx.c.circle(cx, cy, ri / s + 0.5, None, Some((line, 1.0)));
             self.cx.c.stroke_rr((sq.0 + 0.5, sq.1 + 0.5, sq.2 - 1.0, sq.3 - 1.0), 2.5, 1.0, line);
         }
         let (h, sat, val) = p.hsv;
         let (mr, a) = ((ro + ri) / 2.0 / s, h.to_radians());
-        self.mark(cx + a.sin() * mr, cy - a.cos() * mr, 9.0, ui::ring_color(h.round()), kb && p.focus == Stop::Ring);
+        self.mark(cx + a.sin() * mr, cy - a.cos() * mr, 9.0, ui::color::ring_color(h.round()), kb && p.focus == Stop::Ring);
         self.mark(sq.0 + sat * sq.2, sq.1 + (1.0 - val) * sq.3, 7.0, p.color, kb && p.focus == Stop::Square);
         self.cx.hit(Ctl::Square, (sq.0 - 8.0, sq.1 - 8.0, sq.2 + 16.0, sq.3 + 16.0), 3);
         self.cx.hit(Ctl::Ring, (cx - 106.0, cy - 106.0, 212.0, 212.0), 3);
@@ -122,7 +122,7 @@ impl Ctx<'_, '_> {
         let (cancel_x, done_x) = (x + PICK_W - 16.0 - cw, x + PICK_W - 16.0 - cw - 8.0 - dw);
         let done = (done_x, fy, dw, 32.0);
         self.cx.c.fill_rr(done, 6.0, op(if self.cx.hovered(Ctl::PickDone) { mix(b.acc, b.card, 0.10) } else { b.acc }));
-        if ui::contrast(b.acc, b.card) < 1.5 {
+        if ui::color::contrast(b.acc, b.card) < 1.5 {
             self.cx.c.stroke_rr((done_x + 0.5, fy + 0.5, dw - 1.0, 31.0), 5.5, 1.0, op(b.tx2));
         }
         let lw = self.cx.c.width("Done", F::Body);
@@ -187,10 +187,10 @@ fn premul(c: u32, a: f32) -> u32 {
 }
 
 /// The toned ring, hue 0 at the top going clockwise, its edges smoothed; clear inside and out.
-fn ring_px(s: f32) -> ui::Picture {
+fn ring_px(s: f32) -> ui::canvas::Picture {
     let (n, ro, ri, _) = wheel_px(s);
     let c = n as f32 / 2.0;
-    let hues: Vec<u32> = (0..360).map(|h| ui::ring_color(h as f32)).collect();
+    let hues: Vec<u32> = (0..360).map(|h| ui::color::ring_color(h as f32)).collect();
     let mut px = vec![0u32; (n * n) as usize];
     for y in 0..n {
         for x in 0..n {
@@ -203,12 +203,12 @@ fn ring_px(s: f32) -> ui::Picture {
             }
         }
     }
-    ui::Picture { w: n, h: n, px }
+    ui::canvas::Picture { w: n, h: n, px }
 }
 
 /// The square at `hue`: saturation 0 to 1 left to right, value 1 to 0 top to bottom, its 3 dip
 /// corners smoothed.
-fn square_px(s: f32, hue: f32) -> ui::Picture {
+fn square_px(s: f32, hue: f32) -> ui::canvas::Picture {
     let (_, _, _, n) = wheel_px(s);
     let (r, side) = (3.0 * s, n as f32);
     let mut px = vec![0u32; (n * n) as usize];
@@ -218,11 +218,11 @@ fn square_px(s: f32, hue: f32) -> ui::Picture {
             let (ox, oy) = ((r - fx).max(0.0).max(fx - (side - r)), (r - fy).max(0.0).max(fy - (side - r)));
             let a = (r - ox.hypot(oy) + 0.5).clamp(0.0, 1.0);
             if a > 0.0 {
-                px[(y * n + x) as usize] = premul(ui::rgb_of((hue, fx / side, 1.0 - fy / side)), a);
+                px[(y * n + x) as usize] = premul(ui::color::rgb_of((hue, fx / side, 1.0 - fy / side)), a);
             }
         }
     }
-    ui::Picture { w: n, h: n, px }
+    ui::canvas::Picture { w: n, h: n, px }
 }
 
 /// Which part of the wheel a point is on, given from the wheel's center in dip (the design's

@@ -28,7 +28,7 @@ use crate::controls::{self, Screen, Style, Tone, record, widgets::Cards};
 use crate::settings::{self, Action, CTRL, Combo, Motion, Owner, Settings, WIN, edit::Edit};
 use crate::settings_page::{self as sp, menu::{Does, Menu}, recording::{Plan, Prompt}, rows::{Kind, WinKey}};
 use crate::setup::{self, GaveBack, Row as PadRow, State as PadState, Wrote};
-use crate::ui::{self, Bx, Canvas, F, Fonts, Theme, buffered, dark_title, mix, op, theme};
+use crate::ui::{self, Theme, canvas::{Bx, Canvas, buffered}, color::{mix, op}, dark_title, fonts::{F, Fonts}, theme};
 use crate::uia::{self, Node, Tree};
 
 mod draw;
@@ -698,7 +698,7 @@ pub fn show() {
         }
         return;
     }
-    ui::gdiplus();
+    ui::canvas::gdiplus();
     unsafe {
         let Ok(inst) = GetModuleHandleW(None) else { return };
         let wc = WNDCLASSW {

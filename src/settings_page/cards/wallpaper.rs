@@ -456,7 +456,7 @@ impl Ctx<'_, '_> {
             self.cx.c.fill_rr(bx, 3.0, op(b.track));
             let gw = self.cx.c.width(I_FOLDER, F::IconSmall);
             self.cx.icon(bx.0 + (w - gw) / 2.0, bx.1, h, I_FOLDER, F::IconSmall, b.tx2);
-            let edge = if self.cx.c.t.hc { op(b.line) } else { ui::alpha(b.tx, 0.18) };
+            let edge = if self.cx.c.t.hc { op(b.line) } else { ui::color::alpha(b.tx, 0.18) };
             self.cx.c.stroke_rr((bx.0 + 0.5, bx.1 + 0.5, bx.2 - 1.0, bx.3 - 1.0), 3.0, 1.0, edge);
             return;
         };
@@ -467,7 +467,7 @@ impl Ctx<'_, '_> {
                     self.cx.c.picture_rr(bx, 3.0, &p);
                     let a = crate::backdrop::dim_alpha(self.s.wallpaper_dim);
                     if a > 0 {
-                        self.cx.c.fill_rr(bx, 3.0, ui::alpha(0, a as f32 / 255.0));
+                        self.cx.c.fill_rr(bx, 3.0, ui::color::alpha(0, a as f32 / 255.0));
                     }
                     drawn = true;
                 }
@@ -488,7 +488,7 @@ impl Ctx<'_, '_> {
         if !drawn {
             self.cx.c.fill_rr(bx, 3.0, op(b.track));
         }
-        let edge = if self.cx.c.t.hc { op(b.line) } else { ui::alpha(b.tx, 0.18) };
+        let edge = if self.cx.c.t.hc { op(b.line) } else { ui::color::alpha(b.tx, 0.18) };
         self.cx.c.stroke_rr((bx.0 + 0.5, bx.1 + 0.5, bx.2 - 1.0, bx.3 - 1.0), 3.0, 1.0, edge);
     }
 
@@ -535,7 +535,7 @@ impl Ctx<'_, '_> {
         let mx = at.0.min(self.w.vw - mw - 16.0).max(NAV);
         self.cx.c.fill_rr((mx - 1.0, my - 1.0, mw + 2.0, mh + 2.0), 9.0, op(if t.hc { b.tx } else { mix(b.bg, b.tx, 0.10) }));
         if !t.hc {
-            self.cx.c.fill_rr((mx, my + 4.0, mw, mh), 8.0, ui::alpha(0, 0.08));
+            self.cx.c.fill_rr((mx, my + 4.0, mw, mh), 8.0, ui::color::alpha(0, 0.08));
         }
         self.cx.c.fill_rr((mx, my, mw, mh), 8.0, op(b.card));
         self.cx.c.text(mx + 14.0, my + 4.0, 24.0, "Picture", F::SmallBold, b.tx2);

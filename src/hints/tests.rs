@@ -43,7 +43,7 @@ type Shot<'a> = (&'a str, &'a Settings, State, Option<GaveBack>, Rec, f32);
 #[test]
 #[ignore]
 fn render() {
-    ui::gdiplus();
+    ui::canvas::gdiplus();
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("hints");
     std::fs::create_dir_all(&dir).unwrap();
     let d = Settings::default();
@@ -73,7 +73,7 @@ fn render() {
     let desert = ui::high_contrast([0xFFFAEF, 0x3D3D3D, 0x903909, 0xFFF5E3, 0x6D6D6D]);
     let themes: [(&str, Theme, f32); 5] = [("light", LIGHT, 1.0), ("dark", DARK, 1.0), ("hc", aquatic, 1.0), ("desert", desert, 1.0), ("light-150", LIGHT, 1.5)];
     for (tname, t, scale) in themes {
-        let fonts = ui::fonts(scale);
+        let fonts = ui::fonts::fonts(scale);
         for (name, s, state, back, rec, height) in &states {
             let v = read(s, state, *back);
             let (w, h) = ((W * scale).round() as i32, (height * scale).round() as i32);

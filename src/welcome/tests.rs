@@ -130,7 +130,7 @@ pub(super) fn each_state(theme: Theme, scale: f32, f: &mut dyn FnMut(&str, &Win)
 #[test]
 #[ignore]
 fn render_first_run() {
-    assert!(ui::gdiplus());
+    assert!(ui::canvas::gdiplus());
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("welcome");
     std::fs::create_dir_all(&dir).unwrap();
     let night_sky = ui::high_contrast([0x000000, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);
@@ -154,7 +154,7 @@ fn render_first_run() {
 #[ignore]
 fn snapshot_first_run() {
     use std::fmt::Write;
-    assert!(ui::gdiplus());
+    assert!(ui::canvas::gdiplus());
     let _one = crate::settings_page::tests::SETTINGS.lock();
     settings::store::use_for_test("");
     let night_sky = ui::high_contrast([0x000000, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);

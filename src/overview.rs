@@ -27,7 +27,7 @@ use windows::core::{BOOL, PCWSTR, w};
 
 use crate::finder;
 use crate::settings::{self, Animation, Labels, Pick, Settings};
-use crate::ui::{self, Bx, Canvas, F, Theme, alpha, mix, op};
+use crate::ui::{self, Theme, canvas::{Bx, Canvas}, color::{alpha, mix, op}, fonts::F};
 use crate::uia::{self, Node, Tree};
 use crate::wallpaper::{self, Face};
 use crate::ws::{self, Miss};
@@ -129,7 +129,7 @@ struct Tile {
     minis: Vec<Slot>, // back to front, as the windows stack
     name: String,     // its workspace's name on this screen; empty for none (spec 0023 AC-7)
     file: Option<String>,               // its workspace's picture on this screen (spec 0026 AC-9)
-    picture: Option<Arc<ui::Picture>>, // that picture at tile size, once decoded
+    picture: Option<Arc<ui::canvas::Picture>>, // that picture at tile size, once decoded
 }
 
 struct Screen {
@@ -897,7 +897,7 @@ fn paint_x(h: HWND, hot: bool) {
     let mut r = RECT::default();
     unsafe { let _ = GetWindowRect(h, &mut r); }
     let d = (CLOSE_BTN * scale).round() as i32;
-    ui::layered(h, (r.left, r.top, d, d), scale, ui::theme(), |c| draw_x(c, 0.0, 0.0, hot));
+    ui::canvas::layered(h, (r.left, r.top, d, d), scale, ui::theme(), |c| draw_x(c, 0.0, 0.0, hot));
 }
 
 /// The drag ghost for `src`: 240 dip wide at `scale`, the window's aspect, not shown yet.
@@ -945,7 +945,7 @@ fn open() {
     let mut order = ws::screens();
     order.sort_by_key(|(_, r)| (r.left, r.top));
     let style = settings::get().overview_animation;
-    ui::gdiplus();
+    ui::canvas::gdiplus();
     let mut screens = Vec::new();
     for (device, rect) in order {
         let Some(popup) = popup(rect, style != Animation::Off) else {
@@ -2143,9 +2143,9 @@ fn draw(c: &Canvas, sc: &Screen, m: &Marks) {
 /// One screen's painting into a buffer whose top left is popup pixel `ox`, `oy`: the page
 /// and the shadows through GDI first, then the rest on a Canvas (AC-OVR-3).
 fn paint_screen(mem: HDC, size: (i32, i32), sc: &Screen, m: &Marks, (ox, oy): (i32, i32), t: Theme) {
-    let fonts = ui::fonts(sc.scale);
+    let fonts = ui::fonts::fonts(sc.scale);
     unsafe {
-        let bg = CreateSolidBrush(ui::cref(t.b.bg));
+        let bg = CreateSolidBrush(ui::color::cref(t.b.bg));
         FillRect(mem, &RECT { left: 0, top: 0, right: size.0, bottom: size.1 }, bg);
         let _ = DeleteObject(bg.into());
     }
@@ -2174,7 +2174,7 @@ fn paint(hwnd: HWND) {
         let dirty = ps.rcPaint;
         let size = (dirty.right - dirty.left, dirty.bottom - dirty.top);
         let t = ui::theme();
-        ui::buffered(hdc, dirty.left, dirty.top, size.0, size.1, |mem| {
+        ui::canvas::buffered(hdc, dirty.left, dirty.top, size.0, size.1, |mem| {
             let drawn = SESSION.with_borrow(|s| {
                 let Some(s) = s.as_ref() else { return false };
                 let Some(i) = s.screens.iter().position(|sc| sc.popup == hwnd) else { return false };
@@ -2365,7 +2365,7 @@ unsafe extern "system" fn ghost_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LP
             WM_PAINT => {
                 let mut ps = PAINTSTRUCT::default();
                 let dc = BeginPaint(hwnd, &mut ps);
-                let card = CreateSolidBrush(ui::cref(ui::theme().b.card));
+                let card = CreateSolidBrush(ui::color::cref(ui::theme().b.card));
                 FillRect(dc, &ps.rcPaint, card);
                 let _ = DeleteObject(card.into());
                 let _ = EndPaint(hwnd, &ps);
@@ -2385,7 +2385,7 @@ unsafe extern "system" fn ghost_wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LP
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::{DARK, Fonts, LIGHT};
+    use crate::ui::{DARK, LIGHT, fonts::Fonts};
     use windows::core::Error;
 
     fn overlap(a: &RECT, b: &RECT) -> bool {
@@ -2740,7 +2740,7 @@ mod tests {
     // whole paint, pixel for pixel: shapes, text, icons and shadows all shifted alike.
     #[test]
     fn a_partial_repaint_matches_the_whole_paint() {
-        ui::gdiplus();
+        ui::canvas::gdiplus();
         let code = HWND(std::ptr::without_provenance_mut(13));
         let web = HWND(std::ptr::without_provenance_mut(12));
         let sc = laid_out(1.5, 1, 4, &design_windows(), &[], Labels::Hover);
@@ -2766,7 +2766,7 @@ mod tests {
     #[test]
     #[ignore]
     fn render() {
-        ui::gdiplus();
+        ui::canvas::gdiplus();
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("overview");
         std::fs::create_dir_all(&dir).unwrap();
         let code = HWND(std::ptr::without_provenance_mut(13));

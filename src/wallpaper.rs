@@ -20,7 +20,7 @@ use windows::Win32::{
 use windows::core::{HSTRING, PCWSTR, PWSTR, w};
 
 use crate::settings::Fit;
-use crate::ui::Picture;
+use crate::ui::canvas::Picture;
 
 /// What a tile shows behind its windows.
 #[derive(Clone)]

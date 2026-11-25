@@ -24,7 +24,7 @@ use windows::core::{PCWSTR, w};
 use crate::controls::{self, Style};
 use crate::settings::{self, Settings, edit::Edit};
 use crate::settings_page::{self as sp, rows::Section};
-use crate::ui::{self, Bx, Canvas, F, Fonts, Theme, buffered, dark_title, mix, op, theme};
+use crate::ui::{self, Theme, canvas::{Bx, Canvas, buffered}, color::{mix, op}, dark_title, fonts::{F, Fonts}, theme};
 use crate::update::{self, Version};
 
 const CLASS: PCWSTR = w!("des-k-whats-new");
@@ -655,7 +655,7 @@ fn show(news: Vec<(Version, &'static [Card])>, ours: Version, updated: bool) {
         }
         return;
     }
-    ui::gdiplus();
+    ui::canvas::gdiplus();
     unsafe {
         let Ok(inst) = GetModuleHandleW(None) else { return };
         let wc = WNDCLASSW {
@@ -907,7 +907,7 @@ mod tests {
     #[test]
     #[ignore]
     fn render_whats_new() {
-        assert!(ui::gdiplus());
+        assert!(ui::canvas::gdiplus());
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("whatsnew");
         std::fs::create_dir_all(&dir).unwrap();
         let night_sky = ui::high_contrast([0x000000, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);
@@ -931,7 +931,7 @@ mod tests {
     #[ignore]
     fn snapshot_whats_new() {
         use std::fmt::Write;
-        assert!(ui::gdiplus());
+        assert!(ui::canvas::gdiplus());
         let night_sky = ui::high_contrast([0x000000, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);
         let mut got = String::new();
         for (tname, theme) in [("light", ui::LIGHT), ("hc", night_sky)] {

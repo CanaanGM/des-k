@@ -35,10 +35,7 @@ pub(crate) mod canvas;
 pub(crate) mod color;
 pub(crate) mod fonts;
 
-pub(crate) use canvas::{Bx, Canvas, Picture, buffered, gdiplus, layered};
-pub(crate) use color::{Hsv, alpha, contrast, cref, distance, hsv_of, mix, op, rgb_of, ring_color};
-use color::hue;
-pub(crate) use fonts::{F, Fonts, font, fonts, variable};
+use color::{contrast, cref, hue, mix};
 
 /// The look des-k's windows draw in: light or dark, high contrast, and look B's tokens.
 #[derive(Clone, Copy, PartialEq)]

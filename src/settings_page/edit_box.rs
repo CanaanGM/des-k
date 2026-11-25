@@ -231,7 +231,7 @@ unsafe extern "system" fn box_proc(e: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> L
                     let dc = GetDC(Some(e));
                     let font = HGDIOBJ(SendMessageW(e, WM_GETFONT, None, None).0 as *mut _);
                     let was = SelectObject(dc, font);
-                    SetTextColor(dc, ui::cref(ink));
+                    SetTextColor(dc, ui::color::cref(ink));
                     SetBkMode(dc, TRANSPARENT);
                     let _ = HideCaret(Some(e));
                     let text: Vec<u16> = hint.encode_utf16().collect();

@@ -8,7 +8,7 @@ use std::fmt::Write;
 use windows::Win32::Foundation::RECT;
 
 /// A box in dip, to a tenth.
-pub(crate) fn bx((x, y, w, h): crate::ui::Bx) -> String {
+pub(crate) fn bx((x, y, w, h): crate::ui::canvas::Bx) -> String {
     format!("{x:.1} {y:.1} {w:.1} {h:.1}")
 }
 

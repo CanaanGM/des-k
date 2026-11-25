@@ -101,7 +101,7 @@ impl Ctx<'_, '_> {
         let iw = self.cx.c.width(icon, F::IconSmall);
         let h = self.row(y, "More", &[P::T(what.into())], (iw, 20.0), |c, x, y| c.cx.icon(x, y, 20.0, icon, F::IconSmall, b.tx2), None);
         if self.cx.hovered(Ctl::More) {
-            self.cx.c.fill_rr((X0 + 1.0, y, self.cw - 2.0, h - 1.0), 0.0, ui::alpha(b.tx, 0.04));
+            self.cx.c.fill_rr((X0 + 1.0, y, self.cw - 2.0, h - 1.0), 0.0, ui::color::alpha(b.tx, 0.04));
         }
         let at = (X0 + 4.0, y + 2.0, self.cw - 8.0, h - 4.0);
         self.cx.ring(at, 6.0, Ctl::More);
@@ -330,7 +330,7 @@ impl Ctx<'_, '_> {
             let wh = h - (wy - yy) - 30.0;
             let busy = self.w.pics.view.windows.iter().any(|(d, ws, _)| *d == s.device && *ws == a);
             if busy && w > 100.0 && wh >= 18.0 {
-                self.cx.c.fill_rr((x + w * 0.42, wy, w * 0.48, wh), 3.0, ui::alpha(b.mk_ws[a.min(8)], 0.85));
+                self.cx.c.fill_rr((x + w * 0.42, wy, w * 0.48, wh), 3.0, ui::color::alpha(b.mk_ws[a.min(8)], 0.85));
             }
             let num = (a + 1).to_string();
             if roomy {

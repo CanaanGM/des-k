@@ -15,7 +15,7 @@ pub(super) struct ColorPick {
     pub(super) start: u32,             // the color shown when it opened, for the header's start chip and hex
     pub(super) file: u32,              // the color the file is known to hold: the start, then each write that worked
     pub(super) color: u32,             // the color shown: the source of truth
-    pub(super) hsv: ui::Hsv,           // where the ring and square sit
+    pub(super) hsv: ui::color::Hsv,           // where the ring and square sit
     pub(super) preview: Option<Theme>, // the page's theme with `color` in place, while the page shows otherwise
     pub(super) written: Option<u32>,   // the value of the write in flight only: set before the call, cleared after
     pub(super) failed: Option<String>, // Windows' words from the last failed write, while Not saved shows
@@ -98,8 +98,8 @@ const OUTSET: f32 = 4.0; // a tile's in view ring and hover edge reach this far 
 thread_local! {
     // The open picker's ring at one scale, and its square at one scale and hue: built once,
     // drawn on every paint, dropped when it closes.
-    pub(super) static RING: RefCell<Option<(u32, ui::Picture)>> = const { RefCell::new(None) };
-    pub(super) static SQUARE: RefCell<Option<(u32, u32, ui::Picture)>> = const { RefCell::new(None) };
+    pub(super) static RING: RefCell<Option<(u32, ui::canvas::Picture)>> = const { RefCell::new(None) };
+    pub(super) static SQUARE: RefCell<Option<(u32, u32, ui::canvas::Picture)>> = const { RefCell::new(None) };
 }
 
 /// AC-8's line: the lowest other workspace in use whose color is `color` (true) or very close to
@@ -107,7 +107,7 @@ thread_local! {
 fn dup_of(color: u32, me: usize, ws: &[u32; 9], n: usize) -> Option<(usize, bool)> {
     (0..n.min(9)).filter(|&j| j != me).find_map(|j| match ws[j] {
         c if c == color => Some((j, true)),
-        c if ui::distance(c, color) < 10.0 => Some((j, false)),
+        c if ui::color::distance(c, color) < 10.0 => Some((j, false)),
         _ => None,
     })
 }
@@ -204,7 +204,7 @@ pub(super) fn preview_for(t: Theme, key: &str, color: u32) -> Option<Theme> {
 
 /// Shows `color` on the card and the page, the ring and square at `hsv`. A pick, a drag or an
 /// arrow ends Not saved, even one that writes nothing (AC-13).
-fn show_color(w: &mut Win, color: u32, hsv: ui::Hsv) {
+fn show_color(w: &mut Win, color: u32, hsv: ui::color::Hsv) {
     let theme = w.theme;
     if let Some(p) = w.pick.as_mut() {
         (p.color, p.hsv, p.failed) = (color, hsv, None);
@@ -238,7 +238,7 @@ pub(super) fn pick_open(key: &'static str, anchor: Anchor, from: Option<Ctl>) {
             start: color,
             file: color,
             color,
-            hsv: ui::hsv_of(color, (0.0, 0.0, 0.0)),
+            hsv: ui::color::hsv_of(color, (0.0, 0.0, 0.0)),
             preview: None,
             written: None,
             failed: None,
@@ -279,7 +279,7 @@ fn pick_write(edit: Edit, value: u32) -> bool {
             Ok(()) => (p.file, p.saved, p.failed) = (value, true, None),
             Err(why) => {
                 (p.failed, p.color) = (Some(windows_words(why)), p.file);
-                p.hsv = ui::hsv_of(p.file, p.hsv);
+                p.hsv = ui::color::hsv_of(p.file, p.hsv);
             }
         }
         p.preview = preview_for(theme, p.key, p.color);
@@ -447,7 +447,7 @@ pub(super) fn pick_move(part: Part, pt: (f32, f32)) {
             Part::Ring => ((pt.0 - cx).atan2(-(pt.1 - cy)).to_degrees().rem_euclid(360.0), s, v),
             Part::Square => (h, ((pt.0 - sq.0) / sq.2).clamp(0.0, 1.0), (1.0 - (pt.1 - sq.1) / sq.3).clamp(0.0, 1.0)),
         };
-        show_color(w, ui::rgb_of(hsv), hsv);
+        show_color(w, ui::color::rgb_of(hsv), hsv);
     });
     layout();
 }
@@ -465,7 +465,7 @@ pub(super) fn pick_preset(i: usize) {
     let _ = set(|w| {
         let Some(p) = w.pick.as_mut() else { return };
         (p.focus, p.last_swatch) = (Stop::Swatches(i), i);
-        let (c, hsv) = (ui::PRESETS[i], ui::hsv_of(ui::PRESETS[i], p.hsv));
+        let (c, hsv) = (ui::PRESETS[i], ui::color::hsv_of(ui::PRESETS[i], p.hsv));
         show_color(w, c, hsv);
     });
     pick_save();
@@ -475,13 +475,13 @@ pub(super) fn pick_preset(i: usize) {
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Arrow {
     Swatch(usize),
-    Hsv(ui::Hsv),
+    Hsv(ui::color::Hsv),
 }
 
 /// On the swatches the arrows move and pick, 3 to a row, stopping at the first and last; on
 /// the ring Left and Right turn the hue 1 degree (Shift: 10), wrapping; in the square the
 /// arrows change saturation or value by 1% (Shift: 10%), clamped. None: nothing.
-fn arrow(focus: Stop, vk: VIRTUAL_KEY, shift: bool, (h, s, v): ui::Hsv) -> Option<Arrow> {
+fn arrow(focus: Stop, vk: VIRTUAL_KEY, shift: bool, (h, s, v): ui::color::Hsv) -> Option<Arrow> {
     let step = if shift { 10.0 } else { 1.0 };
     match focus {
         Stop::Swatches(i) => {
@@ -579,9 +579,9 @@ pub(super) fn pick_key(vk: VIRTUAL_KEY, repeat: bool) {
                 let (c, hsv) = match arrow(p.focus, vk, shift, p.hsv) {
                     Some(Arrow::Swatch(n)) => {
                         (p.focus, p.last_swatch) = (Stop::Swatches(n), n);
-                        (ui::PRESETS[n], ui::hsv_of(ui::PRESETS[n], p.hsv))
+                        (ui::PRESETS[n], ui::color::hsv_of(ui::PRESETS[n], p.hsv))
                     }
-                    Some(Arrow::Hsv(hsv)) => (ui::rgb_of(hsv), hsv),
+                    Some(Arrow::Hsv(hsv)) => (ui::color::rgb_of(hsv), hsv),
                     None => return,
                 };
                 p.held = Some(vk);

@@ -117,7 +117,7 @@ impl Ctx<'_, '_> {
         };
         self.cx.c.fill_rr((mx - 1.0, my - 1.0, mw + 2.0, mh + 2.0), 9.0, op(if t.hc { b.tx } else { mix(b.bg, b.tx, 0.10) }));
         if !t.hc {
-            self.cx.c.fill_rr((mx, my + 4.0, mw, mh), 8.0, ui::alpha(0, 0.08));
+            self.cx.c.fill_rr((mx, my + 4.0, mw, mh), 8.0, ui::color::alpha(0, 0.08));
         }
         self.cx.c.fill_rr((mx, my, mw, mh), 8.0, op(b.card));
         self.cx.c.text(mx + 14.0, my + 4.0, 24.0, title, F::SmallBold, b.tx2);
@@ -172,7 +172,7 @@ impl Ctx<'_, '_> {
 
     /// A mark on the ring or square: a white disc with a dark halo, filled in the middle.
     pub(super) fn mark(&self, x: f32, y: f32, r: f32, fill: u32, focus: bool) {
-        self.cx.c.circle(x, y, r + 1.5, Some(ui::alpha(0, 0.45)), None);
+        self.cx.c.circle(x, y, r + 1.5, Some(ui::color::alpha(0, 0.45)), None);
         self.cx.c.circle(x, y, r, Some(op(0xFFFFFF)), None);
         self.cx.c.circle(x, y, r - 3.0, Some(op(fill)), None);
         if focus {

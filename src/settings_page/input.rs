@@ -37,8 +37,8 @@ pub(super) unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LP
             // follow each key typed.
             WM_CTLCOLOREDIT => {
                 let (dc, b) = (HDC(wp.0 as *mut _), get(|w| painted(w).b).unwrap_or(theme().b));
-                SetTextColor(dc, ui::cref(b.tx));
-                SetBkColor(dc, ui::cref(b.card));
+                SetTextColor(dc, ui::color::cref(b.tx));
+                SetBkColor(dc, ui::color::cref(b.card));
                 LRESULT(crate::finder::edit_brush(b.card).0 as isize)
             }
             WM_COMMAND if (wp.0 >> 16) as u32 == EN_CHANGE => {

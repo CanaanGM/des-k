@@ -28,7 +28,7 @@ use windows::core::{PCWSTR, w};
 use crate::controls::{self, Screen, Style, Tone, widgets::Cards};
 use crate::settings::{self, Action, Combo, Motion, Owner, Pick, Settings, edit::Edit, parse::Problem};
 use crate::setup::{self, GaveBack, Row as PadRow, State as PadState, Wrote};
-use crate::ui::{self, Bx, Canvas, F, Fonts, Theme, buffered, dark_title, mix, op, theme};
+use crate::ui::{self, Theme, canvas::{Bx, Canvas, buffered}, color::{mix, op}, dark_title, fonts::{F, Fonts}, theme};
 use crate::uia::{self, Node, Tree};
 
 mod cards;
@@ -755,7 +755,7 @@ pub fn open_at(section: Option<Section>, card: Option<Card>) {
         go();
         return;
     }
-    ui::gdiplus();
+    ui::canvas::gdiplus();
     unsafe {
         let Ok(inst) = GetModuleHandleW(None) else { return };
         let wc = WNDCLASSW {
