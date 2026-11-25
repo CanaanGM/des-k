@@ -13,7 +13,6 @@ const NOT_SPLIT_YET: &[(&str, usize)] = &[
     ("finder.rs", 1705),
     ("ui.rs", 1552),
     ("backdrop.rs", 1433),
-    ("tray_menu.rs", 1012),
 ];
 
 fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
