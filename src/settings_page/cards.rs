@@ -129,25 +129,25 @@ impl Ctx<'_, '_> {
             cap.push(P::Why(".".into()));
         }
         cap.extend(self.default_pieces(key, note.is_some()));
-        let help: String = cap.iter().map(|p| match p { P::T(s) | P::Why(s) | P::Link(s, _) | P::Mono(s) | P::Warn(s) => s.as_str() }).collect::<String>().trim().to_string();
+        let help: String = cap.iter().map(|p| match p { P::T(s) | P::Why(s) | P::Link(s, _) | P::Mono(s) | P::Warn(s) => s.as_str(), P::Icon(..) => "" }).collect::<String>().trim().to_string();
         let ro = self.cx.ro;
         match r.kind {
             Kind::Toggle => {
                 let size = (self.cx.switch_w(v != 0), 20.0);
                 self.cx.say(Ctl::Toggle(key), UIA_ButtonControlTypeId, r.title, &help, ro || na, (Some(v != 0), None));
-                self.row(y, r.title, &cap, size, |c, x, y| c.cx.switch(Ctl::Toggle(key), x, y, v != 0, na), note.as_ref())
+                self.row(y, r.title, &cap, size, |c, x, y| c.cx.switch(Ctl::Toggle(key), x, y, v != 0, na, None), note.as_ref())
             }
             Kind::Pair(on, off) => {
                 let size = (self.cx.seg_w(&[on, off]), 28.0);
                 self.cx.say(Ctl::Pick(key), UIA_ComboBoxControlTypeId, r.title, &help, ro, (None, Some(shown(r, v))));
                 let sel = Some(if v != 0 { 0 } else { 1 });
-                self.row(y, r.title, &cap, size, |c, x, y| c.cx.seg(x, y, &[on, off], sel, false, |i| Ctl::Choice(key, i), Ctl::Pick(key)), note.as_ref())
+                self.row(y, r.title, &cap, size, |c, x, y| c.cx.seg(x, y, &[on, off], sel, false, |i| Ctl::Choice(key, i), Ctl::Pick(key), None), note.as_ref())
             }
             Kind::Choice(words) => {
                 let labels: Vec<&str> = words.iter().map(|(_, l)| *l).collect();
                 let size = (self.cx.seg_w(&labels), 28.0);
                 self.cx.say(Ctl::Pick(key), UIA_ComboBoxControlTypeId, r.title, &help, ro || na, (None, Some(shown(r, v))));
-                self.row(y, r.title, &cap, size, |c, x, y| c.cx.seg(x, y, &labels, Some(v as usize), na, |i| Ctl::Choice(key, i), Ctl::Pick(key)), note.as_ref())
+                self.row(y, r.title, &cap, size, |c, x, y| c.cx.seg(x, y, &labels, Some(v as usize), na, |i| Ctl::Choice(key, i), Ctl::Pick(key), None), note.as_ref())
             }
             Kind::Step { lo, hi, unit, .. } => {
                 // A bad value shows what des-k uses: the default, already v.
@@ -159,14 +159,14 @@ impl Ctx<'_, '_> {
                     _ => format!("{v} {}", if unit == "ms" { "milliseconds" } else if unit == "min" { "minutes" } else if unit == "mm" { "millimetres" } else { "" }).trim().to_string(),
                 };
                 self.cx.say(Ctl::Stepper(key), UIA_SpinnerControlTypeId, r.title, &help, ro || na, (None, Some(spoken)));
-                self.row(y, r.title, &cap, size, |c, x, y| c.cx.stepper(Ctl::steps(key), x, y, step_words(v, unit), (v > lo, v < hi), na, false), note.as_ref())
+                self.row(y, r.title, &cap, size, |c, x, y| c.cx.stepper(Ctl::steps(key), x, y, step_words(v, unit), (v > lo, v < hi), na, false, None), note.as_ref())
             }
             Kind::Ladder(ladder) => {
                 let text = shown(r, v);
                 let size = (self.cx.stepper_w(&text), 32.0);
                 self.cx.say(Ctl::Stepper(key), UIA_SpinnerControlTypeId, r.title, &help, ro || na, (None, Some(text)));
                 let (lo, hi) = (ladder[0], ladder[ladder.len() - 1]);
-                self.row(y, r.title, &cap, size, |c, x, y| c.cx.stepper(Ctl::steps(key), x, y, step_words(v, MINUTES), (v > lo, v < hi), na, false), note.as_ref())
+                self.row(y, r.title, &cap, size, |c, x, y| c.cx.stepper(Ctl::steps(key), x, y, step_words(v, MINUTES), (v > lo, v < hi), na, false, None), note.as_ref())
             }
         }
     }

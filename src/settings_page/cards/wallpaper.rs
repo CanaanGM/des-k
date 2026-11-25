@@ -404,7 +404,7 @@ impl Ctx<'_, '_> {
             Pick::Set(_) => Mark::Stack,
             _ => Mark::Glyph(I_PIC),
         };
-        let help: String = cap.iter().map(|p| match p { P::T(s) | P::Why(s) | P::Link(s, _) | P::Mono(s) | P::Warn(s) => s.as_str() }).collect();
+        let help: String = cap.iter().map(|p| match p { P::T(s) | P::Why(s) | P::Link(s, _) | P::Mono(s) | P::Warn(s) => s.as_str(), P::Icon(..) => "" }).collect();
         self.cx.say(Ctl::WallPick(k), UIA_ComboBoxControlTypeId, &format!("Workspace {} wallpaper", k + 1), help.trim(), self.cx.ro, (None, Some(label.clone())));
         // A value that can't show leaves your Windows wallpaper on the screen (AC-8).
         let shown = if problem.is_some() { Some(String::new()) } else { wall_shows(self.w, self.s, screen.as_deref(), k) };
@@ -425,7 +425,7 @@ impl Ctx<'_, '_> {
             let px = x + chip + 74.0;
             c.app_picker(Ctl::WallPick(k), (px, y + 4.0, WALL_PICK_W), mark, &label, grey);
             if show {
-                c.cx.stepper(Ctl::steps(IV_KEYS[k]), px + WALL_PICK_W + 10.0, y + 4.0, step_words(iv, MINUTES), (iv > ends.0, iv < ends.1), false, iv_grey);
+                c.cx.stepper(Ctl::steps(IV_KEYS[k]), px + WALL_PICK_W + 10.0, y + 4.0, step_words(iv, MINUTES), (iv > ends.0, iv < ends.1), false, iv_grey, None);
             }
         }, None)
     }

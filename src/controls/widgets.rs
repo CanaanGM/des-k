@@ -1,10 +1,10 @@
 // The shared widgets: focus cues, fields, buttons, switches, steppers, segments, captions,
 // labels, chips and notes, drawn through `Ctx`; and rows, cards and their headers, drawn through
 // a screen's own context (spec 0017, 0035).
-use super::{Ctx, Id, NoteSpec, P, Screen, Tone};
+use super::{Ctx, Id, NoteSpec, P, Screen, Style, Tone};
 use crate::ui::{self, Bx, F, mix, op};
 use windows::Win32::Graphics::GdiPlus::DashStyleDash;
-use windows::Win32::UI::Accessibility::{UIA_ButtonControlTypeId, UIA_HyperlinkControlTypeId};
+use windows::Win32::UI::Accessibility::{UIA_ButtonControlTypeId, UIA_CheckBoxControlTypeId, UIA_ComboBoxControlTypeId, UIA_HyperlinkControlTypeId};
 
 const I_WARN: &str = "\u{E7BA}";
 const I_ADD: &str = "\u{E710}";
@@ -46,8 +46,13 @@ impl<C: Id, E: Copy> Ctx<'_, '_, C, E> {
         }
     }
 
+    /// A button label's inset on each side.
+    fn pad(&self) -> f32 {
+        if self.style == Style::FirstRun { 15.0 } else { 14.0 }
+    }
+
     pub(crate) fn btn_w(&self, label: &str, icon: Option<&str>) -> f32 {
-        self.c.width(label, F::Body) + 28.0 + icon.map_or(0.0, |_| 18.0)
+        self.c.width(label, F::Body) + 2.0 * self.pad() + icon.map_or(0.0, |_| 18.0)
     }
 
     /// A button: 32 dip, its label, an icon before it if any. `na`: greyed. Returns its width.
@@ -57,9 +62,12 @@ impl<C: Id, E: Copy> Ctx<'_, '_, C, E> {
         let w = self.btn_w(label, icon);
         let off = na || (self.ro && ctl.writes());
         let fill = if self.hovered(ctl) && !off { mix(b.card, b.tx, 0.05) } else { b.card };
-        self.field((x, y, w, 32.0), fill, None);
+        match self.style {
+            Style::Settings => self.field((x, y, w, 32.0), fill, None),
+            Style::FirstRun => self.c.boxed((x, y, w, 32.0), 6.0, fill, Some(b.line)),
+        }
         let ink = if off { b.tx3 } else { b.tx };
-        let mut tx = x + 14.0;
+        let mut tx = x + self.pad();
         if let Some(i) = icon {
             self.icon(tx, y, 32.0, i, F::IconSmall, ink);
             tx += 18.0;
@@ -71,13 +79,28 @@ impl<C: Id, E: Copy> Ctx<'_, '_, C, E> {
         w
     }
 
+    /// The purple main button, in the first run's look (its Next, What's new's Got it).
+    /// Returns its width.
+    pub(crate) fn primary(&mut self, ctl: C, x: f32, y: f32, label: &str, group: E) -> f32 {
+        let b = self.c.t.b;
+        let w = self.btn_w(label, None);
+        let hot = self.hovered(ctl);
+        self.c.fill_rr((x, y, w, 32.0), 6.0, op(if hot && !self.c.t.hc { mix(b.acc, b.tx, 0.12) } else { b.acc }));
+        self.c.text(x + self.pad(), y, 32.0, label, F::Body, b.on_acc);
+        self.ring((x, y, w, 32.0), 6.0, ctl);
+        self.hit(ctl, (x, y, w, 32.0), group);
+        self.say(ctl, UIA_ButtonControlTypeId, label, "", false, (None, None));
+        w
+    }
+
     /// The word and the switch: 40 × 20, with On or Off before it. `x`: the word's left edge.
     pub(crate) fn switch_w(&self, on: bool) -> f32 {
         self.c.width(if on { "On" } else { "Off" }, F::Body) + 10.0 + 40.0
     }
 
-    /// `na`: greyed, kept but not in use, drawn as read only.
-    pub(crate) fn switch(&mut self, ctl: C, x: f32, y: f32, on: bool, na: bool) {
+    /// `na`: greyed, kept but not in use, drawn as read only. `say`: its name and help for
+    /// Narrator, when the row doesn't say it.
+    pub(crate) fn switch(&mut self, ctl: C, x: f32, y: f32, on: bool, na: bool, say: Option<(&str, &str)>) {
         let b = self.c.t.b;
         let label = if on { "On" } else { "Off" };
         let lw = self.c.width(label, F::Body);
@@ -94,37 +117,54 @@ impl<C: Id, E: Copy> Ctx<'_, '_, C, E> {
         }
         self.ring(track, 10.0, ctl);
         self.hit(ctl, (x, y - 6.0, lw + 50.0, 32.0), self.group);
+        if let Some((name, help)) = say {
+            self.say(ctl, UIA_CheckBoxControlTypeId, name, help, ro, (Some(on), None));
+        }
     }
 
     pub(crate) fn stepper_w(&self, text: &str) -> f32 {
         64.0 + (self.c.width(text, F::Body) + 16.0).max(56.0)
     }
 
-    /// − value +, one keyboard stop (AC-SET-3: steppers only): `stop`, then the `minus` and
-    /// `plus` click areas. The value comes as its number and its unit words. `na`: greyed, kept
-    /// but not in use; its − and + do nothing. `grey`: a value that follows a default, still
-    /// live (spec 0028).
+    /// − value +: with a `stop`, one keyboard stop (AC-SET-3: steppers only) and `minus` and
+    /// `plus` its click areas; without one, − and + are each a stop, ringed alone. The value
+    /// comes as its number and its unit words. `na`: greyed, kept but not in use; its − and +
+    /// do nothing but stay stops, so you hear why. `grey`: a value that follows a default, still
+    /// live (spec 0028). `say`: the title and help Narrator reads with − and +.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn stepper(&mut self, (stop, minus, plus): (C, C, C), x: f32, y: f32, (num, unit): (String, String), (down, up): (bool, bool), na: bool, grey: bool) {
+    pub(crate) fn stepper(&mut self, (stop, minus, plus): (Option<C>, C, C), x: f32, y: f32, (num, unit): (String, String), (down, up): (bool, bool), na: bool, grey: bool, say: Option<(&str, &str)>) {
         let b = self.c.t.b;
         let (nw, uw) = (self.c.width(&num, F::Body), self.c.width(&unit, F::Small));
-        let w = 64.0 + (nw + uw + 16.0).max(56.0);
-        self.field((x, y, w, 32.0), b.card, None);
+        let first = self.style == Style::FirstRun;
+        let w = 64.0 + (nw + uw + if first { 8.0 } else { 16.0 }).max(56.0);
+        if first {
+            self.c.boxed((x, y, w, 32.0), 6.0, b.card, Some(if na && self.c.t.hc { b.tx3 } else { b.line }));
+        } else {
+            self.field((x, y, w, 32.0), b.card, None);
+        }
         let mid = w - 64.0;
         let tx = x + 32.0 + (mid - nw - uw) / 2.0;
         let off = na || self.ro;
         self.c.text(tx, y, 32.0, &num, F::Body, if off { b.tx3 } else if grey { b.tx2 } else { b.tx });
         self.c.text(tx + nw, y, 32.0, &unit, F::Small, if off { b.tx3 } else { b.tx2 });
-        for (ctl, ix, icon, live) in [(minus, x, I_MINUS, down), (plus, x + w - 32.0, I_ADD, up)] {
+        for (ctl, ix, icon, live, what) in [(minus, x, I_MINUS, down, "Less"), (plus, x + w - 32.0, I_ADD, up, "More")] {
             let live = live && !off;
             if self.hovered(ctl) && live {
                 self.c.fill_rr((ix + 4.0, y + 4.0, 24.0, 24.0), 4.0, op(mix(b.card, b.tx, 0.08)));
             }
             let iw = self.c.width(icon, F::IconTiny);
             self.icon(ix + (32.0 - iw) / 2.0, y, 32.0, icon, F::IconTiny, if live { b.tx } else { b.tx3 });
+            if stop.is_none() && self.focused(ctl) {
+                self.c.stroke_rr((ix + 1.0, y + 1.0, 30.0, 30.0), 5.0, 2.0, op(b.tx));
+            }
             self.hit(ctl, (ix, y, 32.0, 32.0), self.group);
+            if let Some((title, help)) = say {
+                self.say(ctl, UIA_ButtonControlTypeId, &format!("{what}: {title}"), help, off, (None, Some(format!("{num}{unit}"))));
+            }
         }
-        self.ring((x, y, w, 32.0), 6.0, stop);
+        if let Some(stop) = stop {
+            self.ring((x, y, w, 32.0), 6.0, stop);
+        }
     }
 
     pub(crate) fn seg_w(&self, words: &[&str]) -> f32 {
@@ -133,8 +173,9 @@ impl<C: Id, E: Copy> Ctx<'_, '_, C, E> {
 
     /// Choice buttons in one track, 28 dip; the chosen one raised with the ring (AC-SET-9).
     /// `na`: greyed. Word `i` is the control `ctl(i)`; `stop` is the one keyboard stop.
+    /// `say`: its name and help for Narrator, when the row doesn't say it.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn seg(&mut self, x: f32, y: f32, words: &[&str], sel: Option<usize>, na: bool, ctl: impl Fn(usize) -> C, stop: C) {
+    pub(crate) fn seg(&mut self, x: f32, y: f32, words: &[&str], sel: Option<usize>, na: bool, ctl: impl Fn(usize) -> C, stop: C, say: Option<(&str, &str)>) {
         let b = self.c.t.b;
         let w = self.seg_w(words);
         self.c.boxed((x, y, w, 28.0), 6.0, b.track, Some(b.line));
@@ -149,7 +190,8 @@ impl<C: Id, E: Copy> Ctx<'_, '_, C, E> {
                     self.c.fill_rr(bx, 4.0, op(if self.ro { b.tx3 } else { b.hi }));
                     b.on_acc
                 } else {
-                    self.c.fill_rr((bx.0 - 1.0, bx.1 - 1.0, bx.2 + 2.0, bx.3 + 2.0), 5.0, op(b.tx3));
+                    let edge = if self.style == Style::FirstRun { b.line } else { b.tx3 };
+                    self.c.fill_rr((bx.0 - 1.0, bx.1 - 1.0, bx.2 + 2.0, bx.3 + 2.0), 5.0, op(edge));
                     self.c.fill_rr(bx, 4.0, op(b.hi));
                     if self.ro { b.tx3 } else { b.tx }
                 }
@@ -164,6 +206,10 @@ impl<C: Id, E: Copy> Ctx<'_, '_, C, E> {
             ox += iw + 2.0;
         }
         self.ring((x, y, w, 28.0), 6.0, stop);
+        if let Some((name, help)) = say {
+            let shown = sel.and_then(|i| words.get(i)).copied().unwrap_or("");
+            self.say(stop, UIA_ComboBoxControlTypeId, name, help, off, (None, Some(shown.to_string())));
+        }
     }
 
     /// A caption's pieces as one wrapped text, 12/16; links get their hits, hover and ring.
@@ -183,6 +229,7 @@ impl<C: Id, E: Copy> Ctx<'_, '_, C, E> {
                     runs.push((I_WARN, F::IconTiny, b.warn));
                     runs.push((s.as_str(), F::Small, b.warn));
                 }
+                P::Icon(s, col) => runs.push((*s, F::IconSmall, *col)),
             }
         }
         let (h, boxes) = self.c.para_boxes(x, y, w, 16.0, &runs);
@@ -247,7 +294,7 @@ impl<C: Id, E: Copy> Ctx<'_, '_, C, E> {
         let b = self.c.t.b;
         self.icon(x, y + 2.0, 16.0, n.icon, F::Icon, col);
         let bw: f32 = n.buttons.iter().map(|(_, l)| self.btn_w(l, None) + 8.0).sum();
-        let beside = bw > 0.0 && bw < w * 0.4;
+        let beside = bw > 0.0 && bw < w * if self.style == Style::FirstRun { 0.42 } else { 0.4 };
         let tx = x + 28.0;
         let tw = if beside { w - 28.0 - bw - 4.0 } else { w - 28.0 };
         // No title: the caption alone, on the icon's line (a hex box's typing line).
@@ -278,7 +325,13 @@ impl<C: Id, E: Copy> Ctx<'_, '_, C, E> {
     /// A note inside a row: a dashed line over it, on the row's own background.
     pub(crate) fn in_note(&mut self, x: f32, y: f32, w: f32, n: &NoteSpec<C, E>) -> f32 {
         let b = self.c.t.b;
-        if self.c.draw {
+        if self.style == Style::FirstRun {
+            let mut dx = 0.0;
+            while dx < w {
+                self.c.fill_rr((x + dx, y, 3.0f32.min(w - dx), 1.0), 0.0, op(b.line));
+                dx += 6.0;
+            }
+        } else if self.c.draw {
             self.c.stroke_dash((x, y, w, 0.0), 0.0, 1.0, op(b.line), DashStyleDash);
         }
         10.0 + self.note_body(x, y + 10.0, w, n) + 2.0
@@ -321,6 +374,10 @@ pub(crate) trait Cards<'a, 'f: 'a>: Screen<'a, 'f> {
         let b = c.t.b;
         c.boxed((x0, y, col, h), 8.0, b.card, Some(b.line));
         body(self, y);
+        if self.cx().style == Style::FirstRun {
+            // The edge again, over rows that tint up to it.
+            self.cx().c.stroke_rr((x0 + 0.5, y + 0.5, col - 1.0, h - 1.0), 8.0, 1.0, op(b.line));
+        }
         h
     }
 

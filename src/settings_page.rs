@@ -25,7 +25,7 @@ use windows::Win32::{
 };
 use windows::core::{PCWSTR, w};
 
-use crate::controls::{self, Screen, Tone, widgets::Cards};
+use crate::controls::{self, Screen, Style, Tone, widgets::Cards};
 use crate::settings::{self, Action, Combo, Motion, Owner, Pick, Settings, edit::Edit, parse::Problem};
 use crate::setup::{self, GaveBack, Row as PadRow, State as PadState, Wrote};
 use crate::ui::{self, Bx, Canvas, F, Fonts, Theme, buffered, dark_title, mix, op, theme};
@@ -218,8 +218,8 @@ impl Ctl {
     }
 
     /// A stepper's keyboard stop, then its − and +.
-    fn steps(key: &'static str) -> (Ctl, Ctl, Ctl) {
-        (Ctl::Stepper(key), Ctl::Minus(key), Ctl::Plus(key))
+    fn steps(key: &'static str) -> (Option<Ctl>, Ctl, Ctl) {
+        (Some(Ctl::Stepper(key)), Ctl::Minus(key), Ctl::Plus(key))
     }
 
     fn in_side(self) -> bool {
@@ -481,7 +481,7 @@ fn thumb(scroll: f32, height: f32, view: f32, top: f32) -> Option<(f32, f32)> {
 fn compose(c: &mut Canvas, w: &Win) -> Out {
     let s = settings::get();
     let cw = (w.vw - X0 - PAD_R).min(COL_MAX);
-    let cx = controls::Ctx { c, hits: vec![], said: vec![], ro: settings::store::parse_error().is_some(), focus: w.focus, hover: w.hover, kb: w.kb, group: 1 };
+    let cx = controls::Ctx { c, hits: vec![], said: vec![], ro: settings::store::parse_error().is_some(), focus: w.focus, hover: w.hover, kb: w.kb, group: 1, style: Style::Settings };
     let mut x = Ctx { cx, w, s: &s, cw, top0: 0.0, out: Out { hits: vec![], height: 0.0, fixed: 0.0, tops: vec![], cards: vec![], said: vec![], geo: Geo::default() } };
     let fixed = x.measured(|c| c.banners());
     x.out.fixed = fixed;

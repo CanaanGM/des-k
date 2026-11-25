@@ -203,7 +203,7 @@ impl Ctx<'_, '_> {
         let help = format!("{} {}", SPOT_NAMES[spot_index(pos.spot)], "Left and Right move it.");
         self.cx.say(Ctl::Picture, UIA_SpinnerControlTypeId, "Place", &help, na || self.cx.ro, (None, Some(SPOT_NAMES[spot_index(pos.spot)].into())));
         self.cx.say(Ctl::Pick(MODE), UIA_ComboBoxControlTypeId, "Spots or Custom", "", na || self.cx.ro, (None, Some(words[custom as usize].into())));
-        self.row(y, "Place", &cap, size, |c, x, y| c.cx.seg(x, y, &words, Some(custom as usize), na, |i| Ctl::Choice(MODE, i), Ctl::Pick(MODE)), note.as_ref());
+        self.row(y, "Place", &cap, size, |c, x, y| c.cx.seg(x, y, &words, Some(custom as usize), na, |i| Ctl::Choice(MODE, i), Ctl::Pick(MODE), None), note.as_ref());
         let by = wy + 16.0 + ph + 12.0;
         let sw = self.cx.btn_w("Show it there", None);
         let line = self.cx.c.fit(&label, F::Small, ww - 24.0 - sw - 12.0);
@@ -343,7 +343,7 @@ impl Ctx<'_, '_> {
         let text = format!("{v} {unit}");
         let size = (self.cx.stepper_w(&text), 32.0);
         self.cx.say(Ctl::Stepper(key), UIA_SpinnerControlTypeId, title, base, self.cx.ro || na, (None, Some(text)));
-        self.row(y, title, &cap, size, |c, x, y| c.cx.stepper(Ctl::steps(key), x, y, step_words(v, unit), (v > lo, v < hi), na, false), note.as_ref())
+        self.row(y, title, &cap, size, |c, x, y| c.cx.stepper(Ctl::steps(key), x, y, step_words(v, unit), (v > lo, v < hi), na, false, None), note.as_ref())
     }
 }
 

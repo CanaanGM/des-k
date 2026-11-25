@@ -24,6 +24,7 @@ use windows::Win32::{
 };
 use windows::core::{PCWSTR, w};
 
+use crate::controls::{self, Screen, Style, Tone, widgets::Cards};
 use crate::settings::{self, ALT, Action, CTRL, Combo, Motion, Owner, SHIFT, Settings, WIN, edit::Edit};
 use crate::settings_page::{self as sp, menu::{Does, Menu}, recording::{Plan, Prompt}, rows::{Kind, WinKey}};
 use crate::setup::{self, GaveBack, Row as PadRow, State as PadState, Wrote};
@@ -51,7 +52,6 @@ const I_WARN: &str = "\u{E7BA}";
 const I_INFO: &str = "\u{E946}";
 const I_KEY: &str = "\u{E765}";
 const I_ADD: &str = "\u{E710}";
-const I_MINUS: &str = "\u{E738}";
 const I_PEN: &str = "\u{E70F}";
 const I_DOWN: &str = "\u{E70D}";
 const I_UP: &str = "\u{E70E}";
@@ -198,14 +198,16 @@ impl Ctl {
     }
 }
 
+// The first run is never read only: it opens before settings.toml could have gone bad.
+impl controls::Id for Ctl {
+    fn writes(self) -> bool {
+        false
+    }
+}
+
 /// Where a control sits, in window dip. Group: 0 above the step, 1 the step (clipped to its
 /// view), 2 the footer, 3 the open menu.
-#[derive(Clone, Copy)]
-struct Hit {
-    ctl: Ctl,
-    at: Bx,
-    group: u8,
-}
+type Hit = controls::Hit<Ctl, u8>;
 
 /// What the screens picture and the touchpad step draw, copied out of ws and Windows.
 #[derive(Clone, PartialEq, Default)]
@@ -508,7 +510,7 @@ struct PadView {
 
 fn pad_view(st: &PadState, back: Option<GaveBack>) -> PadView {
     const LOG: &str = "Details: tray icon › Open log.";
-    let note = |tone, icon, title: &str, line: String, buttons: Vec<(Ctl, &'static str)>| Some(NoteSpec { tone, icon, title: title.into(), lines: vec![P::T(line)], buttons });
+    let note = |tone, icon, title: &str, line: String, buttons: Vec<(Ctl, &'static str)>| Some(NoteSpec { tone, icon, title: title.into(), lines: vec![P::T(line)], buttons, group: 0 });
     let windows = |label| vec![(Ctl::Pad(Pad::Windows), label)];
     let rows = st.rows.map(|r| match r {
         PadRow::Nothing => Chip::Ok,
@@ -559,6 +561,7 @@ fn pad_view(st: &PadState, back: Option<GaveBack>) -> PadView {
                 title: "No 3- or 4-finger gesture works now".into(),
                 lines: vec![P::T("Windows' own gestures are off too. Turn reading on, or turn them back on in Windows Settings.".into())],
                 buttons: vec![(Ctl::Pad(Pad::ReadOn), "Turn reading on"), (Ctl::Pad(Pad::Windows), "Open Windows Settings")],
+                group: 0,
             });
         } else {
             v.note = note(Tone::Info, I_INFO, "Windows runs its own 3- and 4-finger gestures", "des-k runs none of these until reading is on.".into(), vec![(Ctl::Pad(Pad::ReadOn), "Turn reading on")]);
@@ -620,27 +623,8 @@ fn spelled_row(row: &str) -> String {
 
 // ---- Drawing ----
 
-/// A piece of a caption: words, or words in the text color (a reason).
-enum P {
-    T(String),
-    Why(String),
-    Icon(&'static str, u32), // a status glyph in its color
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Tone {
-    Info,
-    Warn,
-    Rec,
-}
-
-struct NoteSpec {
-    tone: Tone,
-    icon: &'static str,
-    title: String,
-    lines: Vec<P>,
-    buttons: Vec<(Ctl, &'static str)>,
-}
+type P = controls::P<Ctl>;
+type NoteSpec = controls::NoteSpec<Ctl, u8>;
 
 /// What one pass of compose found.
 struct Out {
@@ -653,333 +637,94 @@ struct Out {
 
 /// One pass over the window, drawing or only measuring.
 struct Ctx<'a, 'f> {
-    c: &'a mut Canvas<'f>,
+    cx: controls::Ctx<'a, 'f, Ctl, u8>,
     w: &'a Win,
     s: &'a Settings, // from the paint's own handle, one version for the whole pass
     cw: f32,
-    group: u8,
     out: Out,
 }
 
-impl Ctx<'_, '_> {
-    fn hit(&mut self, ctl: Ctl, at: Bx) {
-        let group = if matches!(ctl, Ctl::Item(_)) { 3 } else { self.group };
-        self.out.hits.push(Hit { ctl, at, group });
+impl<'a, 'f> Screen<'a, 'f> for Ctx<'a, 'f> {
+    type C = Ctl;
+    type E = u8;
+
+    fn cx(&mut self) -> &mut controls::Ctx<'a, 'f, Ctl, u8> {
+        &mut self.cx
+    }
+
+    fn column(&self) -> (f32, f32) {
+        (X0, self.cw)
     }
 
     /// Lays `f` out without drawing it or keeping its controls.
     fn measured(&mut self, f: impl FnOnce(&mut Self) -> f32) -> f32 {
-        let draw = std::mem::replace(&mut self.c.draw, false);
-        let (hits, said, texts) = (self.out.hits.len(), self.out.said.len(), self.out.texts.len());
+        let texts = self.out.texts.len();
+        let m = self.cx.mark();
         let h = f(self);
-        self.out.hits.truncate(hits);
-        self.out.said.truncate(said);
+        self.cx.rewind(m);
         self.out.texts.truncate(texts);
-        self.c.draw = draw;
         h
     }
+}
 
-    fn say(&mut self, ctl: Ctl, role: UIA_CONTROLTYPE_ID, name: &str, help: &str, greyed: bool, state: (Option<bool>, Option<String>)) {
-        if self.out.said.iter().any(|(c, _)| *c == ctl) {
-            return;
-        }
-        let node = Node { role, name: name.to_string(), help: help.to_string(), greyed, focusable: true, toggled: state.0, value: state.1, ..Node::default() };
-        self.out.said.push((ctl, node));
+impl Ctx<'_, '_> {
+    fn hit(&mut self, ctl: Ctl, at: Bx) {
+        let group = self.cx.group;
+        self.cx.hit(ctl, at, group);
     }
 
     fn text_node(&mut self, role: UIA_CONTROLTYPE_ID, name: &str, value: Option<String>) {
-        if self.c.draw || self.out.texts.iter().any(|n| n.name == name) {
+        if self.cx.c.draw || self.out.texts.iter().any(|n| n.name == name) {
             return;
         }
         self.out.texts.push(Node { role, name: name.to_string(), value, ..Node::default() });
     }
 
-    fn focused(&self, ctl: Ctl) -> bool {
-        self.w.kb && self.w.focus == Some(ctl)
+    /// A plain button in the step or the footer.
+    fn button(&mut self, ctl: Ctl, x: f32, y: f32, label: &str) -> f32 {
+        let group = self.cx.group;
+        self.cx.button(ctl, x, y, label, None, false, group)
     }
 
-    fn hovered(&self, ctl: Ctl) -> bool {
-        self.w.hover == Some(ctl)
-    }
-
-    /// The focus ring: 2 dip in the text color, 2 dip out (AC-FR-6).
-    fn ring(&self, (x, y, w, h): Bx, r: f32, ctl: Ctl) {
-        if self.focused(ctl) {
-            self.c.stroke_rr((x - 3.0, y - 3.0, w + 6.0, h + 6.0), r + 3.0, 2.0, op(self.c.t.b.tx));
-        }
-    }
-
-    fn icon(&self, x: f32, y: f32, lh: f32, icon: &str, f: F, color: u32) {
-        self.c.text(x, y, lh, icon, f, color);
-    }
-
-    fn btn_w(&self, label: &str) -> f32 {
-        self.c.width(label, F::Body) + 30.0
-    }
-
-    /// A button, 32 dip: the purple one is Next. Returns its width.
-    fn button(&mut self, ctl: Ctl, x: f32, y: f32, label: &str, primary: bool) -> f32 {
-        let b = self.c.t.b;
-        let w = self.btn_w(label);
-        let hot = self.hovered(ctl);
-        if primary {
-            self.c.fill_rr((x, y, w, 32.0), 6.0, op(if hot && !self.c.t.hc { mix(b.acc, b.tx, 0.12) } else { b.acc }));
-            self.c.text(x + 15.0, y, 32.0, label, F::Body, b.on_acc);
-        } else {
-            self.c.boxed((x, y, w, 32.0), 6.0, if hot { mix(b.card, b.tx, 0.05) } else { b.card }, Some(b.line));
-            self.c.text(x + 15.0, y, 32.0, label, F::Body, b.tx);
-        }
-        self.ring((x, y, w, 32.0), 6.0, ctl);
-        self.hit(ctl, (x, y, w, 32.0));
-        self.say(ctl, UIA_ButtonControlTypeId, label, "", false, (None, None));
-        w
-    }
-
-    fn switch_w(&self, on: bool) -> f32 {
-        self.c.width(if on { "On" } else { "Off" }, F::Body) + 10.0 + 40.0
-    }
-
-    /// The word and the switch, 40 × 20, the switch ringed itself.
-    fn switch(&mut self, key: &'static str, x: f32, y: f32, on: bool, title: &str, help: &str) {
-        let b = self.c.t.b;
-        let ctl = Ctl::Toggle(key);
-        let label = if on { "On" } else { "Off" };
-        let lw = self.c.width(label, F::Body);
-        self.c.text(x, y, 20.0, label, F::Body, b.tx2);
-        let sx = x + lw + 10.0;
-        let track = (sx, y, 40.0, 20.0);
-        if on {
-            self.c.fill_rr(track, 10.0, op(b.acc));
-            self.c.circle(sx + 30.0, y + 10.0, 6.0, Some(op(b.on_acc)), None);
-        } else {
-            let fill = if self.hovered(ctl) { mix(b.card, b.tx, 0.06) } else { b.card };
-            self.c.boxed(track, 10.0, fill, Some(b.tx2));
-            self.c.circle(sx + 10.0, y + 10.0, 6.0, Some(op(b.tx2)), None);
-        }
-        self.ring(track, 10.0, ctl);
-        self.hit(ctl, (x, y - 6.0, lw + 50.0, 32.0));
-        self.say(ctl, UIA_CheckBoxControlTypeId, title, help, false, (Some(on), None));
-    }
-
+    /// A stepper's width: its value, its unit, − and +.
     fn stepper_w(&self, v: i64, unit: &str) -> f32 {
         let u = if unit.is_empty() { String::new() } else { format!(" {unit}") };
-        64.0 + (self.c.width(&v.to_string(), F::Body) + self.c.width(&u, F::Small) + 8.0).max(56.0)
-    }
-
-    /// − value +: two stops, each ringed alone. `na`: greyed, kept but not in use; − and +
-    /// do nothing but stay stops, so you hear why.
-    #[allow(clippy::too_many_arguments)]
-    fn stepper(&mut self, key: &'static str, x: f32, y: f32, (v, unit): (i64, &str), (down, up): (bool, bool), na: bool, title: &str, help: &str) {
-        let b = self.c.t.b;
-        let num = v.to_string();
-        let u = if unit.is_empty() { String::new() } else { format!(" {unit}") };
-        let (nw, uw) = (self.c.width(&num, F::Body), self.c.width(&u, F::Small));
-        let w = 64.0 + (nw + uw + 8.0).max(56.0);
-        self.c.boxed((x, y, w, 32.0), 6.0, b.card, Some(if na && self.c.t.hc { b.tx3 } else { b.line }));
-        let mid = w - 64.0;
-        let tx = x + 32.0 + (mid - nw - uw) / 2.0;
-        self.c.text(tx, y, 32.0, &num, F::Body, if na { b.tx3 } else { b.tx });
-        self.c.text(tx + nw, y, 32.0, &u, F::Small, if na { b.tx3 } else { b.tx2 });
-        let shown = format!("{v}{u}");
-        for (ctl, ix, icon, live, what) in [(Ctl::Minus(key), x, I_MINUS, down, "Less"), (Ctl::Plus(key), x + w - 32.0, I_ADD, up, "More")] {
-            let live = live && !na;
-            if self.hovered(ctl) && live {
-                self.c.fill_rr((ix + 4.0, y + 4.0, 24.0, 24.0), 4.0, op(mix(b.card, b.tx, 0.08)));
-            }
-            let iw = self.c.width(icon, F::IconTiny);
-            self.icon(ix + (32.0 - iw) / 2.0, y, 32.0, icon, F::IconTiny, if live { b.tx } else { b.tx3 });
-            if self.focused(ctl) {
-                self.c.stroke_rr((ix + 1.0, y + 1.0, 30.0, 30.0), 5.0, 2.0, op(b.tx));
-            }
-            self.hit(ctl, (ix, y, 32.0, 32.0));
-            self.say(ctl, UIA_ButtonControlTypeId, &format!("{what}: {title}"), help, na, (None, Some(shown.clone())));
-        }
-    }
-
-    fn seg_w(&self, words: &[&str]) -> f32 {
-        4.0 + words.iter().map(|l| self.c.width(l, F::Small) + 20.0).sum::<f32>() + 2.0 * (words.len() as f32 - 1.0)
-    }
-
-    /// Choice buttons in one track, 28 dip; the chosen one raised. One stop, arrows move it.
-    #[allow(clippy::too_many_arguments)]
-    fn seg(&mut self, x: f32, y: f32, words: &[&str], sel: usize, na: bool, ctl: impl Fn(usize) -> Ctl, stop: Ctl, name: &str, help: &str) {
-        let b = self.c.t.b;
-        let w = self.seg_w(words);
-        self.c.boxed((x, y, w, 28.0), 6.0, b.track, Some(b.line));
-        let mut ox = x + 2.0;
-        for (i, label) in words.iter().enumerate() {
-            let iw = self.c.width(label, F::Small) + 20.0;
-            let bx = (ox, y + 2.0, iw, 24.0);
-            let chosen = sel == i && !na;
-            let fg = if chosen {
-                if self.c.t.hc {
-                    self.c.fill_rr(bx, 4.0, op(b.hi));
-                    b.on_acc
-                } else {
-                    self.c.fill_rr((bx.0 - 1.0, bx.1 - 1.0, bx.2 + 2.0, bx.3 + 2.0), 5.0, op(b.line));
-                    self.c.fill_rr(bx, 4.0, op(b.hi));
-                    b.tx
-                }
-            } else {
-                if self.hovered(ctl(i)) && !na {
-                    self.c.fill_rr(bx, 4.0, op(mix(b.track, b.tx, 0.06)));
-                }
-                if na { b.tx3 } else { b.tx2 }
-            };
-            self.c.text(ox + 10.0, y + 2.0, 24.0, label, if chosen { F::SmallBold } else { F::Small }, fg);
-            self.hit(ctl(i), bx);
-            ox += iw + 2.0;
-        }
-        self.ring((x, y, w, 28.0), 6.0, stop);
-        self.say(stop, UIA_ComboBoxControlTypeId, name, help, na, (None, Some(words.get(sel).copied().unwrap_or("").to_string())));
-    }
-
-    fn caption(&mut self, x: f32, y: f32, w: f32, pieces: &[P]) -> f32 {
-        let b = self.c.t.b;
-        let runs: Vec<(&str, F, u32)> = pieces
-            .iter()
-            .map(|p| match p {
-                P::T(s) => (s.as_str(), F::Small, b.tx2),
-                P::Why(s) => (s.as_str(), F::Small, b.tx),
-                P::Icon(s, col) => (*s, F::IconSmall, *col),
-            })
-            .collect();
-        self.c.para(x, y, w, 16.0, &runs)
-    }
-
-    fn label_h(&mut self, w: f32, title: &str, cap: &[P]) -> f32 {
-        self.measured(|c| c.label(0.0, 0.0, w, title, cap))
-    }
-
-    /// A row's name, 600 14/20, and its caption under it.
-    fn label(&mut self, x: f32, y: f32, w: f32, title: &str, cap: &[P]) -> f32 {
-        let b = self.c.t.b;
-        let mut h = 0.0;
-        if !title.is_empty() {
-            h += self.c.para(x, y, w, 20.0, &[(title, F::Bold, b.tx)]);
-        }
-        if !cap.is_empty() {
-            h += self.caption(x, y + h, w, cap);
-        }
-        h
+        64.0 + (self.cx.c.width(&v.to_string(), F::Body) + self.cx.c.width(&u, F::Small) + 8.0).max(56.0)
     }
 
     /// The tint of a row that is recording or warns.
     fn tint(&self, y: f32, h: f32) {
-        let b = self.c.t.b;
-        if !self.c.t.hc {
-            self.c.fill_rr((X0 + 1.0, y, self.cw - 2.0, h), 0.0, op(mix(b.card, b.acc_a, 0.06)));
+        let b = self.cx.c.t.b;
+        if !self.cx.c.t.hc {
+            self.cx.c.fill_rr((X0 + 1.0, y, self.cw - 2.0, h), 0.0, op(mix(b.card, b.acc_a, 0.06)));
         }
     }
 
-    /// One row in a card: name and caption on the left, the control on the right, both
-    /// centred; under them, a note if one is given. Returns its height.
+    /// A row, tinted under it while `tinted` (recording, or a warning).
     #[allow(clippy::too_many_arguments)]
-    fn row(&mut self, y: f32, title: &str, cap: &[P], (cw, ch): (f32, f32), ctl: impl Fn(&mut Self, f32, f32), note: Option<&NoteSpec>, tinted: bool) -> f32 {
-        let (x, w) = (X0 + 16.0, self.cw - 32.0);
-        let lw = if cw > 0.0 { w - cw - 16.0 } else { w };
-        let lh = self.label_h(lw, title, cap);
-        let top = lh.max(ch).max(ROW - 16.0);
-        let mut h = 8.0 + top;
-        if let Some(n) = note {
-            h += 6.0 + self.measured(|c| c.in_note(x, 0.0, w, n));
-        }
-        h += 8.0;
+    fn tinted_row(&mut self, y: f32, title: &str, cap: &[P], size: (f32, f32), ctl: impl Fn(&mut Self, f32, f32), note: Option<&NoteSpec>, tinted: bool) -> f32 {
         if tinted {
+            let h = self.measured(|c| c.row(y, title, cap, size, &ctl, note));
             self.tint(y, h);
         }
-        ctl(self, x + w - cw, y + 8.0 + (top - ch) / 2.0);
-        self.label(x, y + 8.0 + (top - lh) / 2.0, lw, title, cap);
-        if let Some(n) = note {
-            self.in_note(x, y + 8.0 + top + 6.0, w, n);
-        }
-        h
-    }
-
-    fn sep(&self, y: f32) {
-        self.c.rule(X0 + 1.0, y, self.cw - 2.0, op(self.c.t.b.line));
-    }
-
-    /// A card around `body`, which draws from its top and returns its height.
-    fn card(&mut self, y: f32, body: impl Fn(&mut Self, f32) -> f32) -> f32 {
-        let h = self.measured(|c| body(c, y));
-        let b = self.c.t.b;
-        self.c.boxed((X0, y, self.cw, h), 8.0, b.card, Some(b.line));
-        body(self, y);
-        // The edge again, over rows that tint up to it.
-        self.c.stroke_rr((X0 + 0.5, y + 0.5, self.cw - 1.0, h - 1.0), 8.0, 1.0, op(b.line));
-        h
+        self.row(y, title, cap, size, ctl, note)
     }
 
     /// The More row: a chevron, and what it opens.
     fn more(&mut self, y: f32, what: &str) -> f32 {
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         let open = self.w.more[self.w.step.index()];
         let icon = if open { I_UP } else { I_DOWN };
-        let iw = self.c.width(icon, F::IconSmall);
-        let h = self.row(y, "More", &[P::T(what.into())], (iw, 20.0), |c, x, y| c.icon(x, y, 20.0, icon, F::IconSmall, b.tx2), None, false);
-        if self.hovered(Ctl::More) {
-            self.c.fill_rr((X0 + 1.0, y, self.cw - 2.0, h - 1.0), 0.0, ui::alpha(b.tx, 0.04));
+        let iw = self.cx.c.width(icon, F::IconSmall);
+        let h = self.row(y, "More", &[P::T(what.into())], (iw, 20.0), |c, x, y| c.cx.icon(x, y, 20.0, icon, F::IconSmall, b.tx2), None);
+        if self.cx.hovered(Ctl::More) {
+            self.cx.c.fill_rr((X0 + 1.0, y, self.cw - 2.0, h - 1.0), 0.0, ui::alpha(b.tx, 0.04));
         }
         let at = (X0 + 4.0, y + 2.0, self.cw - 8.0, h - 4.0);
-        self.ring(at, 6.0, Ctl::More);
+        self.cx.ring(at, 6.0, Ctl::More);
         self.hit(Ctl::More, (X0, y, self.cw, h));
-        self.say(Ctl::More, UIA_ButtonControlTypeId, &format!("More: {what}"), "", false, (None, Some(if open { "open" } else { "closed" }.into())));
+        self.cx.say(Ctl::More, UIA_ButtonControlTypeId, &format!("More: {what}"), "", false, (None, Some(if open { "open" } else { "closed" }.into())));
         h
-    }
-
-    fn tone_color(&self, tone: Tone) -> u32 {
-        let b = self.c.t.b;
-        match tone {
-            Tone::Info => b.tx2,
-            Tone::Warn => b.warn,
-            Tone::Rec => b.acc,
-        }
-    }
-
-    /// A note's text and buttons, from `x`; returns its height. Buttons sit on the right when
-    /// they leave the text room, else under it.
-    fn note_body(&mut self, x: f32, y: f32, w: f32, n: &NoteSpec) -> f32 {
-        let col = self.tone_color(n.tone);
-        let b = self.c.t.b;
-        self.icon(x, y + 2.0, 16.0, n.icon, F::Icon, col);
-        let bw: f32 = n.buttons.iter().map(|(_, l)| self.btn_w(l) + 8.0).sum();
-        let beside = bw > 0.0 && bw < w * 0.42;
-        let tx = x + 28.0;
-        let tw = if beside { w - 28.0 - bw - 4.0 } else { w - 28.0 };
-        let mut h = self.c.para(tx, y, tw, 20.0, &[(&n.title, F::Bold, b.tx)]);
-        if !n.lines.is_empty() {
-            h += self.caption(tx, y + h, tw, &n.lines);
-        }
-        if bw > 0.0 {
-            let by = if beside { y + ((h - 32.0) / 2.0).max(0.0) } else { y + h + 8.0 };
-            let mut bx = if beside { x + w - bw + 8.0 } else { tx };
-            for (ctl, label) in &n.buttons {
-                bx += self.button(*ctl, bx, by, label, false) + 8.0;
-            }
-            h = if beside { h.max(32.0) } else { h + 8.0 + 32.0 };
-        }
-        h
-    }
-
-    /// A note on its own: card colored, with its edge.
-    fn note(&mut self, x: f32, y: f32, w: f32, n: &NoteSpec) -> f32 {
-        let h = self.measured(|c| c.note_body(x + 12.0, y + 10.0, w - 24.0, n)) + 20.0;
-        let b = self.c.t.b;
-        self.c.boxed((x, y, w, h), 6.0, b.card, Some(b.line));
-        self.note_body(x + 12.0, y + 10.0, w - 24.0, n);
-        h
-    }
-
-    /// A note inside a row: a dashed line over it, on the row's own background.
-    fn in_note(&mut self, x: f32, y: f32, w: f32, n: &NoteSpec) -> f32 {
-        let b = self.c.t.b;
-        let mut dx = 0.0;
-        while dx < w {
-            self.c.fill_rr((x + dx, y, 3.0f32.min(w - dx), 1.0), 0.0, op(b.line));
-            dx += 6.0;
-        }
-        10.0 + self.note_body(x, y + 10.0, w, n) + 2.0
     }
 
     /// Key caps for one key, 22 dip, from `x`. Returns their width.
@@ -989,7 +734,7 @@ impl Ctx<'_, '_> {
             if i > 0 {
                 cx += 4.0;
             }
-            cx += self.c.key_cap(cx, y, 22.0, k, held);
+            cx += self.cx.c.key_cap(cx, y, 22.0, k, held);
         }
         cx - x
     }
@@ -1002,7 +747,7 @@ impl Ctx<'_, '_> {
                     "Left" | "Right" | "Up" | "Down" => ("\u{E72B}", F::IconTiny),
                     k => (k, F::Small),
                 };
-                (self.c.width(label, f) + 2.0 * (22.0 / 2.0 - 5.0) + 2.0).max(22.0) + if i > 0 { 4.0 } else { 0.0 }
+                (self.cx.c.width(label, f) + 2.0 * (22.0 / 2.0 - 5.0) + 2.0).max(22.0) + if i > 0 { 4.0 } else { 0.0 }
             })
             .sum()
     }
@@ -1011,46 +756,46 @@ impl Ctx<'_, '_> {
     /// when it fills a column. Returns its width.
     #[allow(clippy::too_many_arguments)]
     fn key_field(&mut self, f: Field, x: f32, y: f32, fill: Option<f32>, caps: Option<&[String]>, rec: Option<(&[String], &str)>, help: &str) -> f32 {
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         let ctl = Ctl::Field(f);
-        let pen_w = self.c.width(I_PEN, F::IconSmall);
-        let set_w = self.c.width("Set key", F::Body);
+        let pen_w = self.cx.c.width(I_PEN, F::IconSmall);
+        let set_w = self.cx.c.width("Set key", F::Body);
         let w = fill.unwrap_or_else(|| match (rec, caps) {
-            (Some((held, ghost)), _) => 10.0 + if held.is_empty() { self.c.width(ghost, F::Small) + 12.0 } else { self.caps_w(held) },
+            (Some((held, ghost)), _) => 10.0 + if held.is_empty() { self.cx.c.width(ghost, F::Small) + 12.0 } else { self.caps_w(held) },
             (None, Some(k)) => 5.0 + self.caps_w(k) + 6.0 + pen_w + 4.0,
             (None, None) => 10.0 + 10.0 + 6.0 + set_w + 12.0,
         });
-        let hot = self.hovered(ctl);
+        let hot = self.cx.hovered(ctl);
         match rec {
             Some((held, ghost)) => {
-                self.c.fill_rr((x, y, w, 32.0), 6.0, op(b.acc));
-                self.c.fill_rr((x + 2.0, y + 2.0, w - 4.0, 28.0), 4.0, op(b.card));
+                self.cx.c.fill_rr((x, y, w, 32.0), 6.0, op(b.acc));
+                self.cx.c.fill_rr((x + 2.0, y + 2.0, w - 4.0, 28.0), 4.0, op(b.card));
                 if held.is_empty() {
-                    let gw = self.c.width(ghost, F::Small) + 12.0;
-                    self.c.stroke_dash((x + 5.0, y + 5.0, gw, 22.0), 4.0, 1.0, op(b.tx3), DashStyleDash);
-                    self.c.text(x + 11.0, y + 5.0, 22.0, ghost, F::Small, b.tx3);
+                    let gw = self.cx.c.width(ghost, F::Small) + 12.0;
+                    self.cx.c.stroke_dash((x + 5.0, y + 5.0, gw, 22.0), 4.0, 1.0, op(b.tx3), DashStyleDash);
+                    self.cx.c.text(x + 11.0, y + 5.0, 22.0, ghost, F::Small, b.tx3);
                 } else {
                     self.caps(x + 5.0, y + 5.0, held, true);
                 }
             }
             None => {
-                self.c.boxed((x, y, w, 32.0), 6.0, if hot { mix(b.track, b.tx, 0.05) } else { b.track }, Some(b.line));
+                self.cx.c.boxed((x, y, w, 32.0), 6.0, if hot { mix(b.track, b.tx, 0.05) } else { b.track }, Some(b.line));
                 match caps {
                     Some(k) => {
                         self.caps(x + 5.0, y + 5.0, k, false);
-                        self.icon(x + w - 4.0 - pen_w, y, 32.0, I_PEN, F::IconSmall, b.tx3);
+                        self.cx.icon(x + w - 4.0 - pen_w, y, 32.0, I_PEN, F::IconSmall, b.tx3);
                     }
                     None => {
-                        self.icon(x + 10.0, y, 32.0, I_ADD, F::IconTiny, b.tx2);
-                        self.c.text(x + 26.0, y, 32.0, "Set key", F::Body, b.tx);
+                        self.cx.icon(x + 10.0, y, 32.0, I_ADD, F::IconTiny, b.tx2);
+                        self.cx.c.text(x + 26.0, y, 32.0, "Set key", F::Body, b.tx);
                     }
                 }
             }
         }
-        self.ring((x, y, w, 32.0), 6.0, ctl);
+        self.cx.ring((x, y, w, 32.0), 6.0, ctl);
         self.hit(ctl, (x, y, w, 32.0));
         let value = if rec.is_some() { "recording".to_string() } else { caps.map_or("no key".into(), words) };
-        self.say(ctl, UIA_ButtonControlTypeId, &format!("{}: key", title_of(f)), help, false, (None, Some(value)));
+        self.cx.say(ctl, UIA_ButtonControlTypeId, &format!("{}: key", title_of(f)), help, false, (None, Some(value)));
         w
     }
 
@@ -1058,7 +803,7 @@ impl Ctx<'_, '_> {
 
     /// Returns the bottom of what sits above the step's view.
     fn head(&mut self) -> f32 {
-        let t = self.c.t;
+        let t = self.cx.c.t;
         let b = t.b;
         let list = steps(self.w);
         let n = list.len();
@@ -1066,27 +811,27 @@ impl Ctx<'_, '_> {
         let frac = (j + 1) as f32 / n as f32;
         let bw = self.w.vw - 2.0 * X0;
         if t.hc {
-            self.c.boxed((X0, 0.0, bw, 6.0), 3.0, b.bg, Some(b.tx));
-            self.c.fill_rr((X0 + 1.0, 1.0, (bw - 2.0) * frac, 4.0), 2.0, op(b.acc_a));
+            self.cx.c.boxed((X0, 0.0, bw, 6.0), 3.0, b.bg, Some(b.tx));
+            self.cx.c.fill_rr((X0 + 1.0, 1.0, (bw - 2.0) * frac, 4.0), 2.0, op(b.acc_a));
         } else {
-            self.c.fill_rr((X0, 0.0, bw, 3.0), 1.5, op(b.line));
-            self.c.fill_rr((X0, 0.0, bw * frac, 3.0), 1.5, op(b.acc_a));
+            self.cx.c.fill_rr((X0, 0.0, bw, 3.0), 1.5, op(b.line));
+            self.cx.c.fill_rr((X0, 0.0, bw * frac, 3.0), 1.5, op(b.acc_a));
         }
         let eye = format!("Step {} of {n}", j + 1);
         self.text_node(UIA_ProgressBarControlTypeId, &eye, Some(format!("{} of {n}", j + 1)));
-        self.c.text(X0, 19.0, 16.0, &eye, F::Small, b.tx2);
+        self.cx.c.text(X0, 19.0, 16.0, &eye, F::Small, b.tx2);
         let title = self.w.step.title();
         self.text_node(UIA_HeaderControlTypeId, title, None);
-        self.c.text(X0, 37.0, 32.0, title, F::Heading, b.tx);
+        self.cx.c.text(X0, 37.0, 32.0, title, F::Heading, b.tx);
         let mut y = 69.0;
         let sub = self.sub();
         if !sub.is_empty() {
             self.text_node(UIA_TextControlTypeId, &sub, None);
-            y += 4.0 + self.c.para(X0, 73.0, self.cw, 20.0, &[(&sub, F::Body, b.tx2)]);
+            y += 4.0 + self.cx.c.para(X0, 73.0, self.cw, 20.0, &[(&sub, F::Body, b.tx2)]);
         }
         if let Some(n) = self.fixed() {
             y += 12.0;
-            y += self.note(X0, y, self.cw, &n);
+            y += self.cx.note(X0, y, self.cw, &n);
         }
         y
     }
@@ -1118,6 +863,7 @@ impl Ctx<'_, '_> {
                 title: format!("Couldn't save “{what}”"),
                 lines: vec![P::T(format!("Your change isn't saved or in use. Close settings.toml in any program that has it open, then try again. Windows said: {why}"))],
                 buttons: vec![],
+                group: 0,
             });
         }
         if self.w.step != Step::Pad {
@@ -1126,10 +872,10 @@ impl Ctx<'_, '_> {
         if let Some(Rec::Gesture(..)) = self.w.rec {
             let (title, line) = rec_note(self.w.rec?);
             let lines = match &self.w.refused {
-                Some((t, l)) => return Some(NoteSpec { tone: Tone::Warn, icon: I_WARN, title: t.clone(), lines: vec![P::T(l.clone())], buttons: vec![(Ctl::Cancel, "Cancel")] }),
+                Some((t, l)) => return Some(NoteSpec { tone: Tone::Warn, icon: I_WARN, title: t.clone(), lines: vec![P::T(l.clone())], buttons: vec![(Ctl::Cancel, "Cancel")], group: 0 }),
                 None => vec![P::T(line)],
             };
-            return Some(NoteSpec { tone: Tone::Rec, icon: I_KEY, title, lines, buttons: vec![(Ctl::Cancel, "Cancel")] });
+            return Some(NoteSpec { tone: Tone::Rec, icon: I_KEY, title, lines, buttons: vec![(Ctl::Cancel, "Cancel")], group: 0 });
         }
         self.pad().note
     }
@@ -1137,12 +883,12 @@ impl Ctx<'_, '_> {
     // ---- Step 1: try it ----
 
     fn try_it(&mut self, y: f32) -> f32 {
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         let mut h = self.screens(y) + 12.0;
         h += self.card(y + h, |c, y| c.tries(y));
         if self.w.tried.iter().all(|t| *t) {
             h += 12.0;
-            h += self.c.para(X0, y + h, self.cw, 16.0, &[("That's des-k. Next: your keys.", F::Small, b.tx2)]);
+            h += self.cx.c.para(X0, y + h, self.cw, 16.0, &[("That's des-k. Next: your keys.", F::Small, b.tx2)]);
         }
         h
     }
@@ -1155,7 +901,7 @@ impl Ctx<'_, '_> {
         if list.is_empty() {
             return ht;
         }
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         let bx = list.iter().map(|s| s.rect.left).min().unwrap_or(0) as f32;
         let by = list.iter().map(|s| s.rect.top).min().unwrap_or(0) as f32;
         let bw = list.iter().map(|s| s.rect.right).max().unwrap_or(1) as f32 - bx;
@@ -1171,49 +917,49 @@ impl Ctx<'_, '_> {
             let below = list.iter().any(|o| o.device != s.device && (o.rect.top - s.rect.bottom).abs() < 2 && o.rect.left < s.rect.right && o.rect.right > s.rect.left);
             if !below {
                 if s.name == "Built-in display" {
-                    self.c.polygon(&[(x - 6.0, yy + h), (x + w + 6.0, yy + h), (x + w + 3.0, yy + h + 4.0), (x - 3.0, yy + h + 4.0)], op(b.stand), (op(b.stand), 0.5));
+                    self.cx.c.polygon(&[(x - 6.0, yy + h), (x + w + 6.0, yy + h), (x + w + 3.0, yy + h + 4.0), (x - 3.0, yy + h + 4.0)], op(b.stand), (op(b.stand), 0.5));
                 } else {
                     let cx = x + w / 2.0;
-                    self.c.polygon(&[(cx - 8.0, yy + h), (cx + 8.0, yy + h), (cx + 11.0, yy + h + 9.0), (cx - 11.0, yy + h + 9.0)], op(b.stand), (op(b.stand), 0.5));
-                    self.c.fill_rr((cx - 22.0, yy + h + 9.0, 44.0, 3.0), 1.5, op(b.stand));
+                    self.cx.c.polygon(&[(cx - 8.0, yy + h), (cx + 8.0, yy + h), (cx + 11.0, yy + h + 9.0), (cx - 11.0, yy + h + 9.0)], op(b.stand), (op(b.stand), 0.5));
+                    self.cx.c.fill_rr((cx - 22.0, yy + h + 9.0, 44.0, 3.0), 1.5, op(b.stand));
                 }
             }
             let a = self.w.pics.view.active.iter().find(|(d, _)| *d == s.device).map_or(0, |(_, a)| *a);
-            self.c.fill_rr((x, yy, w, h), 6.0, op(b.bez));
-            self.c.fill_rr((x + 2.0, yy + 2.0, w - 4.0, h - 4.0), 4.0, op(b.ws[a.min(8)]));
+            self.cx.c.fill_rr((x, yy, w, h), 6.0, op(b.bez));
+            self.cx.c.fill_rr((x + 2.0, yy + 2.0, w - 4.0, h - 4.0), 4.0, op(b.ws[a.min(8)]));
             let name = self.w.pics.view.names.iter().find(|(d, _)| *d == s.device).map_or_else(|| s.name.clone(), |(_, n)| n.clone());
             said.push(format!("{name} on workspace {}", a + 1));
             // The name in lines that fit, when the face has room for them and the number.
             let mut lines: Vec<String> = vec![];
             for word in name.split(' ') {
                 match lines.last_mut() {
-                    Some(l) if self.c.width(&format!("{l} {word}"), F::Small) <= w - 16.0 => *l = format!("{l} {word}"),
+                    Some(l) if self.cx.c.width(&format!("{l} {word}"), F::Small) <= w - 16.0 => *l = format!("{l} {word}"),
                     _ => lines.push(word.to_string()),
                 }
             }
-            let roomy = lines.len() as f32 * 15.0 + 30.0 <= h && lines.iter().all(|l| self.c.width(l, F::Small) <= w - 16.0);
+            let roomy = lines.len() as f32 * 15.0 + 30.0 <= h && lines.iter().all(|l| self.cx.c.width(l, F::Small) <= w - 16.0);
             if roomy {
                 for (k, l) in lines.iter().enumerate() {
-                    self.c.text(x + 9.0, yy + 7.0 + k as f32 * 15.0, 15.0, l, F::Small, b.on_ws[a.min(8)]);
+                    self.cx.c.text(x + 9.0, yy + 7.0 + k as f32 * 15.0, 15.0, l, F::Small, b.on_ws[a.min(8)]);
                 }
             }
             let wy = yy + 12.0 + if roomy { lines.len() as f32 * 15.0 } else { 0.0 } + 8.0;
             let wh = h - (wy - yy) - 30.0;
             let busy = self.w.pics.view.windows.iter().any(|(d, ws, _)| *d == s.device && *ws == a);
             if busy && w > 100.0 && wh >= 18.0 {
-                self.c.fill_rr((x + w * 0.42, wy, w * 0.48, wh), 3.0, ui::alpha(b.mk_ws[a.min(8)], 0.85));
+                self.cx.c.fill_rr((x + w * 0.42, wy, w * 0.48, wh), 3.0, ui::alpha(b.mk_ws[a.min(8)], 0.85));
             }
             let num = (a + 1).to_string();
             if roomy {
-                self.c.text(x + 9.0, yy + h - 34.0, 28.0, &num, F::Title, b.on_ws[a.min(8)]);
+                self.cx.c.text(x + 9.0, yy + h - 34.0, 28.0, &num, F::Title, b.on_ws[a.min(8)]);
             } else {
-                let nw = self.c.width(&num, F::Title);
-                self.c.text(x + (w - nw) / 2.0, yy + (h - 28.0) / 2.0, 28.0, &num, F::Title, b.on_ws[a.min(8)]);
+                let nw = self.cx.c.width(&num, F::Title);
+                self.cx.c.text(x + (w - nw) / 2.0, yy + (h - 28.0) / 2.0, 28.0, &num, F::Title, b.on_ws[a.min(8)]);
             }
             if s.device == self.w.pics.mouse {
                 let (px, py) = (x + w - 28.0, yy + h - 30.0);
                 let pts = [(0.0, 0.0), (0.0, 17.0), (4.2, 13.2), (7.0, 19.8), (9.8, 18.5), (7.0, 12.1), (12.6, 12.1)].map(|(a, z)| (px + a, py + z));
-                self.c.polygon(&pts, op(0xFFFFFF), (op(0x111111), 1.1));
+                self.cx.c.polygon(&pts, op(0xFFFFFF), (op(0x111111), 1.1));
             }
         }
         self.text_node(UIA_ImageControlTypeId, &said.join(", "), None);
@@ -1221,7 +967,7 @@ impl Ctx<'_, '_> {
     }
 
     fn tries(&mut self, y: f32) -> f32 {
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         let s = self.s;
         let tried = self.w.tried;
         let now = tried.iter().position(|t| !*t);
@@ -1239,7 +985,7 @@ impl Ctx<'_, '_> {
                 String::new()
             };
             let caps = sp::rows::shortcut(key).and_then(|sh| sp::rows::drawn_order(s, sh).first().and_then(|&k| sp::rows::keys_of(s, key).get(k).cloned()));
-            let kw = caps.as_ref().map_or_else(|| self.c.width("No key", F::Small), |c| self.caps_w(c));
+            let kw = caps.as_ref().map_or_else(|| self.cx.c.width("No key", F::Small), |c| self.caps_w(c));
             let lx = X0 + 16.0 + 20.0 + 12.0;
             let lw = self.cw - 32.0 - 32.0 - kw - 12.0;
             let cap_p: Vec<P> = if cap.is_empty() { vec![] } else { vec![P::T(cap.clone())] };
@@ -1250,15 +996,15 @@ impl Ctx<'_, '_> {
             let cy = if two { row_y } else { row_y + (top - 20.0) / 2.0 };
             let cx = X0 + 16.0;
             if done {
-                self.c.circle(cx + 10.0, cy + 10.0, 10.0, Some(op(b.acc)), None);
-                let iw = self.c.width(I_OK, F::IconTiny);
-                self.icon(cx + 10.0 - iw / 2.0, cy, 20.0, I_OK, F::IconTiny, b.on_acc);
+                self.cx.c.circle(cx + 10.0, cy + 10.0, 10.0, Some(op(b.acc)), None);
+                let iw = self.cx.c.width(I_OK, F::IconTiny);
+                self.cx.icon(cx + 10.0 - iw / 2.0, cy, 20.0, I_OK, F::IconTiny, b.on_acc);
             } else {
                 let now = now == Some(i);
-                self.c.circle(cx + 10.0, cy + 10.0, if now { 9.25 } else { 9.5 }, None, Some((op(if now { b.acc } else { b.tx3 }), if now { 1.5 } else { 1.0 })));
+                self.cx.c.circle(cx + 10.0, cy + 10.0, if now { 9.25 } else { 9.5 }, None, Some((op(if now { b.acc } else { b.tx3 }), if now { 1.5 } else { 1.0 })));
                 let d = (i + 1).to_string();
-                let dw = self.c.width(&d, F::SmallBold);
-                self.c.text(cx + 10.0 - dw / 2.0, cy, 20.0, &d, F::SmallBold, if now { b.tx } else { b.tx2 });
+                let dw = self.cx.c.width(&d, F::SmallBold);
+                self.cx.c.text(cx + 10.0 - dw / 2.0, cy, 20.0, &d, F::SmallBold, if now { b.tx } else { b.tx2 });
             }
             self.try_label(lx, if two { row_y } else { row_y + (top - lh) / 2.0 }, lw, title, &cap_p, done || now == Some(i));
             let ky = if two { row_y - 1.0 } else { row_y + (top - 22.0) / 2.0 };
@@ -1267,7 +1013,7 @@ impl Ctx<'_, '_> {
                 Some(c) => {
                     self.caps(kx, ky, c, done && i == 0 && tried == [true, false, false]);
                 }
-                None => self.c.text(kx, ky, 22.0, "No key", F::Small, b.tx2),
+                None => self.cx.c.text(kx, ky, 22.0, "No key", F::Small, b.tx2),
             }
             let state = if done { "done" } else if now == Some(i) { "now" } else { "to do" };
             let spoken = format!("{}. {title}, {}, {state}. {cap}", i + 1, caps.as_ref().map_or("no key".into(), |c| words(c)));
@@ -1278,10 +1024,10 @@ impl Ctx<'_, '_> {
     }
 
     fn try_label(&mut self, x: f32, y: f32, w: f32, title: &str, cap: &[P], strong: bool) -> f32 {
-        let b = self.c.t.b;
-        let mut h = self.c.para(x, y, w, 20.0, &[(title, F::Bold, if strong { b.tx } else { b.tx2 })]);
+        let b = self.cx.c.t.b;
+        let mut h = self.cx.c.para(x, y, w, 20.0, &[(title, F::Bold, if strong { b.tx } else { b.tx2 })]);
         if !cap.is_empty() {
-            h += self.caption(x, y + h, w, cap);
+            h += self.cx.caption(x, y + h, w, cap);
         }
         h
     }
@@ -1304,12 +1050,12 @@ impl Ctx<'_, '_> {
 
     fn keys(&mut self, y: f32) -> f32 {
         self.card(y, |c, y| {
-            let b = c.c.t.b;
+            let b = c.cx.c.t.b;
             let head = "Override Windows?";
-            let col3 = c.c.width(head, F::SmallBold).max(c.seg_w(&["Yes", "No"]));
-            c.c.text(X0 + 16.0, y + 8.0, 16.0, "Key · click to change", F::SmallBold, b.tx2);
-            c.c.text(X0 + 16.0 + KEY_W + 16.0, y + 8.0, 16.0, "Action", F::SmallBold, b.tx2);
-            c.c.text(X0 + c.cw - 16.0 - col3, y + 8.0, 16.0, head, F::SmallBold, b.tx2);
+            let col3 = c.cx.c.width(head, F::SmallBold).max(c.cx.seg_w(&["Yes", "No"]));
+            c.cx.c.text(X0 + 16.0, y + 8.0, 16.0, "Key · click to change", F::SmallBold, b.tx2);
+            c.cx.c.text(X0 + 16.0 + KEY_W + 16.0, y + 8.0, 16.0, "Action", F::SmallBold, b.tx2);
+            c.cx.c.text(X0 + c.cw - 16.0 - col3, y + 8.0, 16.0, head, F::SmallBold, b.tx2);
             let mut h = 32.0;
             for i in 0..TAKES.len() {
                 c.sep(y + h);
@@ -1332,15 +1078,15 @@ impl Ctx<'_, '_> {
         if let Some(p) = &self.w.prompt
             && field_of_key(p.key) == Some(f)
         {
-            let n = NoteSpec { tone: Tone::Warn, icon: I_WARN, title: p.title.clone(), lines: vec![P::T(p.sub.clone())], buttons: vec![(Ctl::Move, "Move it here"), (Ctl::Cancel, "Cancel")] };
+            let n = NoteSpec { tone: Tone::Warn, icon: I_WARN, title: p.title.clone(), lines: vec![P::T(p.sub.clone())], buttons: vec![(Ctl::Move, "Move it here"), (Ctl::Cancel, "Cancel")], group: 1 };
             return Some((n, p.held.clone()));
         }
         let rec = self.w.rec.filter(|r| field_of(*r) == Some(f))?;
         let n = match &self.w.refused {
-            Some((t, l)) => NoteSpec { tone: Tone::Warn, icon: I_WARN, title: t.clone(), lines: vec![P::T(l.clone())], buttons: vec![(Ctl::Cancel, "Cancel")] },
+            Some((t, l)) => NoteSpec { tone: Tone::Warn, icon: I_WARN, title: t.clone(), lines: vec![P::T(l.clone())], buttons: vec![(Ctl::Cancel, "Cancel")], group: 1 },
             None => {
                 let (t, l) = rec_note(rec);
-                NoteSpec { tone: Tone::Rec, icon: I_KEY, title: t, lines: vec![P::T(l)], buttons: vec![(Ctl::Cancel, "Cancel")] }
+                NoteSpec { tone: Tone::Rec, icon: I_KEY, title: t, lines: vec![P::T(l)], buttons: vec![(Ctl::Cancel, "Cancel")], group: 1 }
             }
         };
         Some((n, vec![]))
@@ -1355,7 +1101,7 @@ impl Ctx<'_, '_> {
     }
 
     fn take_row(&mut self, y: f32, i: usize, col3: f32) -> f32 {
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         let s = self.s;
         let t = &TAKES[i];
         let f = Field::Take(i);
@@ -1363,13 +1109,13 @@ impl Ctx<'_, '_> {
         let x = X0 + 16.0;
         let lx = x + KEY_W + 16.0;
         let lw = X0 + self.cw - 16.0 - col3 - 16.0 - lx;
-        let lh = self.label_h(lw, t.title, &[P::T(cap.clone())]);
+        let lh = self.cx.label_h(lw, t.title, &[P::T(cap.clone())]);
         let top = lh.max(32.0).max(ROW - 16.0);
         let note = self.key_note(f);
         let mut h = 8.0 + top;
         if let Some((n, _)) = &note {
             let nw = self.cw - 32.0;
-            h += 6.0 + self.measured(|c| c.in_note(x, 0.0, nw, n));
+            h += 6.0 + self.measured(|c| c.cx.in_note(x, 0.0, nw, n));
         }
         h += 8.0;
         if note.is_some() {
@@ -1379,7 +1125,7 @@ impl Ctx<'_, '_> {
         if t.keys.is_empty() {
             // The Copilot key: no key to record.
             let caps = vec!["Copilot".to_string()];
-            self.c.boxed((x, fy, KEY_W, 32.0), 6.0, b.track, Some(b.line));
+            self.cx.c.boxed((x, fy, KEY_W, 32.0), 6.0, b.track, Some(b.line));
             self.caps(x + 5.0, fy + 5.0, &caps, false);
         } else {
             let caps = row_caps(s, t.keys);
@@ -1396,12 +1142,12 @@ impl Ctx<'_, '_> {
                 _ => (1, false),
             }
         };
-        let sw = self.seg_w(&["Yes", "No"]);
+        let sw = self.cx.seg_w(&["Yes", "No"]);
         let name = format!("{}: override Windows?", t.title);
-        self.seg(X0 + self.cw - 16.0 - sw, y + 8.0 + (top - 28.0) / 2.0, &["Yes", "No"], sel, na, |k| Ctl::SideAt(i, k == 0), Ctl::Side(i), &name, &cap);
-        self.label(lx, y + 8.0 + (top - lh) / 2.0, lw, t.title, &[P::T(cap.clone())]);
+        self.cx.seg(X0 + self.cw - 16.0 - sw, y + 8.0 + (top - 28.0) / 2.0, &["Yes", "No"], Some(sel), na, |k| Ctl::SideAt(i, k == 0), Ctl::Side(i), Some((&name, &cap)));
+        self.cx.label(lx, y + 8.0 + (top - lh) / 2.0, lw, t.title, &[P::T(cap.clone())]);
         if let Some((n, _)) = &note {
-            self.in_note(x, y + 8.0 + top + 6.0, self.cw - 32.0, n);
+            self.cx.in_note(x, y + 8.0 + top + 6.0, self.cw - 32.0, n);
         }
         h
     }
@@ -1414,7 +1160,7 @@ impl Ctx<'_, '_> {
         let rec = note.as_ref().map(|(_, held)| (held.clone(), Self::ghost(f)));
         let fw = self.measured(|c| c.key_field(f, 0.0, 0.0, None, caps.as_deref(), rec.as_ref().map(|(h, g)| (h.as_slice(), *g)), ""));
         let n = note.map(|(n, _)| n);
-        self.row(y, title, &[], (fw, 32.0), |c, x, y| {
+        self.tinted_row(y, title, &[], (fw, 32.0), |c, x, y| {
             c.key_field(f, x, y, None, caps.as_deref(), rec.as_ref().map(|(h, g)| (h.as_slice(), *g)), "");
         }, n.as_ref(), n.is_some())
     }
@@ -1425,12 +1171,12 @@ impl Ctx<'_, '_> {
         self.card(y, |c, y| {
             let s = c.s;
             let n = s.workspaces as i64;
-            let warn = n > 2 && (c.focused(Ctl::Minus("workspaces")) || c.hovered(Ctl::Minus("workspaces")));
+            let warn = n > 2 && (c.cx.focused(Ctl::Minus("workspaces")) || c.cx.hovered(Ctl::Minus("workspaces")));
             let note = warn.then(|| c.lowering());
             let cap = format!("Every screen gets workspaces 1 to {n}.");
             let sw = c.stepper_w(n, "");
-            let mut h = c.row(y, "Workspaces per screen", &[P::T(cap.clone())], (sw, 32.0), |c, x, y| {
-                c.stepper("workspaces", x, y, (n, ""), (n > 2, n < 9), false, "Workspaces per screen", &cap);
+            let mut h = c.tinted_row(y, "Workspaces per screen", &[P::T(cap.clone())], (sw, 32.0), |c, x, y| {
+                c.cx.stepper((None, Ctl::Minus("workspaces"), Ctl::Plus("workspaces")), x, y, (n.to_string(), String::new()), (n > 2, n < 9), false, false, Some(("Workspaces per screen", &cap)));
             }, note.as_ref(), warn);
             for (key, title, cap) in [
                 ("follow_activation", "Follow a window", "When a hidden window comes to the front (an app reuses it, a dialog pops up), go to its workspace."),
@@ -1480,14 +1226,15 @@ impl Ctx<'_, '_> {
             title: format!("Lowering to {} removes workspace {n} from every screen", n - 1),
             lines: vec![P::T(format!("Its windows move to workspace {}{what}. A screen showing workspace {n} switches to {}. Raising it again won't move them back.", n - 1, n - 1))],
             buttons: vec![],
+            group: 1,
         }
     }
 
     fn toggle_row(&mut self, y: f32, key: &'static str, title: &str, cap: &str) -> f32 {
         let on = sp::rows::value(self.s, key) != 0;
-        let sw = self.switch_w(on);
+        let sw = self.cx.switch_w(on);
         let caps: Vec<P> = if cap.is_empty() { vec![] } else { vec![P::T(cap.into())] };
-        self.row(y, title, &caps, (sw, 20.0), |c, x, y| c.switch(key, x, y, on, title, cap), None, false)
+        self.row(y, title, &caps, (sw, 20.0), |c, x, y| c.cx.switch(Ctl::Toggle(key), x, y, on, false, Some((title, cap))), None)
     }
 
     /// A More row: a switch, a number or a choice, greyed with every reason when not in use.
@@ -1507,20 +1254,20 @@ impl Ctx<'_, '_> {
             caps.push(P::Why(format!(" Not in use: {}.", reasons.join(", and "))));
         }
         let help: String = caps.iter().map(|p| match p {
-            P::T(s) | P::Why(s) => s.as_str(),
+            P::T(s) | P::Why(s) | P::Link(s, _) | P::Mono(s) | P::Warn(s) => s.as_str(),
             P::Icon(..) => "",
         }).collect();
         match r.kind {
             Kind::Toggle => self.toggle_row(y, key, title, cap),
             Kind::Step { lo, hi, unit, .. } => {
                 let sw = self.stepper_w(v, unit);
-                self.row(y, title, &caps, (sw, 32.0), |c, x, y| c.stepper(key, x, y, (v, unit), (v > lo, v < hi), na, title, &help), None, false)
+                self.row(y, title, &caps, (sw, 32.0), |c, x, y| c.cx.stepper((None, Ctl::Minus(key), Ctl::Plus(key)), x, y, (v.to_string(), if unit.is_empty() { String::new() } else { format!(" {unit}") }), (v > lo, v < hi), na, false, Some((title, &help))), None)
             }
             Kind::Choice(_) | Kind::Pair(..) => {
                 let list = words_of(r);
                 let sel = if matches!(r.kind, Kind::Pair(..)) { (v == 0) as usize } else { v as usize };
-                let sw = self.seg_w(&list);
-                self.row(y, title, &caps, (sw, 28.0), |c, x, y| c.seg(x, y, &list, sel, false, |i| Ctl::Choice(key, i), Ctl::Pick(key), title, &help), None, false)
+                let sw = self.cx.seg_w(&list);
+                self.row(y, title, &caps, (sw, 28.0), |c, x, y| c.cx.seg(x, y, &list, Some(sel), false, |i| Ctl::Choice(key, i), Ctl::Pick(key), Some((title, &help))), None)
             }
             Kind::Ladder(_) => 0.0, // the first run asks nothing about slideshows
         }
@@ -1538,7 +1285,7 @@ impl Ctx<'_, '_> {
             let cap = format!("{} · click an action to change it", pv.head);
             let chips = pv.chips;
             h += self.card(y + h, |c, y| {
-                let mut h = c.header(y, fingers, &cap);
+                let mut h = c.pad_header(y, fingers, &cap);
                 for (k, tap) in [(0usize, false), (1, true)] {
                     if k > 0 {
                         c.sep(y + h);
@@ -1554,10 +1301,10 @@ impl Ctx<'_, '_> {
             let mut h = 0.0;
             if give {
                 let cap = format!("Undo: Windows uses its own gestures again from your next sign-in.{}", if quit { " Quit does the same." } else { "" });
-                let bw = c.btn_w("Give back");
+                let bw = c.cx.btn_w("Give back", None);
                 h += c.row(y, "Give back to Windows", &[P::T(cap)], (bw, 32.0), |c, x, y| {
-                    c.button(Ctl::Pad(Pad::GiveBack), x, y, "Give back", false);
-                }, None, false);
+                    c.button(Ctl::Pad(Pad::GiveBack), x, y, "Give back");
+                }, None);
                 c.sep(y + h);
             }
             h += c.more(y + h, "Reading, swipe distance, wait for a second gesture");
@@ -1576,28 +1323,16 @@ impl Ctx<'_, '_> {
         h
     }
 
-    /// A card's tinted header: the fingers' circle, its title, a caption on the right.
-    fn header(&mut self, y: f32, n: u8, cap: &str) -> f32 {
-        let b = self.c.t.b;
-        let tint = if self.c.t.hc { b.card } else { mix(b.card, b.acc_a, 0.09) };
-        self.c.fill_rr((X0 + 1.0, y + 1.0, self.cw - 2.0, 36.0), 7.0, op(tint));
-        self.c.fill_rr((X0 + 1.0, y + 20.0, self.cw - 2.0, 17.0), 0.0, op(tint));
-        self.c.rule(X0 + 1.0, y + 37.0, self.cw - 2.0, op(b.line));
-        let x = X0 + 16.0;
-        self.c.circle(x + 11.0, y + 19.0, 11.0, Some(op(b.acc_b)), None);
-        let d = n.to_string();
-        let dw = self.c.width(&d, F::SmallBold);
-        self.c.text(x + 11.0 - dw / 2.0, y + 8.0, 22.0, &d, F::SmallBold, b.on_acc_b);
+    /// A gesture card's header: the fingers' circle, its title, a caption on the right.
+    fn pad_header(&mut self, y: f32, n: u8, cap: &str) -> f32 {
         let title = format!("{n} fingers");
-        self.c.text(x + 32.0, y + 8.0, 22.0, &title, F::Bold, b.tx);
-        let cw = self.c.width(cap, F::Small);
-        self.c.text(X0 + self.cw - 16.0 - cw, y + 8.0, 22.0, cap, F::Small, b.tx2);
+        let h = self.header(y, &title, Some(n), cap);
         self.text_node(UIA_HeaderControlTypeId, &format!("{title}: {cap}"), None);
-        38.0
+        h
     }
 
     fn gesture_row(&mut self, y: f32, fingers: u8, tap: bool, chip: Chip) -> f32 {
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         let motions: &[Motion] = if tap { &[Motion::Tap] } else { &[Motion::Left, Motion::Right, Motion::Up, Motion::Down] };
         let (x, px) = (X0 + 16.0, X0 + 16.0 + 116.0 + 16.0);
         let pw_all = X0 + self.cw - 16.0 - px;
@@ -1613,7 +1348,7 @@ impl Ctx<'_, '_> {
             ly += lh + 8.0;
         }
         let ph: f32 = ly - 8.0;
-        self.c.text(x, y + 14.0, 20.0, if tap { "Tap" } else { "Swipe" }, F::Bold, b.tx);
+        self.cx.c.text(x, y + 14.0, 20.0, if tap { "Tap" } else { "Swipe" }, F::Bold, b.tx);
         let (icon, text, col) = match chip {
             Chip::Ok => (Some(I_OK), "Off in Windows", b.good),
             Chip::Off => (None, "Off in Windows", b.tx2),
@@ -1625,10 +1360,10 @@ impl Ctx<'_, '_> {
         };
         let mut cx = x;
         if let Some(i) = icon {
-            self.icon(cx, y + 36.0, 16.0, i, F::IconSmall, col);
+            self.cx.icon(cx, y + 36.0, 16.0, i, F::IconSmall, col);
             cx += 16.0;
         }
-        self.c.text(cx, y + 36.0, 16.0, text, F::Small, b.tx2);
+        self.cx.c.text(cx, y + 36.0, 16.0, text, F::Small, b.tx2);
         let gesture = if tap { "tap" } else { "swipes" };
         self.text_node(UIA_TextControlTypeId, &format!("{fingers}-finger {gesture}: {text}"), None);
         // Its name and Windows' state for it, on the left, need 44 dip.
@@ -1637,7 +1372,7 @@ impl Ctx<'_, '_> {
 
     /// A gesture picker: its direction mark, what it does, its twice action, ▾.
     fn picker(&mut self, row: usize, x: f32, y: f32, w: f32) -> f32 {
-        let t = self.c.t;
+        let t = self.cx.c.t;
         let b = t.b;
         let (fingers, motion) = settings::GESTURE_ROWS[row];
         let s = self.s;
@@ -1651,13 +1386,13 @@ impl Ctx<'_, '_> {
         let h = if sub.is_empty() { 32.0 } else { 40.0 };
         if waiting {
             // Key combo…: the field records, held keys and a ghost.
-            self.c.fill_rr((x, y, w, h), 6.0, op(b.acc));
-            self.c.fill_rr((x + 2.0, y + 2.0, w - 4.0, h - 4.0), 4.0, op(b.card));
+            self.cx.c.fill_rr((x, y, w, h), 6.0, op(b.acc));
+            self.cx.c.fill_rr((x + 2.0, y + 2.0, w - 4.0, h - 4.0), 4.0, op(b.card));
         } else if open {
-            self.c.fill_rr((x, y, w, h), 6.0, op(b.acc));
-            self.c.fill_rr((x + 2.0, y + 2.0, w - 4.0, h - 4.0), 4.0, op(b.card));
+            self.cx.c.fill_rr((x, y, w, h), 6.0, op(b.acc));
+            self.cx.c.fill_rr((x + 2.0, y + 2.0, w - 4.0, h - 4.0), 4.0, op(b.card));
         } else {
-            self.c.boxed((x, y, w, h), 6.0, if self.hovered(ctl) { mix(b.track, b.tx, 0.05) } else { b.track }, Some(b.line));
+            self.cx.c.boxed((x, y, w, h), 6.0, if self.cx.hovered(ctl) { mix(b.track, b.tx, 0.05) } else { b.track }, Some(b.line));
         }
         let glyph = match motion {
             Motion::Left => "\u{E72B}",
@@ -1668,38 +1403,38 @@ impl Ctx<'_, '_> {
         };
         let my = y + (h - 22.0) / 2.0;
         if t.hc {
-            self.c.stroke_rr((x + 6.5, my + 0.5, 21.0, 21.0), 4.0, 1.0, op(b.acc));
+            self.cx.c.stroke_rr((x + 6.5, my + 0.5, 21.0, 21.0), 4.0, 1.0, op(b.acc));
         } else {
-            self.c.fill_rr((x + 6.0, my, 22.0, 22.0), 4.0, op(b.held));
+            self.cx.c.fill_rr((x + 6.0, my, 22.0, 22.0), 4.0, op(b.held));
         }
         let mark = if t.dark && !t.hc { mix(b.acc_b, 0xFFFFFF, 0.28) } else { b.acc_b };
         if glyph.is_empty() {
-            self.c.circle(x + 17.0, my + 11.0, 3.0, Some(op(mark)), None);
+            self.cx.c.circle(x + 17.0, my + 11.0, 3.0, Some(op(mark)), None);
         } else {
-            let gw = self.c.width(glyph, F::IconTiny);
-            self.icon(x + 6.0 + (22.0 - gw) / 2.0, my, 22.0, glyph, F::IconTiny, mark);
+            let gw = self.cx.c.width(glyph, F::IconTiny);
+            self.cx.icon(x + 6.0 + (22.0 - gw) / 2.0, my, 22.0, glyph, F::IconTiny, mark);
         }
         let lx = x + 36.0;
         let lw = w - 36.0 - 26.0;
         if waiting {
             let ghost = "key";
-            let gw = self.c.width(ghost, F::Small) + 12.0;
-            self.c.stroke_dash((lx, my, gw, 22.0), 4.0, 1.0, op(b.tx3), DashStyleDash);
-            self.c.text(lx + 6.0, my, 22.0, ghost, F::Small, b.tx3);
+            let gw = self.cx.c.width(ghost, F::Small) + 12.0;
+            self.cx.c.stroke_dash((lx, my, gw, 22.0), 4.0, 1.0, op(b.tx3), DashStyleDash);
+            self.cx.c.text(lx + 6.0, my, 22.0, ghost, F::Small, b.tx3);
         } else if sub.is_empty() {
-            let shown = self.c.fit(&text, F::Body, lw);
-            self.c.text(lx, y, 32.0, &shown, F::Body, b.tx);
+            let shown = self.cx.c.fit(&text, F::Body, lw);
+            self.cx.c.text(lx, y, 32.0, &shown, F::Body, b.tx);
         } else {
-            let shown = self.c.fit(&text, F::Body, lw);
-            self.c.text(lx, y + 2.0, 20.0, &shown, F::Body, b.tx);
-            let s2 = self.c.fit(&sub, F::Small, lw);
-            self.c.text(lx, y + 21.0, 16.0, &s2, F::Small, b.tx2);
+            let shown = self.cx.c.fit(&text, F::Body, lw);
+            self.cx.c.text(lx, y + 2.0, 20.0, &shown, F::Body, b.tx);
+            let s2 = self.cx.c.fit(&sub, F::Small, lw);
+            self.cx.c.text(lx, y + 21.0, 16.0, &s2, F::Small, b.tx2);
         }
         if !waiting {
-            let cw = self.c.width(I_DOWN, F::IconTiny);
-            self.icon(x + w - 10.0 - cw, y, h, I_DOWN, F::IconTiny, b.tx2);
+            let cw = self.cx.c.width(I_DOWN, F::IconTiny);
+            self.cx.icon(x + w - 10.0 - cw, y, h, I_DOWN, F::IconTiny, b.tx2);
         }
-        self.ring((x, y, w, h), 6.0, ctl);
+        self.cx.ring((x, y, w, h), 6.0, ctl);
         self.hit(ctl, (x, y, w, h));
         let dir = match motion {
             Motion::Left => "swipe left",
@@ -1708,7 +1443,7 @@ impl Ctx<'_, '_> {
             Motion::Down => "swipe down",
             Motion::Tap => "tap",
         };
-        self.say(ctl, UIA_ComboBoxControlTypeId, &format!("{fingers} fingers, {dir}"), &sub, false, (None, Some(text)));
+        self.cx.say(ctl, UIA_ComboBoxControlTypeId, &format!("{fingers} fingers, {dir}"), &sub, false, (None, Some(text)));
         h
     }
 
@@ -1716,7 +1451,7 @@ impl Ctx<'_, '_> {
     /// checked, the default marked, kept inside the window.
     fn menu(&mut self) {
         let Some(m) = self.w.menu else { return };
-        let t = self.c.t;
+        let t = self.cx.c.t;
         let b = t.b;
         let lines = sp::menu::menu_lines(&m, self.s);
         let (fingers, motion) = settings::GESTURE_ROWS[m.row];
@@ -1745,17 +1480,17 @@ impl Ctx<'_, '_> {
         });
         let my = (m.at.1 - off).clamp(8.0, (self.w.vh - mh - 8.0).max(8.0));
         let mx = m.at.0.min(self.w.vw - mw - 16.0).max(8.0);
-        self.c.fill_rr((mx - 1.0, my - 1.0, mw + 2.0, mh + 2.0), 9.0, op(if t.hc { b.tx } else { mix(b.bg, b.tx, 0.10) }));
+        self.cx.c.fill_rr((mx - 1.0, my - 1.0, mw + 2.0, mh + 2.0), 9.0, op(if t.hc { b.tx } else { mix(b.bg, b.tx, 0.10) }));
         if !t.hc {
-            self.c.fill_rr((mx, my + 4.0, mw, mh), 8.0, ui::alpha(0, 0.08));
+            self.cx.c.fill_rr((mx, my + 4.0, mw, mh), 8.0, ui::alpha(0, 0.08));
         }
-        self.c.fill_rr((mx, my, mw, mh), 8.0, op(b.card));
+        self.cx.c.fill_rr((mx, my, mw, mh), 8.0, op(b.card));
         self.hit(Ctl::Item(usize::MAX), (mx, my, mw, mh));
-        self.c.text(mx + 14.0, my + 4.0, 24.0, &head, F::SmallBold, b.tx2);
+        self.cx.c.text(mx + 14.0, my + 4.0, 24.0, &head, F::SmallBold, b.tx2);
         let mut ys = [my + 28.0; 2];
         if cols_head > 0.0 {
-            self.c.text(mx + 14.0, my + 28.0, 24.0, "des-k", F::SmallBold, b.tx2);
-            self.c.text(mx + 4.0 + colw + 4.0 + 10.0, my + 28.0, 24.0, "Windows and media", F::SmallBold, b.tx2);
+            self.cx.c.text(mx + 14.0, my + 28.0, 24.0, "des-k", F::SmallBold, b.tx2);
+            self.cx.c.text(mx + 4.0 + colw + 4.0 + 10.0, my + 28.0, 24.0, "Windows and media", F::SmallBold, b.tx2);
             ys = [my + 52.0; 2];
         }
         let foot_y = my + 4.0 + 24.0 + cols_head + rows * 28.0;
@@ -1773,7 +1508,7 @@ impl Ctx<'_, '_> {
                     let row = (c - 2) as usize;
                     let y = foot_y + row as f32 * 37.0 + 9.0;
                     if !drew_rule[row] {
-                        self.c.rule(mx + 4.0, y - 5.0, mw - 8.0, op(b.line));
+                        self.cx.c.rule(mx + 4.0, y - 5.0, mw - 8.0, op(b.line));
                         drew_rule[row] = true;
                         fx = 0.0;
                     }
@@ -1785,7 +1520,7 @@ impl Ctx<'_, '_> {
                 }
             };
             let ctl = Ctl::Item(i);
-            let hot = self.hovered(ctl) || (self.w.kb && m.focus == i);
+            let hot = self.cx.hovered(ctl) || (self.w.kb && m.focus == i);
             let (fill, ink, check) = match () {
                 _ if l.on && t.hc => (Some(b.hi), b.on_acc, b.on_acc),
                 _ if l.on => (Some(b.track), b.tx, b.acc),
@@ -1793,28 +1528,28 @@ impl Ctx<'_, '_> {
                 _ => (None, b.tx, b.acc),
             };
             if let Some(f) = fill {
-                self.c.fill_rr((x, y, w, 28.0), 4.0, op(f));
+                self.cx.c.fill_rr((x, y, w, 28.0), 4.0, op(f));
             }
             if l.on {
-                self.icon(x + 10.0, y, 28.0, I_OK, F::IconSmall, check);
+                self.cx.icon(x + 10.0, y, 28.0, I_OK, F::IconSmall, check);
             }
             let more = matches!(l.does, Does::Family(_) | Does::Twice);
             let room = w - 30.0 - 6.0 - if l.default { 52.0 } else { 0.0 } - if more { 16.0 } else { 0.0 };
-            let shown = self.c.fit(&l.text, F::Body, room);
-            self.c.text(x + 30.0, y, 28.0, &shown, F::Body, ink);
+            let shown = self.cx.c.fit(&l.text, F::Body, room);
+            self.cx.c.text(x + 30.0, y, 28.0, &shown, F::Body, ink);
             let mut rx = x + w - 10.0;
             if more {
-                let cw = self.c.width(I_MORE, F::IconTiny);
+                let cw = self.cx.c.width(I_MORE, F::IconTiny);
                 rx -= cw;
-                self.icon(rx, y, 28.0, I_MORE, F::IconTiny, b.tx2);
+                self.cx.icon(rx, y, 28.0, I_MORE, F::IconTiny, b.tx2);
                 rx -= 6.0;
             }
             if l.default {
-                let dw = self.c.width("Default", F::Small);
-                self.c.text(rx - dw, y, 28.0, "Default", F::Small, b.tx2);
+                let dw = self.cx.c.width("Default", F::Small);
+                self.cx.c.text(rx - dw, y, 28.0, "Default", F::Small, b.tx2);
             }
             if self.w.kb && m.focus == i {
-                self.c.stroke_rr((x + 1.0, y + 1.0, w - 2.0, 26.0), 4.0, 2.0, op(b.tx));
+                self.cx.c.stroke_rr((x + 1.0, y + 1.0, w - 2.0, 26.0), 4.0, 2.0, op(b.tx));
             }
             self.hit(ctl, (x, y, w, 28.0));
         }
@@ -1823,7 +1558,7 @@ impl Ctx<'_, '_> {
     // ---- Step 5: done ----
 
     fn done(&mut self, y: f32) -> f32 {
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         let s = self.s;
         let pad = self.w.pics.pad.is_none_or(|p| p.pad);
         let pv = self.pad();
@@ -1836,24 +1571,24 @@ impl Ctx<'_, '_> {
                 vec![P::T("No precision touchpad found. Plug one in any time and set it up in des-k settings › Touchpad.".into())]
             };
             let button = pad && pv.done_button;
-            let bw = if button { c.btn_w("Open Windows Settings") } else { 0.0 };
+            let bw = if button { c.cx.btn_w("Open Windows Settings", None) } else { 0.0 };
             h += c.row(y, "Touchpad", &tp, (bw, 32.0), |c, x, y| {
                 if button {
-                    c.button(Ctl::Pad(Pad::Windows), x, y, "Open Windows Settings", false);
+                    c.button(Ctl::Pad(Pad::Windows), x, y, "Open Windows Settings");
                 }
-            }, None, false);
+            }, None);
             c.sep(y + h);
             let cap = "Every key and gesture. Right-click the des-k icon by the clock, then Shortcut hints. Don't see it? Click ^ first.";
-            let bw = c.btn_w("Show");
+            let bw = c.cx.btn_w("Show", None);
             h += c.row(y + h, "Shortcut hints", &[P::T(cap.into())], (bw, 32.0), |c, x, y| {
-                c.button(Ctl::Show, x, y, "Show", false);
-            }, None, false);
+                c.button(Ctl::Show, x, y, "Show");
+            }, None);
             c.sep(y + h);
             h += c.hints_row(y + h);
             h
         });
         h += 16.0;
-        h += self.c.para(X0, y + h, self.cw, 20.0, &[("Your main shortcuts", F::Bold, b.tx)]) + 8.0;
+        h += self.cx.c.para(X0, y + h, self.cw, 20.0, &[("Your main shortcuts", F::Bold, b.tx)]) + 8.0;
         h += self.card(y + h, |c, y| {
             let main: [(&str, &[&'static str]); 4] = [
                 ("Switch workspace", &["shortcuts.previous", "shortcuts.next"]),
@@ -1867,22 +1602,22 @@ impl Ctx<'_, '_> {
                     c.sep(y + h);
                 }
                 let caps = row_caps(s, keys);
-                let kw = caps.as_ref().map_or_else(|| c.c.width("No key", F::Small), |k| c.caps_w(k));
+                let kw = caps.as_ref().map_or_else(|| c.cx.c.width("No key", F::Small), |k| c.caps_w(k));
                 let top = 28.0;
                 let ry = y + h + 6.0;
-                c.c.text(X0 + 16.0, ry, top, title, F::Body, b.tx);
+                c.cx.c.text(X0 + 16.0, ry, top, title, F::Body, b.tx);
                 match &caps {
                     Some(k) => {
                         c.caps(X0 + c.cw - 16.0 - kw, ry + 3.0, k, false);
                     }
-                    None => c.c.text(X0 + c.cw - 16.0 - kw, ry, top, "No key", F::Small, b.tx2),
+                    None => c.cx.c.text(X0 + c.cw - 16.0 - kw, ry, top, "No key", F::Small, b.tx2),
                 }
                 c.text_node(UIA_ListItemControlTypeId, &format!("{title}: {}", caps.as_ref().map_or("no key".into(), |k| words(k))), None);
                 h += 40.0;
             }
             c.sep(y + h);
             let line = taken_line(s);
-            let lh = c.c.para(X0 + 16.0, y + h + 6.0, c.cw - 32.0, 16.0, &[(&line, F::Small, b.tx2)]);
+            let lh = c.cx.c.para(X0 + 16.0, y + h + 6.0, c.cw - 32.0, 16.0, &[(&line, F::Small, b.tx2)]);
             c.text_node(UIA_TextControlTypeId, &line, None);
             h + 6.0 + lh.max(28.0) + 6.0
         });
@@ -1904,19 +1639,19 @@ impl Ctx<'_, '_> {
         let n = note.map(|(n, _)| n);
         let (cw, ch) = match (&rec, &caps) {
             (Some(held), _) => (self.measured(|c| c.key_field(f, 0.0, 0.0, None, None, Some((held.as_slice(), "key")), "")), 32.0),
-            (None, Some(k)) => (self.caps_w(k) + 8.0 + self.btn_w("Change"), 32.0),
-            (None, None) => (self.btn_w("Set key"), 32.0),
+            (None, Some(k)) => (self.caps_w(k) + 8.0 + self.cx.btn_w("Change", None), 32.0),
+            (None, None) => (self.cx.btn_w("Set key", None), 32.0),
         };
-        self.row(y, "Shortcut hints key", &cap, (cw, ch), |c, x, y| match (&rec, &caps) {
+        self.tinted_row(y, "Shortcut hints key", &cap, (cw, ch), |c, x, y| match (&rec, &caps) {
             (Some(held), _) => {
                 c.key_field(f, x, y, None, None, Some((held.as_slice(), "key")), "");
             }
             (None, Some(k)) => {
                 let kw = c.caps(x, y + 5.0, k, false);
-                c.button(Ctl::Field(f), x + kw + 8.0, y, "Change", false);
+                c.button(Ctl::Field(f), x + kw + 8.0, y, "Change");
             }
             (None, None) => {
-                c.button(Ctl::Field(f), x, y, "Set key", false);
+                c.button(Ctl::Field(f), x, y, "Set key");
             }
         }, n.as_ref(), n.is_some())
     }
@@ -1924,23 +1659,23 @@ impl Ctx<'_, '_> {
     // ---- The footer ----
 
     fn footer(&mut self) {
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         let (vw, vh) = (self.w.vw, self.w.vh);
         let y = vh - FOOT;
-        self.c.fill_rr((0.0, y, vw, FOOT), 0.0, op(b.band));
-        self.c.rule(0.0, y, vw, op(b.line));
+        self.cx.c.fill_rr((0.0, y, vw, FOOT), 0.0, op(b.band));
+        self.cx.c.rule(0.0, y, vw, op(b.line));
         let by = y + 16.0;
         let mut x = X0;
         let step = self.w.step;
         if step == Step::Try && !self.w.tried.iter().all(|t| *t) {
-            x += self.button(Ctl::Skip, x, by, "Skip", false) + 8.0;
+            x += self.button(Ctl::Skip, x, by, "Skip") + 8.0;
         }
         if step != Step::Try {
-            self.button(Ctl::Back, x, by, "Back", false);
+            self.button(Ctl::Back, x, by, "Back");
         }
         let next = if step == Step::Done { "Done" } else { "Next" };
-        let nw = self.btn_w(next);
-        self.button(Ctl::Next, vw - X0 - nw, by, next, true);
+        let nw = self.cx.btn_w(next, None);
+        self.cx.primary(Ctl::Next, vw - X0 - nw, by, next, self.cx.group);
     }
 }
 
@@ -1994,12 +1729,13 @@ fn words_of(r: &sp::rows::Row) -> Vec<&'static str> {
 fn compose(c: &mut Canvas, w: &Win) -> Out {
     let s = settings::get();
     let cw = w.vw - 2.0 * X0;
-    let mut x = Ctx { c, w, s: &s, cw, group: 0, out: Out { hits: vec![], content: 0.0, mid: (0.0, 0.0), said: vec![], texts: vec![] } };
-    let b = x.c.t.b;
+    let cx = controls::Ctx { c, hits: vec![], said: vec![], ro: false, focus: w.focus, hover: w.hover, kb: w.kb, group: 0, style: Style::FirstRun };
+    let mut x = Ctx { cx, w, s: &s, cw, out: Out { hits: vec![], content: 0.0, mid: (0.0, 0.0), said: vec![], texts: vec![] } };
+    let b = x.cx.c.t.b;
     let head = x.measured(|c| c.head());
     let (top, bottom) = (head + 16.0, w.vh - FOOT - 8.0);
     x.out.mid = (top, bottom);
-    x.group = 1;
+    x.cx.group = 1;
     let y0 = top - w.scroll;
     let content = match w.step {
         Step::Try => x.try_it(y0),
@@ -2010,33 +1746,33 @@ fn compose(c: &mut Canvas, w: &Win) -> Out {
     };
     x.out.content = content;
     // The head and the footer cover the step scrolled under them; a line marks a cut edge.
-    x.c.fill_rr((0.0, 0.0, w.vw, top), 0.0, op(b.bg));
-    x.c.fill_rr((0.0, bottom, w.vw, w.vh - bottom), 0.0, op(b.bg));
+    x.cx.c.fill_rr((0.0, 0.0, w.vw, top), 0.0, op(b.bg));
+    x.cx.c.fill_rr((0.0, bottom, w.vw, w.vh - bottom), 0.0, op(b.bg));
     // Drawn after the step, it still comes first for Narrator and the Tab order.
-    x.group = 0;
-    let (t0, s0) = (x.out.texts.len(), x.out.said.len());
+    x.cx.group = 0;
+    let (t0, s0) = (x.out.texts.len(), x.cx.said.len());
     x.head();
     let k = x.out.texts.len() - t0;
     x.out.texts.rotate_right(k);
-    let k = x.out.said.len() - s0;
-    x.out.said.rotate_right(k);
+    let k = x.cx.said.len() - s0;
+    x.cx.said.rotate_right(k);
     let view = bottom - top;
     if w.scroll > 0.5 {
-        x.c.rule(X0 - 1.0, top, cw + 2.0, op(b.line));
+        x.cx.c.rule(X0 - 1.0, top, cw + 2.0, op(b.line));
     }
     if w.scroll < content - view - 1.0 {
-        x.c.rule(X0 - 1.0, bottom - 1.0, cw + 2.0, op(b.line));
+        x.cx.c.rule(X0 - 1.0, bottom - 1.0, cw + 2.0, op(b.line));
     }
-    x.group = 2;
+    x.cx.group = 2;
     x.footer();
     if let Some((ty, th)) = thumb(w.scroll, content, view, top) {
-        x.c.fill_rr((w.vw - 5.0, ty, 2.0, th), 1.0, op(b.tx3));
+        x.cx.c.fill_rr((w.vw - 5.0, ty, 2.0, th), 1.0, op(b.tx3));
     }
-    x.group = 3;
+    x.cx.group = 3;
     x.menu();
     // The menu's hits first.
-    x.out.hits.sort_by_key(|h| std::cmp::Reverse(h.group == 3));
-    x.out
+    x.cx.hits.sort_by_key(|h| std::cmp::Reverse(h.group == 3));
+    Out { hits: x.cx.hits, said: x.cx.said, ..x.out }
 }
 
 /// The thumb's top and height, when the step holds more than its view.

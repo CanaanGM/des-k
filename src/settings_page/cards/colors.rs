@@ -167,7 +167,7 @@ impl Ctx<'_, '_> {
         let words = ["Windows", "My own"];
         let size = (self.cx.seg_w(&words), 28.0);
         self.cx.say(Ctl::Pick(ACCENT), UIA_ComboBoxControlTypeId, "Accent color", "", self.cx.ro || hc, (None, Some(words[own as usize].into())));
-        self.row(y, "Accent color", &cap, size, |c, x, y| c.cx.seg(x, y, &words, Some(own as usize), hc, |i| Ctl::Choice(ACCENT, i), Ctl::Pick(ACCENT)), note.as_ref())
+        self.row(y, "Accent color", &cap, size, |c, x, y| c.cx.seg(x, y, &words, Some(own as usize), hc, |i| Ctl::Choice(ACCENT, i), Ctl::Pick(ACCENT), None), note.as_ref())
     }
 
     /// Your accent or Workspace N: the swatch and the hex box, with the default and Reset; a
@@ -215,7 +215,7 @@ impl Ctx<'_, '_> {
         let warn = hex.as_ref().is_some_and(|x| x.line.is_some());
         let sel = hex.as_ref().map(|x| (x.caret, x.anchor));
         let spoken = if hc { String::new() } else { format!("#{digits}") };
-        let help: String = cap.iter().map(|p| match p { P::T(s) | P::Why(s) | P::Link(s, _) | P::Mono(s) | P::Warn(s) => s.as_str() }).collect();
+        let help: String = cap.iter().map(|p| match p { P::T(s) | P::Why(s) | P::Link(s, _) | P::Mono(s) | P::Warn(s) => s.as_str(), P::Icon(..) => "" }).collect();
         self.cx.say(Ctl::Swatch(key), UIA_ButtonControlTypeId, &format!("{title} color"), "Opens the color picker.", self.cx.ro || hc, (None, None));
         self.cx.say(Ctl::Hex(key), UIA_EditControlTypeId, &format!("{title} color"), help.trim(), self.cx.ro || hc, (None, Some(spoken)));
         let draw = |c: &mut Self, y: f32| {

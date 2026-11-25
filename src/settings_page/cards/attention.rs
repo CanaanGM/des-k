@@ -64,7 +64,7 @@ impl Ctx<'_, '_> {
             cap.push(t("."));
             cap.push(P::Link(" Reset".into(), Ctl::Reset(WORDS)));
         }
-        let help: String = cap.iter().map(|p| match p { P::T(s) | P::Why(s) | P::Link(s, _) | P::Mono(s) | P::Warn(s) => s.as_str() }).collect();
+        let help: String = cap.iter().map(|p| match p { P::T(s) | P::Why(s) | P::Link(s, _) | P::Mono(s) | P::Warn(s) => s.as_str(), P::Icon(..) => "" }).collect();
         self.cx.say(Ctl::Words, UIA_EditControlTypeId, "Popup words", help.trim(), self.cx.ro || off, (None, Some(text.clone())));
         self.row(y, "Popup words", &cap, (WORDS_W, 32.0), |c, x, y| c.words_box(x, y, &text, focused, off), note.as_ref())
     }

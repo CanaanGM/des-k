@@ -33,6 +33,19 @@ pub(crate) struct Ctx<'a, 'f, C, E> {
     pub(crate) hover: Option<C>,
     pub(crate) kb: bool, // the last input was a key, so the focus ring shows
     pub(crate) group: E, // the group the widgets' own hits go in
+    pub(crate) style: Style,
+}
+
+/// Whose look the widgets draw in. The first run and What's new drew their own copies before
+/// they shared these, and each keeps its exact look.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Style {
+    /// Buttons and steppers as fields with the darker bottom edge (AC-SET-9), one stop per stepper.
+    Settings,
+    /// Buttons and steppers as plain boxes, a purple main button, a stepper's − and + as two
+    /// stops, dotted lines over notes, and a card's edge drawn again over rows tinted up to it.
+    /// What's new copied it.
+    FirstRun,
 }
 
 /// Where a measuring pass started, to undo what it added.
@@ -88,13 +101,14 @@ impl<C: Id, E: Copy> Ctx<'_, '_, C, E> {
 }
 
 /// A piece of a caption: words, words in the text color (a reason), a link, monospaced words,
-/// or a warning with its mark, in the warning color.
+/// a warning with its mark, in the warning color, or a status glyph in its color.
 pub(crate) enum P<C> {
     T(String),
     Why(String),
     Link(String, C),
     Mono(String),
     Warn(String),
+    Icon(&'static str, u32),
 }
 
 /// A note's look: its icon's color.

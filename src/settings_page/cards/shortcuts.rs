@@ -60,7 +60,7 @@ impl Ctx<'_, '_> {
         let top = lh.max(28.0).max(ROW - 16.0);
         let kx = X0 + self.cw - 16.0 - KT_SIDE - 16.0 - KT_KEYS;
         self.cx.c.text(kx, y + 8.0, top, "The Copilot key", F::Small, b.tx2);
-        self.cx.seg(X0 + self.cw - 16.0 - sw, y + 8.0 + (top - 28.0) / 2.0, &words, Some(if v { 0 } else { 1 }), false, |i| Ctl::Choice(key, i), Ctl::Pick(key));
+        self.cx.seg(X0 + self.cw - 16.0 - sw, y + 8.0 + (top - 28.0) / 2.0, &words, Some(if v { 0 } else { 1 }), false, |i| Ctl::Choice(key, i), Ctl::Pick(key), None);
         self.cx.label(X0 + 16.0, y + 8.0 + (top - lh) / 2.0, lw, "Copilot key as Right Ctrl", &cap);
         let mut h = 8.0 + top;
         if let Some(n) = note {
@@ -327,7 +327,7 @@ impl Ctx<'_, '_> {
             let words = ["des-k", "Windows"];
             let sw = self.cx.seg_w(&words);
             let sel = if took.is_some() { None } else { Some(if has { 0 } else { 1 }) };
-            self.cx.seg(X0 + self.cw - 16.0 - sw, y + 8.0 + (top - 28.0) / 2.0, &words, sel, took.is_some(), |i| Ctl::WinSide(key, i == 0), Ctl::KeyRow(key));
+            self.cx.seg(X0 + self.cw - 16.0 - sw, y + 8.0 + (top - 28.0) / 2.0, &words, sel, took.is_some(), |i| Ctl::WinSide(key, i == 0), Ctl::KeyRow(key), None);
         }
         self.cx.label(X0 + 16.0, y + 8.0 + (top - lh) / 2.0, lw, sh.title, &cap);
         if self.cx.focused(Ctl::KeyRow(key)) {

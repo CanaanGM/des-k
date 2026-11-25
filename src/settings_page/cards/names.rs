@@ -188,7 +188,7 @@ impl Ctx<'_, '_> {
             };
             NoteSpec { tone: Tone::Info, icon: I_INFO, title: String::new(), lines: vec![t(line)], buttons: vec![], group: 1 }
         });
-        let help: String = cap.iter().map(|p| match p { P::T(s) | P::Why(s) | P::Link(s, _) | P::Mono(s) | P::Warn(s) => s.as_str() }).collect();
+        let help: String = cap.iter().map(|p| match p { P::T(s) | P::Why(s) | P::Link(s, _) | P::Mono(s) | P::Warn(s) => s.as_str(), P::Icon(..) => "" }).collect();
         self.cx.say(ctl, UIA_EditControlTypeId, &name_title(row), help.trim(), self.cx.ro, (None, Some(text.clone())));
         let (title, chip) = match row {
             Nm::Screen => ("Screen name".to_string(), 0.0),
