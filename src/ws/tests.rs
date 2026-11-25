@@ -535,3 +535,82 @@ fn the_first_reason_that_holds_wins() {
     s.ruled.insert(WIN, ruled("DEL-1"));
     assert_eq!(verdict(&s, 2, false, t), Follow::RuleHid { from: "DEL-1".into() });
 }
+
+fn hwnd(raw: isize) -> HWND {
+    HWND(raw as *mut _)
+}
+
+// A switch hides what is on the screen, top first, except the window a follow send brings along
+// and pinned windows, which stay in view on every workspace (spec 0014).
+#[test]
+fn a_switch_hides_all_but_the_kept_and_pinned_windows() {
+    let pinned = HashSet::from([3]);
+    let hides = to_hide(false, || vec![hwnd(1), hwnd(2), hwnd(3), hwnd(4)], Some(hwnd(2)), &pinned);
+    assert_eq!(hides, vec![hwnd(1), hwnd(4)]);
+}
+
+// On a Windows layout des-k does not know, hiding would fail halfway: a switch hides nothing and
+// does not even read the windows (spec 0030 AC-5).
+#[test]
+fn a_switch_on_an_unknown_layout_hides_nothing() {
+    let hides = to_hide(true, || panic!("windows read on an unknown layout"), None, &HashSet::new());
+    assert!(hides.is_empty());
+}
+
+// Leaving an empty workspace leaves focus on the desktop, which is nobody's focus to keep: no
+// window, the shell window, or explorer's desktop windows.
+#[test]
+fn the_desktop_is_no_window_the_shell_or_explorer() {
+    let shell = hwnd(10);
+    assert!(is_desktop(HWND::default(), shell, ""));
+    assert!(is_desktop(shell, shell, "Progman"));
+    assert!(is_desktop(hwnd(11), shell, "Progman"));
+    assert!(is_desktop(hwnd(12), shell, "WorkerW"));
+    assert!(!is_desktop(hwnd(13), shell, "Chrome_WidgetWin_1"));
+}
+
+// A follow asked for one window: it gets focus, brought to the front only when something else
+// took it meanwhile.
+#[test]
+fn a_followed_window_keeps_or_gets_focus() {
+    assert_eq!(focus_after(Some(hwnd(1)), hwnd(1), true, false, Some(hwnd(2))), FocusAfter::Leave);
+    assert_eq!(focus_after(Some(hwnd(1)), hwnd(5), false, false, Some(hwnd(2))), FocusAfter::Bring(hwnd(1)));
+}
+
+// Keyboard focus must never stay in a window the switch just hid, or on the desktop of a
+// workspace you left: the first window shown takes it, or the desktop when none was shown.
+#[test]
+fn focus_leaves_a_hidden_window_or_the_desktop() {
+    assert_eq!(focus_after(None, hwnd(9), true, false, Some(hwnd(2))), FocusAfter::Next(hwnd(2)));
+    assert_eq!(focus_after(None, hwnd(9), false, true, Some(hwnd(2))), FocusAfter::Next(hwnd(2)));
+    assert_eq!(focus_after(None, hwnd(9), true, false, None), FocusAfter::Desktop);
+}
+
+// Focus on another screen's window is yours: a switch on this screen must not steal it.
+#[test]
+fn focus_elsewhere_stays_put() {
+    assert_eq!(focus_after(None, hwnd(9), false, false, Some(hwnd(2))), FocusAfter::Leave);
+}
+
+// A hide can cloak the window and then fail its taskbar step: it is shown again and comes off
+// its list, since nothing would track it hidden.
+#[test]
+fn a_half_failed_hide_is_undone_and_unlisted() {
+    let cloak = std::cell::Cell::new(2);
+    assert!(failed_hide(|| cloak.get(), || cloak.set(0)));
+}
+
+// A window that may still be cloaked is never dropped (AGENTS.md): when the undo fails too, it
+// stays listed, so a later switch, quit or panic tries to show it again.
+#[test]
+fn a_window_still_cloaked_after_a_failed_hide_stays_listed() {
+    let undone = std::cell::Cell::new(false);
+    assert!(!failed_hide(|| 2, || undone.set(true)));
+    assert!(undone.get());
+}
+
+// A hide that never cloaked has nothing to undo; the window is in view, so it leaves the list.
+#[test]
+fn a_hide_that_never_cloaked_needs_no_undo() {
+    assert!(failed_hide(|| 0, || panic!("nothing to undo")));
+}

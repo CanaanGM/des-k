@@ -1339,6 +1339,60 @@ fn follow_verdict(s: &State, wins: [isize; 2], name: &str, ws: usize, cloak: u32
     Follow::Go
 }
 
+/// The windows a switch hides, top first: `windows()` (the screen's app windows) minus `keep`
+/// and pinned ones. A pinned window stays in view on every workspace (spec 0014). On a Windows
+/// layout des-k does not know, nothing is hidden and the switch only changes the number (spec
+/// 0030 AC-5), and the windows are not even read.
+fn to_hide(unknown: bool, windows: impl FnOnce() -> Vec<HWND>, keep: Option<HWND>, pinned: &HashSet<isize>) -> Vec<HWND> {
+    if unknown {
+        return Vec::new();
+    }
+    windows().into_iter().filter(|&h| Some(h) != keep && !pinned.contains(&(h.0 as isize))).collect()
+}
+
+/// Whether the focused window `fg` is the desktop: none, the shell's own window, or explorer's
+/// desktop (class `Progman` or `WorkerW`).
+fn is_desktop(fg: HWND, shell: HWND, class: &str) -> bool {
+    fg.is_invalid() || fg == shell || matches!(class, "Progman" | "WorkerW")
+}
+
+/// Where focus goes once a switch has shown its windows.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum FocusAfter {
+    Leave,
+    /// The window asked for, which is not in front.
+    Bring(HWND),
+    /// The first window shown.
+    Next(HWND),
+    /// Nothing was shown: the desktop.
+    Desktop,
+}
+
+/// `focus` is the window asked for and `fg_now` the one in front now; `fg_hidden` says the switch
+/// hid the window that had focus, `fg_desktop` that the desktop had it, and `first` is the first
+/// window shown.
+fn focus_after(focus: Option<HWND>, fg_now: HWND, fg_hidden: bool, fg_desktop: bool, first: Option<HWND>) -> FocusAfter {
+    match focus {
+        // Normally it already has focus: it is what came to the front.
+        Some(h) if fg_now != h => FocusAfter::Bring(h),
+        Some(_) => FocusAfter::Leave,
+        // Don't leave keyboard focus in a window we just hid.
+        None if fg_hidden || fg_desktop => first.map_or(FocusAfter::Desktop, FocusAfter::Next),
+        None => FocusAfter::Leave,
+    }
+}
+
+/// After a hide failed: the cloak can work and only the taskbar step fail, so a window that reads
+/// cloaked is shown again with `undo`, or nothing would track it. Returns whether it comes off its
+/// list: only when it then reads not cloaked, since one that may still be cloaked is never
+/// dropped (AGENTS.md).
+fn failed_hide(mut cloak: impl FnMut() -> u32, undo: impl FnOnce()) -> bool {
+    if cloak() != 0 {
+        undo();
+    }
+    cloak() == 0
+}
+
 /// Show workspace `target` (already valid) on one monitor. `focus` is the window to leave
 /// in front; `None` focuses the first shown window, but only if we hid the focused one or the
 /// desktop has focus.
@@ -1359,12 +1413,9 @@ fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize, focus: Opt
 
     let fg = unsafe { GetForegroundWindow() };
     // Leaving an empty workspace left focus on the desktop; nobody's focus to keep there.
-    let fg_desktop = fg.is_invalid() || fg == unsafe { GetShellWindow() } || matches!(class_name(fg).as_str(), "Progman" | "WorkerW");
+    let fg_desktop = is_desktop(fg, unsafe { GetShellWindow() }, &class_name(fg));
     let mut fg_hidden = false;
-    // A pinned window stays in view on every workspace (spec 0014). On a Windows layout des-k
-    // does not know, nothing is hidden and the switch only changes the number (spec 0030 AC-5).
-    let hides: Vec<HWND> = if crate::cloak::unknown() { Vec::new() } else { app_windows_on(mon) };
-    let hides: Vec<HWND> = hides.into_iter().filter(|&h| Some(h) != keep && !s.pinned.contains(&(h.0 as isize))).collect();
+    let hides = to_hide(crate::cloak::unknown(), || app_windows_on(mon), keep, &s.pinned);
     // Top first, as a hidden list keeps them, so showing them later is top-down (no flash).
     let list: Vec<(String, usize, isize)> = hides.iter().map(|h| (name.to_string(), active, h.0 as isize)).collect();
     if list_then_save(s, &list).is_err() {
@@ -1397,12 +1448,10 @@ fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize, focus: Opt
                 break;
             }
             Err(e) => {
-                // The cloak can work and only the taskbar step fail: undo it, or nothing tracks it.
-                if cloaked(h) != 0 {
+                let undo = || {
                     let _ = shell.hide(h, false);
-                }
-                // A window that may still be cloaked is never dropped (AGENTS.md).
-                if cloaked(h) == 0 {
+                };
+                if failed_hide(|| cloaked(h), undo) {
                     unlist(s, h.0 as isize);
                 }
                 warn!("cloak {:?} failed: {e}", h.0);
@@ -1421,21 +1470,17 @@ fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize, focus: Opt
     // Those windows now belong to the workspace just left; show_desktop must not bring them back here.
     m.desktop.clear();
 
-    match focus {
-        // Normally it already has focus: it is what came to the front.
-        Some(h) if unsafe { GetForegroundWindow() } != h => unsafe {
+    let first = shown.first().map(|&raw| HWND(raw as *mut _));
+    match focus_after(focus, unsafe { GetForegroundWindow() }, fg_hidden, fg_desktop, first) {
+        FocusAfter::Leave => {}
+        FocusAfter::Bring(h) => unsafe {
             let _ = SetForegroundWindow(h);
             if GetForegroundWindow() != h {
                 warn!("follow: could not focus {}", who(h));
             }
         },
-        Some(_) => {}
-        // Don't leave keyboard focus in a window we just hid.
-        None if fg_hidden || fg_desktop => {
-            let next = shown.first().map_or(unsafe { GetShellWindow() }, |&raw| HWND(raw as *mut _));
-            unsafe { let _ = SetForegroundWindow(next); }
-        }
-        None => {}
+        FocusAfter::Next(h) => unsafe { let _ = SetForegroundWindow(h); },
+        FocusAfter::Desktop => unsafe { let _ = SetForegroundWindow(GetShellWindow()); },
     }
     if crate::cloak::unknown() {
         info!("{name}: workspace {}/{count} (hiding is off on this Windows)", target + 1);
