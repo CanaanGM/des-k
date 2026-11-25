@@ -1,6 +1,6 @@
 // Keeps every source file, tests included, at 1,000 lines or fewer (spec 0035), so each file
 // does one job and fits in a sitting. Lines are counted with str::lines(), blank and comment
-// lines too.
+// lines too. It also keeps ws's Windows calls inside ws/win.rs.
 use std::path::{Path, PathBuf};
 
 const LIMIT: usize = 1000;
@@ -44,6 +44,22 @@ fn no_source_file_passes_a_thousand_lines() {
         })
         .collect();
     assert!(over.is_empty(), "split these files (spec 0035):\n{}", over.join("\n"));
+}
+
+/// ws decides and ws/win.rs calls Windows (spec 0035 AC-10): an `unsafe` anywhere else in ws
+/// is a Windows call that skipped the adapter, or new unsafe code that belongs there.
+#[test]
+fn only_ws_win_holds_unsafe() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = vec![src.join("ws.rs")];
+    rs_files(&src.join("ws"), &mut files);
+    let found: Vec<String> = files
+        .iter()
+        .filter(|f| **f != src.join("ws").join("win.rs"))
+        .filter(|f| std::fs::read_to_string(f).unwrap().contains("unsafe"))
+        .map(|f| f.strip_prefix(&src).unwrap().to_string_lossy().replace('\\', "/"))
+        .collect();
+    assert!(found.is_empty(), "move these Windows calls into ws/win.rs (spec 0035):\n{}", found.join("\n"));
 }
 
 #[test]
