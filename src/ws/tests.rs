@@ -614,3 +614,30 @@ fn a_window_still_cloaked_after_a_failed_hide_stays_listed() {
 fn a_hide_that_never_cloaked_needs_no_undo() {
     assert!(failed_hide(|| 0, || panic!("nothing to undo")));
 }
+
+// A screen with more workspaces than you now have folds its extra ones onto the main display's
+// last workspace, so no window lands on a workspace that does not exist (spec 0016 AC-2).
+#[test]
+fn a_fold_caps_the_workspace_at_the_last_one() {
+    assert_eq!(fold_to(4, 3, 0), FoldTo::Hide(2));
+    assert_eq!(fold_to(4, 3, 2), FoldTo::Show(2));
+}
+
+// A window from the workspace the main display shows comes into view; one from any other
+// workspace stays hidden there, as it was on its own screen.
+#[test]
+fn a_fold_shows_only_the_workspace_the_main_display_shows() {
+    assert_eq!(fold_to(1, 4, 1), FoldTo::Show(1));
+    assert_eq!(fold_to(3, 4, 1), FoldTo::Hide(3));
+}
+
+// Windows may move a window off a screen before des-k hears the screen left, so the spot stored
+// at the last check is its true home spot. One stored for another screen says nothing about this
+// one, so the spot is read now.
+#[test]
+fn a_fold_uses_the_spot_stored_for_the_screen_that_left() {
+    let stored = ("DEL-1".to_string(), spot(10, 'n'));
+    assert_eq!(fold_spot(Some(&stored), "DEL-1", || panic!("read although stored")), spot(10, 'n'));
+    assert_eq!(fold_spot(Some(&stored), "DEL-2", || spot(20, 'z')), spot(20, 'z'));
+    assert_eq!(fold_spot(None, "DEL-1", || spot(30, 'n')), spot(30, 'n'));
+}

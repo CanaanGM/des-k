@@ -3335,10 +3335,7 @@ fn fold(s: &mut State, id: &str, notes: &mut Vec<Note>) {
             if !unsafe { IsWindow(Some(h)) }.as_bool() {
                 continue;
             }
-            let spot = match s.spots.get(&raw) {
-                Some((sid, sp)) if sid == id => *sp,
-                _ => spot_of(h),
-            };
+            let spot = fold_spot(s.spots.get(&raw), id, || spot_of(h));
             // A window already away keeps its first home (invariant 3).
             s.away.entry(raw).or_insert(Away { home: id.to_string(), ws, spot, pinned: false, pid: pid_of(h) });
             // Still cloaked, so it never flashes.
@@ -3348,11 +3345,9 @@ fn fold(s: &mut State, id: &str, notes: &mut Vec<Note>) {
                 warn!("fold: could not move {}: {e}", who(h));
             }
             s.spots.insert(raw, (main.id.clone(), spot_of(h)));
-            let ws = ws.min(count - 1);
-            if ws == main_active {
-                show.push(raw);
-            } else {
-                mon_mut(s, &main.id).hidden[ws].push(raw);
+            match fold_to(ws, count, main_active) {
+                FoldTo::Show(_) => show.push(raw),
+                FoldTo::Hide(ws) => mon_mut(s, &main.id).hidden[ws].push(raw),
             }
             n += 1;
         }
@@ -3370,6 +3365,32 @@ fn fold(s: &mut State, id: &str, notes: &mut Vec<Note>) {
             line: Says::ScreenGone { name: label(s, id), moved: waiting, to: Some(label(s, &main.id)) },
             text: format!("{} unplugged: {} moved here", label(s, id), words(waiting)),
         });
+    }
+}
+
+/// Where a folded window goes on the main display, from workspace `ws` of the screen that left.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum FoldTo {
+    /// Into view: its workspace is the one the main display shows.
+    Show(usize),
+    /// Hidden into that workspace's list.
+    Hide(usize),
+}
+
+/// The same workspace on the main display, capped at its last one, in view when it is the one
+/// shown (`main_active`).
+fn fold_to(ws: usize, count: usize, main_active: usize) -> FoldTo {
+    let ws = ws.min(count - 1);
+    if ws == main_active { FoldTo::Show(ws) } else { FoldTo::Hide(ws) }
+}
+
+/// A folded window's spot on screen `id`, which just left: the one stored at the last check when
+/// it was stored for that screen, since Windows may have moved the window off it already.
+/// Otherwise `read` it now.
+fn fold_spot(stored: Option<&(String, Spot)>, id: &str, read: impl FnOnce() -> Spot) -> Spot {
+    match stored {
+        Some((sid, sp)) if sid == id => *sp,
+        _ => read(),
     }
 }
 
