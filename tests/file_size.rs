@@ -10,7 +10,6 @@ const LIMIT: usize = 1000;
 const NOT_SPLIT_YET: &[(&str, usize)] = &[
     ("ws.rs", 3807),
     ("overview.rs", 2852),
-    ("finder.rs", 1705),
 ];
 
 fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
