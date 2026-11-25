@@ -40,8 +40,8 @@ const TWICE_NOTHING: &str = "Nothing (still waits)";
 
 pub(crate) fn once_label(a: Action) -> String {
     match a {
-        Action::Combo(c) => format!("Types {}", spelled(&crate::hints::caps(&c))),
-        a => crate::hints::name(a),
+        Action::Combo(c) => format!("Types {}", spelled(&crate::hints::rows::caps(&c))),
+        a => crate::hints::rows::name(a),
     }
 }
 
@@ -94,7 +94,7 @@ pub(crate) fn menu_lines(m: &Menu, s: &Settings) -> Vec<Line> {
         out.push(line(menu_name(*a), 1, Does::Set(Some(*a)), Some(*a)));
     }
     let combo = match now {
-        Some(Action::Combo(c)) => format!("Key combo… ({})", spelled(&crate::hints::caps(&c))),
+        Some(Action::Combo(c)) => format!("Key combo… ({})", spelled(&crate::hints::rows::caps(&c))),
         _ => "Key combo…".into(),
     };
     out.push(Line { text: combo, col: 2, does: Does::Combo, on: matches!(now, Some(Action::Combo(_))), default: false });

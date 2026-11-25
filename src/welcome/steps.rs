@@ -207,7 +207,7 @@ pub(super) fn plan_pair(p: &'static str, n: &'static str, mods: u8, replace: boo
     match clash {
         None => Plan::Commit(edit, title),
         Some(o) => {
-            let mut held = crate::hints::mods_caps(mods);
+            let mut held = crate::hints::rows::mods_caps(mods);
             held.extend(["Left".to_string(), "Right".to_string()]);
             Plan::Ask(Prompt {
                 key: p,

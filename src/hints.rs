@@ -29,8 +29,6 @@ use crate::uia::{self, Node, Tree};
 mod draw;
 pub(crate) mod rows;
 
-// Moved to rows; the callers' paths change in the next commit (spec 0035 AC-4).
-pub(crate) use rows::{caps, mods_caps, name};
 use draw::{Fit, Place, compose, paint_button};
 use rows::{Does, Pad, View, list, pad_words, read_now, recorded_rec};
 

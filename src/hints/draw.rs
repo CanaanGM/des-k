@@ -1,7 +1,7 @@
 // The hints window's drawing: key caps, the keyboard and gesture cards, notes, the scrolling middle,
 // the footer, and its buttons where the layout placed them.
 use super::*;
-use super::rows::{Does, Gact, KeyRow, Pad, View, list, pad_words};
+use super::rows::{Does, Gact, KeyRow, Pad, View, caps, list, pad_words};
 
 /// A button as the layout placed it: its pill, in dip.
 #[derive(Clone, Debug, PartialEq)]

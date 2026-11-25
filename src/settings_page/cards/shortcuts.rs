@@ -224,7 +224,7 @@ impl Ctx<'_, '_> {
         }
         if digits && let Some(m) = s.set(name_of(key)) {
             for (d, list) in s.skips(name_of(key)) {
-                cap.push(t(format!(" Skips {d}: “{}” uses {} {d}.", entry(list).1, spelled(&crate::hints::mods_caps(m)))));
+                cap.push(t(format!(" Skips {d}: “{}” uses {} {d}.", entry(list).1, spelled(&crate::hints::rows::mods_caps(m)))));
             }
         }
         let bad = self.bad(key);

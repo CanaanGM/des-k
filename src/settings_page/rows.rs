@@ -358,13 +358,13 @@ pub(crate) fn spelled(caps: &[String]) -> String {
 
 pub(super) fn win_caps(k: WinKey) -> Vec<String> {
     match k {
-        WinKey::Combo(c) => crate::hints::caps(&c),
+        WinKey::Combo(c) => crate::hints::rows::caps(&c),
         WinKey::Digits(m) => digit_caps(m),
     }
 }
 
 pub(crate) fn digit_caps(mods: u8) -> Vec<String> {
-    crate::hints::mods_caps(mods).into_iter().chain(["1–9".to_string()]).collect()
+    crate::hints::rows::mods_caps(mods).into_iter().chain(["1–9".to_string()]).collect()
 }
 
 /// An action's keys as their caps, in the file's order, each with its place in the file.
@@ -373,7 +373,7 @@ pub(crate) fn keys_of(s: &Settings, key: &str) -> Vec<Vec<String>> {
     if is_digits(key) {
         return s.set(name).map(digit_caps).into_iter().collect();
     }
-    s.list(name).iter().map(crate::hints::caps).collect()
+    s.list(name).iter().map(crate::hints::rows::caps).collect()
 }
 
 /// The order the row draws its keys: Windows' own key first (AC-SET-4), then the file's order.

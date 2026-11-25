@@ -116,7 +116,7 @@ pub(crate) fn plan_combo(key: &'static str, replace: Option<usize>, combo: Combo
         return Plan::Nothing;
     }
     let title = entry(name).1;
-    let caps = crate::hints::caps(&combo);
+    let caps = crate::hints::rows::caps(&combo);
     let words = spelled(&caps);
     let edit = Edit::Combos(key, mine);
     let prompt = match s.combo_owner(name, combo) {
@@ -236,7 +236,7 @@ pub(super) fn reset_keys(key: &'static str) {
         if let Some(Owner::List(other)) = s.combo_owner(name, *c) {
             let (other_key, other_title) = entry(other);
             let rest: Vec<Combo> = s.list(other).iter().filter(|x| *x != c).copied().collect();
-            let caps = crate::hints::caps(c);
+            let caps = crate::hints::rows::caps(c);
             let prompt = Prompt {
                 key,
                 title: format!("{} is already in use", spelled(&caps)),
