@@ -16,7 +16,7 @@ impl Ctx<'_, '_> {
         let (list, to) = if one { (self.w.pics.view.removals.first(), n - 1) } else { (self.w.pics.view.removals.get(1), d) };
         let title = if !one {
             format!("Reset goes back to {d} and removes workspaces {} to {n} from every screen", d + 1)
-        } else if self.focused(Ctl::Tiles) {
+        } else if self.cx.focused(Ctl::Tiles) {
             format!("Delete or Left removes workspace {n} from every screen")
         } else {
             format!("× removes workspace {n} from every screen")
@@ -78,7 +78,7 @@ impl Ctx<'_, '_> {
     /// screen's workspace in view and its row in Pics::screens; its tiles open the color picker.
     #[allow(clippy::too_many_arguments)]
     fn tiles(&mut self, x: f32, y: f32, counts: &[usize], now: Option<(usize, usize)>, gone: &[usize], add: bool) {
-        let t = self.c.t;
+        let t = self.cx.c.t;
         let b = t.b;
         let n = counts.len();
         let tw = if n > 6 { 40.0 } else { 48.0 };
@@ -96,45 +96,45 @@ impl Ctx<'_, '_> {
                 _ => (b.ws[i], b.on_ws[i]),
             };
             if cur && !t.hc {
-                self.c.fill_rr((tx - 4.0, y - 4.0, tw + 8.0, 42.0), 8.0, op(b.tx));
-                self.c.fill_rr((tx - 2.0, y - 2.0, tw + 4.0, 38.0), 6.0, op(b.card));
+                self.cx.c.fill_rr((tx - 4.0, y - 4.0, tw + 8.0, 42.0), 8.0, op(b.tx));
+                self.cx.c.fill_rr((tx - 2.0, y - 2.0, tw + 4.0, 38.0), 6.0, op(b.card));
             }
             if away || t.hc {
-                self.c.boxed(bx, 4.0, fill, Some(if away { b.line } else { b.tx }));
+                self.cx.c.boxed(bx, 4.0, fill, Some(if away { b.line } else { b.tx }));
             } else {
-                self.c.fill_rr(bx, 4.0, op(fill));
+                self.cx.c.fill_rr(bx, 4.0, op(fill));
             }
-            self.c.text(tx + 6.0, y + 34.0 - 19.0, 16.0, &(i + 1).to_string(), F::SmallBold, ink);
+            self.cx.c.text(tx + 6.0, y + 34.0 - 19.0, 16.0, &(i + 1).to_string(), F::SmallBold, ink);
             let marks = k.min(3);
             for m in 0..marks {
                 let mx = tx + tw - 4.0 - (marks - m) as f32 * 10.0 + 2.0;
                 let col = if away { b.tx3 } else if t.hc { if cur { b.on_acc } else { b.tx } } else { b.mk_ws[i] };
-                self.c.fill_rr((mx, y + 4.0, 8.0, 10.0), 2.0, ui::alpha(col, if away || t.hc { 1.0 } else { 0.9 }));
+                self.cx.c.fill_rr((mx, y + 4.0, 8.0, 10.0), 2.0, ui::alpha(col, if away || t.hc { 1.0 } else { 0.9 }));
             }
             if gone.contains(&i) && !away {
-                self.c.stroke_dash((tx + 1.0, y + 1.0, tw - 2.0, 32.0), 3.0, 2.0, op(b.tx), DashStyleDash);
+                self.cx.c.stroke_dash((tx + 1.0, y + 1.0, tw - 2.0, 32.0), 3.0, 2.0, op(b.tx), DashStyleDash);
             }
             if away {
                 continue;
             }
             let ctl = Ctl::WsTile(row, i);
-            if self.hovered(ctl) && self.picks() && !cur {
-                self.cue(bx, ink);
+            if self.cx.hovered(ctl) && self.picks() && !cur {
+                self.cx.cue(bx, ink);
             }
             // Before the ×'s hit, so a click inside the tile opens the picker and never removes
             // a workspace (spec 0021 AC-1).
-            self.hit(ctl, bx, 1);
+            self.cx.hit(ctl, bx, 1);
             self.out.geo.tiles.push((device.clone(), i, bx));
-            if i + 1 == n && n > 2 && !self.ro {
-                let show = self.hovered(ctl) || self.hovered(Ctl::TileRemove) || self.focused(Ctl::Tiles);
+            if i + 1 == n && n > 2 && !self.cx.ro {
+                let show = self.cx.hovered(ctl) || self.cx.hovered(Ctl::TileRemove) || self.cx.focused(Ctl::Tiles);
                 if show {
                     let (cx, cy) = (tx + tw + 2.0, y - 2.0);
-                    let hov = self.hovered(Ctl::TileRemove);
+                    let hov = self.cx.hovered(Ctl::TileRemove);
                     let (bg, fg) = if hov { (b.tx, b.card) } else { (b.card, b.tx) };
-                    self.c.circle(cx, cy, 9.0, Some(op(bg)), Some((op(b.tx3), 1.0)));
-                    self.c.lines(&[(cx - 3.0, cy - 3.0), (cx + 3.0, cy + 3.0)], 1.2, op(fg));
-                    self.c.lines(&[(cx + 3.0, cy - 3.0), (cx - 3.0, cy + 3.0)], 1.2, op(fg));
-                    self.hit(Ctl::TileRemove, (cx - 10.0, cy - 10.0, 20.0, 20.0), 1);
+                    self.cx.c.circle(cx, cy, 9.0, Some(op(bg)), Some((op(b.tx3), 1.0)));
+                    self.cx.c.lines(&[(cx - 3.0, cy - 3.0), (cx + 3.0, cy + 3.0)], 1.2, op(fg));
+                    self.cx.c.lines(&[(cx + 3.0, cy - 3.0), (cx - 3.0, cy + 3.0)], 1.2, op(fg));
+                    self.cx.hit(Ctl::TileRemove, (cx - 10.0, cy - 10.0, 20.0, 20.0), 1);
                 }
             }
         }
@@ -143,19 +143,19 @@ impl Ctx<'_, '_> {
         }
         if !away && add {
             let ax = x + n as f32 * (tw + 6.0);
-            let off = self.ro;
-            let fill = if self.hovered(Ctl::TileAdd) && !off { mix(b.card, b.tx, 0.06) } else { b.card };
-            self.c.boxed((ax, y, tw, 34.0), 4.0, fill, Some(b.tx3));
-            let iw = self.c.width(I_ADD, F::IconSmall);
-            self.icon(ax + (tw - iw) / 2.0, y, 34.0, I_ADD, F::IconSmall, if off { b.tx3 } else { b.tx2 });
-            self.hit(Ctl::TileAdd, (ax, y, tw, 34.0), 1);
+            let off = self.cx.ro;
+            let fill = if self.cx.hovered(Ctl::TileAdd) && !off { mix(b.card, b.tx, 0.06) } else { b.card };
+            self.cx.c.boxed((ax, y, tw, 34.0), 4.0, fill, Some(b.tx3));
+            let iw = self.cx.c.width(I_ADD, F::IconSmall);
+            self.cx.icon(ax + (tw - iw) / 2.0, y, 34.0, I_ADD, F::IconSmall, if off { b.tx3 } else { b.tx2 });
+            self.cx.hit(Ctl::TileAdd, (ax, y, tw, 34.0), 1);
         }
         if !away {
             let w = self.tiles_w(n, add);
-            self.ring((x - 3.0, y - 3.0, w + 6.0, 40.0), 6.0, Ctl::Tiles);
-            if !self.out.said.iter().any(|(c, _)| *c == Ctl::Tiles) {
+            self.cx.ring((x - 3.0, y - 3.0, w + 6.0, 40.0), 6.0, Ctl::Tiles);
+            if !self.cx.said.iter().any(|(c, _)| *c == Ctl::Tiles) {
                 let name = format!("Workspaces per screen, {n}");
-                self.say(Ctl::Tiles, UIA_SpinnerControlTypeId, &name, "Right adds one to every screen; Left or Delete removes the last.", self.ro, (None, Some(n.to_string())));
+                self.cx.say(Ctl::Tiles, UIA_SpinnerControlTypeId, &name, "Right adds one to every screen; Left or Delete removes the last.", self.cx.ro, (None, Some(n.to_string())));
             }
         }
     }
@@ -168,10 +168,10 @@ impl Ctx<'_, '_> {
         let cap = vec![t(format!("Not plugged in · {wait} for it and go back when you plug it in. Forget leaves them where they are now."))];
         let counts: Vec<usize> = (0..n).map(|ws| a.windows.get(ws).copied().unwrap_or(0)).collect();
         let tw = self.tiles_w(n, false);
-        let fw = self.btn_w("Forget", None);
+        let fw = self.cx.btn_w("Forget", None);
         self.row(y, &a.name, &cap, (tw + 16.0 + fw, 34.0), |c, x, y| {
             c.tiles(x, y, &counts, None, &[], false);
-            c.button(Ctl::Forget(i), x + tw + 16.0, y + 1.0, "Forget", None, false, 1);
+            c.cx.button(Ctl::Forget(i), x + tw + 16.0, y + 1.0, "Forget", None, false, 1);
         }, None)
         .max(60.0)
     }
@@ -182,7 +182,7 @@ impl Ctx<'_, '_> {
         if list.is_empty() {
             return 0.0;
         }
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         let (wd, ht) = (420.0, 150.0);
         let bx = list.iter().map(|s| s.rect.left).min().unwrap_or(0) as f32;
         let by = list.iter().map(|s| s.rect.top).min().unwrap_or(0) as f32;
@@ -200,21 +200,21 @@ impl Ctx<'_, '_> {
             if !below {
                 if laptop {
                     let pts = [(x - 6.0, yy + h), (x + w + 6.0, yy + h), (x + w + 3.0, yy + h + 4.0), (x - 3.0, yy + h + 4.0)];
-                    self.c.fill_rr((pts[0].0, pts[0].1, w + 12.0, 4.0), 2.0, op(b.stand));
+                    self.cx.c.fill_rr((pts[0].0, pts[0].1, w + 12.0, 4.0), 2.0, op(b.stand));
                 } else {
-                    self.c.fill_rr((x + w / 2.0 - 8.0, yy + h, 16.0, 9.0), 0.0, op(b.stand));
-                    self.c.fill_rr((x + w / 2.0 - 22.0, yy + h + 9.0, 44.0, 3.0), 1.5, op(b.stand));
+                    self.cx.c.fill_rr((x + w / 2.0 - 8.0, yy + h, 16.0, 9.0), 0.0, op(b.stand));
+                    self.cx.c.fill_rr((x + w / 2.0 - 22.0, yy + h + 9.0, 44.0, 3.0), 1.5, op(b.stand));
                 }
             }
             let a = self.active_on(&s.device);
-            self.c.fill_rr((x, yy, w, h), 6.0, op(b.bez));
-            let (fill, ink) = if self.c.t.hc { (b.card, b.tx) } else { (b.ws[a.min(8)], b.on_ws[a.min(8)]) };
-            self.c.fill_rr((x + 2.0, yy + 2.0, w - 4.0, h - 4.0), 4.0, op(fill));
+            self.cx.c.fill_rr((x, yy, w, h), 6.0, op(b.bez));
+            let (fill, ink) = if self.cx.c.t.hc { (b.card, b.tx) } else { (b.ws[a.min(8)], b.on_ws[a.min(8)]) };
+            self.cx.c.fill_rr((x + 2.0, yy + 2.0, w - 4.0, h - 4.0), 4.0, op(fill));
             let name = self.name_of(s);
-            if h >= 45.0 && self.c.width(&name, F::Small) <= w - 16.0 {
-                self.c.text(x + 9.0, yy + 7.0, 16.0, &name, F::Small, ink);
+            if h >= 45.0 && self.cx.c.width(&name, F::Small) <= w - 16.0 {
+                self.cx.c.text(x + 9.0, yy + 7.0, 16.0, &name, F::Small, ink);
             }
-            self.c.text(x + 9.0, yy + h - 32.0, 28.0, &(a + 1).to_string(), F::Title, ink);
+            self.cx.c.text(x + 9.0, yy + h - 32.0, 28.0, &(a + 1).to_string(), F::Title, ink);
         }
         12.0 + ht + 4.0
     }

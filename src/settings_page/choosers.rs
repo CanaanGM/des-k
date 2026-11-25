@@ -64,27 +64,27 @@ impl Ctx<'_, '_> {
         }
         let pw = 240.0;
         let name = ch.name.clone();
-        self.say(Ctl::Screens, UIA_ComboBoxControlTypeId, "Screen", "", false, (None, Some(name.clone())));
+        self.cx.say(Ctl::Screens, UIA_ComboBoxControlTypeId, "Screen", "", false, (None, Some(name.clone())));
         self.row(y, "Screen", &cap, (pw, 32.0), |c, x, y| c.screen_picker(Ctl::Screens, x, y, pw, &name), None)
     }
 
     /// The chooser: the touchpad's picker, with a screen for its mark. Never greyed: it only
     /// picks which place you see (live with the indicator off and in read only).
     pub(super) fn screen_picker(&mut self, ctl: Ctl, x: f32, y: f32, w: f32, name: &str) {
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         if matches!(self.w.chooser, Some((from, ..)) if from == ctl) {
-            self.field((x, y, w, 32.0), b.card, Some(b.acc));
+            self.cx.field((x, y, w, 32.0), b.card, Some(b.acc));
         } else {
-            let fill = if self.hovered(ctl) { mix(b.track, b.tx, 0.05) } else { b.track };
-            self.field((x, y, w, 32.0), fill, None);
+            let fill = if self.cx.hovered(ctl) { mix(b.track, b.tx, 0.05) } else { b.track };
+            self.cx.field((x, y, w, 32.0), fill, None);
         }
-        self.icon(x + 10.0, y, 32.0, "\u{E7F4}", F::Icon, b.tx2);
-        let shown = self.c.fit(name, F::Body, w - 36.0 - 26.0);
-        self.c.text(x + 36.0, y, 32.0, &shown, F::Body, b.tx);
-        let cw = self.c.width(I_CHEV, F::IconTiny);
-        self.icon(x + w - 10.0 - cw, y, 32.0, I_CHEV, F::IconTiny, b.tx2);
-        self.ring((x, y, w, 32.0), 6.0, ctl);
-        self.hit(ctl, (x, y, w, 32.0), 1);
+        self.cx.icon(x + 10.0, y, 32.0, "\u{E7F4}", F::Icon, b.tx2);
+        let shown = self.cx.c.fit(name, F::Body, w - 36.0 - 26.0);
+        self.cx.c.text(x + 36.0, y, 32.0, &shown, F::Body, b.tx);
+        let cw = self.cx.c.width(I_CHEV, F::IconTiny);
+        self.cx.icon(x + w - 10.0 - cw, y, 32.0, I_CHEV, F::IconTiny, b.tx2);
+        self.cx.ring((x, y, w, 32.0), 6.0, ctl);
+        self.cx.hit(ctl, (x, y, w, 32.0), 1);
     }
 
     /// The open screen menu, placed like the touchpad's: the chosen line over the chooser.
@@ -93,7 +93,7 @@ impl Ctx<'_, '_> {
         if matches!(from, Ctl::WallPick(_)) {
             return self.wall_menu();
         }
-        let t = self.c.t;
+        let t = self.cx.c.t;
         let b = t.b;
         let (choices, cur) = chooser_lines(self.w, self.s, from);
         let add = from == Ctl::AppAdd;
@@ -115,18 +115,18 @@ impl Ctx<'_, '_> {
             Ctl::AppAdd => "Apps open now",
             _ => "Screen",
         };
-        self.c.fill_rr((mx - 1.0, my - 1.0, mw + 2.0, mh + 2.0), 9.0, op(if t.hc { b.tx } else { mix(b.bg, b.tx, 0.10) }));
+        self.cx.c.fill_rr((mx - 1.0, my - 1.0, mw + 2.0, mh + 2.0), 9.0, op(if t.hc { b.tx } else { mix(b.bg, b.tx, 0.10) }));
         if !t.hc {
-            self.c.fill_rr((mx, my + 4.0, mw, mh), 8.0, ui::alpha(0, 0.08));
+            self.cx.c.fill_rr((mx, my + 4.0, mw, mh), 8.0, ui::alpha(0, 0.08));
         }
-        self.c.fill_rr((mx, my, mw, mh), 8.0, op(b.card));
-        self.c.text(mx + 14.0, my + 4.0, 24.0, title, F::SmallBold, b.tx2);
+        self.cx.c.fill_rr((mx, my, mw, mh), 8.0, op(b.card));
+        self.cx.c.text(mx + 14.0, my + 4.0, 24.0, title, F::SmallBold, b.tx2);
         for (i, line) in choices.iter().enumerate() {
             let (name, side) = (&line.name, &line.side);
             let (x, y, w) = (mx + 4.0 + (i / rows) as f32 * col_w, my + 28.0 + (i % rows) as f32 * 28.0, col_w - 8.0);
             let ctl = Ctl::ScreenItem(i);
             let on = i == cur;
-            let hot = self.hovered(ctl) || (self.w.kb && focus == i);
+            let hot = self.cx.hovered(ctl) || (self.w.kb && focus == i);
             let (fill, ink, check) = match () {
                 _ if on && t.hc => (Some(b.hi), b.on_acc, b.on_acc),
                 _ if on => (Some(b.track), b.tx, b.acc),
@@ -134,15 +134,15 @@ impl Ctx<'_, '_> {
                 _ => (None, b.tx, b.acc),
             };
             if let Some(f) = fill {
-                self.c.fill_rr((x, y, w, 28.0), 4.0, op(f));
+                self.cx.c.fill_rr((x, y, w, 28.0), 4.0, op(f));
             }
             if on {
-                self.icon(x + 10.0, y, 28.0, I_OK, F::IconSmall, check);
+                self.cx.icon(x + 10.0, y, 28.0, I_OK, F::IconSmall, check);
             }
             // Add's lines: the app's icon first, and the chip of where it starts before the side words.
             let mut nx = x + 30.0;
             if let Some(icon) = line.icon {
-                self.c.icon(x + 8.0, y + 6.0, 16.0, icon);
+                self.cx.c.icon(x + 8.0, y + 6.0, 16.0, icon);
                 nx = x + 32.0;
             }
             let side_chip = line.chip.filter(|_| add);
@@ -150,33 +150,33 @@ impl Ctx<'_, '_> {
                 self.ws_chip(nx, y + 5.0, k);
                 nx += self.ws_chip_w(k) + 8.0;
             }
-            let sw = if side.is_empty() { 0.0 } else { self.c.width(side, F::Small) + 10.0 };
+            let sw = if side.is_empty() { 0.0 } else { self.cx.c.width(side, F::Small) + 10.0 };
             let cw = side_chip.map_or(0.0, |k| self.ws_chip_w(k) + 6.0);
-            let shown = self.c.fit(name, F::Body, x + w - nx - 6.0 - sw - cw);
+            let shown = self.cx.c.fit(name, F::Body, x + w - nx - 6.0 - sw - cw);
             let ink = if line.grey && !(on && t.hc) { if add { b.tx3 } else { b.tx2 } } else { ink };
-            self.c.text(nx, y, 28.0, &shown, F::Body, ink);
+            self.cx.c.text(nx, y, 28.0, &shown, F::Body, ink);
             if let Some(k) = side_chip {
                 self.ws_chip(x + w - sw - cw, y + 5.0, k);
             }
             if !side.is_empty() {
-                self.c.text(x + w - sw, y, 28.0, side, F::Small, if on && t.hc { b.on_acc } else { b.tx2 });
+                self.cx.c.text(x + w - sw, y, 28.0, side, F::Small, if on && t.hc { b.on_acc } else { b.tx2 });
             }
             if self.w.kb && focus == i {
-                self.c.stroke_rr((x + 1.0, y + 1.0, w - 2.0, 26.0), 4.0, 2.0, op(b.tx));
+                self.cx.c.stroke_rr((x + 1.0, y + 1.0, w - 2.0, 26.0), 4.0, 2.0, op(b.tx));
             }
-            self.hit(ctl, (x, y, w, 28.0), 3);
+            self.cx.hit(ctl, (x, y, w, 28.0), 3);
         }
         // Inside the menu, between lines; after them, since a click takes the first hit it is in.
-        self.hit(Ctl::ScreenItem(usize::MAX), (mx, my, mw, mh), 3);
+        self.cx.hit(Ctl::ScreenItem(usize::MAX), (mx, my, mw, mh), 3);
     }
 
     /// A mark on the ring or square: a white disc with a dark halo, filled in the middle.
     pub(super) fn mark(&self, x: f32, y: f32, r: f32, fill: u32, focus: bool) {
-        self.c.circle(x, y, r + 1.5, Some(ui::alpha(0, 0.45)), None);
-        self.c.circle(x, y, r, Some(op(0xFFFFFF)), None);
-        self.c.circle(x, y, r - 3.0, Some(op(fill)), None);
+        self.cx.c.circle(x, y, r + 1.5, Some(ui::alpha(0, 0.45)), None);
+        self.cx.c.circle(x, y, r, Some(op(0xFFFFFF)), None);
+        self.cx.c.circle(x, y, r - 3.0, Some(op(fill)), None);
         if focus {
-            self.c.circle(x, y, r + 4.5, None, Some((op(self.c.t.b.tx), 2.0)));
+            self.cx.c.circle(x, y, r + 4.5, None, Some((op(self.cx.c.t.b.tx), 2.0)));
         }
     }
 }

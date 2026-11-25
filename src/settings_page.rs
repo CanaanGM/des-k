@@ -25,6 +25,7 @@ use windows::Win32::{
 };
 use windows::core::{PCWSTR, w};
 
+use crate::controls::{self, Screen, Tone, widgets::Cards};
 use crate::settings::{self, Action, Combo, Motion, Owner, Pick, Settings, edit::Edit, parse::Problem};
 use crate::setup::{self, GaveBack, Row as PadRow, State as PadState, Wrote};
 use crate::ui::{self, Bx, Canvas, F, Fonts, Theme, buffered, dark_title, mix, op, theme};
@@ -38,7 +39,6 @@ pub(crate) mod menu;
 mod picker;
 pub(crate) mod recording;
 pub(crate) mod rows;
-mod widgets;
 
 use cards::attention::WORDS;
 use cards::colors::Hex;
@@ -78,7 +78,6 @@ const I_INFO: &str = "\u{E946}";
 const I_OK: &str = "\u{E73E}";
 const I_KEY: &str = "\u{E765}";
 const I_ADD: &str = "\u{E710}";
-const I_MINUS: &str = "\u{E738}";
 const I_X: &str = "\u{E711}";
 const I_OUT: &str = "\u{E8A7}";
 const I_CHEV: &str = "\u{E70D}";
@@ -218,19 +217,25 @@ impl Ctl {
         }
     }
 
+    /// A stepper's keyboard stop, then its − and +.
+    fn steps(key: &'static str) -> (Ctl, Ctl, Ctl) {
+        (Ctl::Stepper(key), Ctl::Minus(key), Ctl::Plus(key))
+    }
+
     fn in_side(self) -> bool {
         matches!(self, Ctl::Side(_) | Ctl::Welcome | Ctl::WhatsNew | Ctl::Open)
     }
 }
 
+impl controls::Id for Ctl {
+    fn writes(self) -> bool {
+        Ctl::writes(self)
+    }
+}
+
 /// Where a control sits, in window dip. Group: 0 the side list, 1 the column (clipped under the
 /// banners), 2 the banners, 3 the open menu.
-#[derive(Clone, Copy)]
-struct Hit {
-    ctl: Ctl,
-    at: Bx,
-    group: u8,
-}
+type Hit = controls::Hit<Ctl, u8>;
 
 /// What the tiles, the preview and the touchpad draw, copied out of ws and Windows.
 #[derive(Clone, PartialEq, Default)]
@@ -393,81 +398,63 @@ struct Out {
     geo: Geo,
 }
 
-/// A piece of a caption: words, words in the text color (a reason), a link, or a warning with
-/// its mark, in the warning color.
-enum P {
-    T(String),
-    Why(String),
-    Link(String, Ctl),
-    Mono(String),
-    Warn(String),
-}
+/// A piece of a caption (`controls::P`) over the page's controls.
+type P = controls::P<Ctl>;
 
 fn t(s: impl Into<String>) -> P {
     P::T(s.into())
 }
 
-/// A note's look: its icon's color, and whether it sits on its own with an edge.
-#[derive(Clone, Copy, PartialEq)]
-enum Tone {
-    Info,
-    Warn,
-    Good,
-    Rec,
+/// A stepper's value as its number and its unit words: minutes in words, 0 % as Off.
+fn step_words(v: i64, unit: &str) -> (String, String) {
+    match unit {
+        rows::MINUTES => (rows::minutes(v), String::new()),
+        "%" if v == 0 => ("Off".to_string(), String::new()),
+        "" | "%" => (v.to_string(), unit.to_string()),
+        u => (v.to_string(), format!(" {u}")),
+    }
 }
 
-/// One pass over the page, drawing or only measuring.
+/// One pass over the page, drawing or only measuring: the shared context, and the page's own.
 struct Ctx<'a, 'f> {
-    c: &'a mut Canvas<'f>,
+    cx: controls::Ctx<'a, 'f, Ctl, u8>,
     w: &'a Win,
     s: &'a Settings, // from the paint's own handle, one version for the whole pass
-    ro: bool,
     cw: f32,  // the column's width
     top0: f32, // where the column starts in the window, after scrolling
     out: Out,
 }
 
-impl Ctx<'_, '_> {
-    fn hit(&mut self, ctl: Ctl, at: Bx, group: u8) {
-        self.out.hits.push(Hit { ctl, at, group });
+impl<'a, 'f> Screen<'a, 'f> for Ctx<'a, 'f> {
+    type C = Ctl;
+    type E = u8;
+
+    fn cx(&mut self) -> &mut controls::Ctx<'a, 'f, Ctl, u8> {
+        &mut self.cx
+    }
+
+    fn column(&self) -> (f32, f32) {
+        (X0, self.cw)
     }
 
     /// Lays `f` out without drawing it or keeping its controls, for a box that needs its
     /// height before its contents.
     fn measured(&mut self, f: impl FnOnce(&mut Self) -> f32) -> f32 {
-        let draw = std::mem::replace(&mut self.c.draw, false);
-        let (hits, tops, said, geo) = (self.out.hits.len(), self.out.tops.len(), self.out.said.len(), self.out.geo.clone());
-        let cards = self.out.cards.len();
+        let (tops, cards, geo) = (self.out.tops.len(), self.out.cards.len(), self.out.geo.clone());
+        let m = self.cx.mark();
         let h = f(self);
-        self.out.hits.truncate(hits);
+        self.cx.rewind(m);
         self.out.tops.truncate(tops);
         self.out.cards.truncate(cards);
-        self.out.said.truncate(said);
         self.out.geo = geo;
-        self.c.draw = draw;
         h
     }
+}
 
-    /// What Narrator reads for a stop: kept once, the first time the stop is drawn.
-    fn say(&mut self, ctl: Ctl, role: UIA_CONTROLTYPE_ID, name: &str, help: &str, greyed: bool, state: (Option<bool>, Option<String>)) {
-        if self.out.said.iter().any(|(c, _)| *c == ctl) {
-            return;
-        }
-        let node = Node { role, name: name.to_string(), help: help.to_string(), greyed, focusable: true, toggled: state.0, value: state.1, ..Node::default() };
-        self.out.said.push((ctl, node));
-    }
-
-    fn focused(&self, ctl: Ctl) -> bool {
-        self.w.kb && self.w.focus == Some(ctl)
-    }
-
-    fn hovered(&self, ctl: Ctl) -> bool {
-        self.w.hover == Some(ctl)
-    }
-
+impl Ctx<'_, '_> {
     /// A click on a tile or swatch opens the color picker: not in high contrast or read only.
     fn picks(&self) -> bool {
-        !self.c.t.hc && !self.ro
+        !self.cx.c.t.hc && !self.cx.ro
     }
 }
 
@@ -494,16 +481,17 @@ fn thumb(scroll: f32, height: f32, view: f32, top: f32) -> Option<(f32, f32)> {
 fn compose(c: &mut Canvas, w: &Win) -> Out {
     let s = settings::get();
     let cw = (w.vw - X0 - PAD_R).min(COL_MAX);
-    let mut x = Ctx { c, w, s: &s, ro: settings::store::parse_error().is_some(), cw, top0: 0.0, out: Out { hits: vec![], height: 0.0, fixed: 0.0, tops: vec![], cards: vec![], said: vec![], geo: Geo::default() } };
+    let cx = controls::Ctx { c, hits: vec![], said: vec![], ro: settings::store::parse_error().is_some(), focus: w.focus, hover: w.hover, kb: w.kb, group: 1 };
+    let mut x = Ctx { cx, w, s: &s, cw, top0: 0.0, out: Out { hits: vec![], height: 0.0, fixed: 0.0, tops: vec![], cards: vec![], said: vec![], geo: Geo::default() } };
     let fixed = x.measured(|c| c.banners());
     x.out.fixed = fixed;
     let top0 = fixed - w.scroll;
     x.top0 = top0;
-    let b = x.c.t.b;
+    let b = x.cx.c.t.b;
     let mut y = top0 + 9.0;
-    x.c.text(X0, y, 32.0, "Settings", F::Heading, b.tx);
+    x.cx.c.text(X0, y, 32.0, "Settings", F::Heading, b.tx);
     y += 36.0;
-    y += x.c.para(X0, y, cw, 20.0, &[("Every change saves to settings.toml and works at once. Restore waits for des-k's next start.", F::Body, b.tx2)]);
+    y += x.cx.c.para(X0, y, cw, 20.0, &[("Every change saves to settings.toml and works at once. Restore waits for des-k's next start.", F::Body, b.tx2)]);
     let problems = settings::store::problems();
     let notes: Vec<&Problem> = problems.iter().filter(|p| home(&p.key).is_none()).collect();
     if !notes.is_empty() {
@@ -511,7 +499,7 @@ fn compose(c: &mut Canvas, w: &Win) -> Out {
         y += x.heading(None, y);
         for p in notes {
             let n = NoteSpec { tone: Tone::Warn, icon: I_WARN, title: title(p, &s), lines: vec![P::Mono(p.message.clone())], buttons: vec![(Ctl::Open, "Open settings.toml")], group: 1 };
-            y += x.note(X0, y, cw, &n) + 8.0;
+            y += x.cx.note(X0, y, cw, &n) + 8.0;
         }
     }
     for sec in SECTIONS {
@@ -523,21 +511,21 @@ fn compose(c: &mut Canvas, w: &Win) -> Out {
     x.banners();
     let view = w.vh - fixed;
     if w.scroll > 0.5 {
-        x.c.rule(NAV - 1.0, fixed, w.vw - NAV + 1.0, op(b.line));
+        x.cx.c.rule(NAV - 1.0, fixed, w.vw - NAV + 1.0, op(b.line));
     }
     if w.scroll < x.out.height - view - 1.0 {
-        x.c.rule(NAV - 1.0, w.vh - 1.0, w.vw - NAV + 1.0, op(b.line));
+        x.cx.c.rule(NAV - 1.0, w.vh - 1.0, w.vw - NAV + 1.0, op(b.line));
     }
     x.side();
     if let Some((ty, th)) = thumb(w.scroll, x.out.height, view, fixed) {
-        x.c.fill_rr((w.vw - 6.0, ty, 2.0, th), 1.0, op(if w.drag.is_some() { b.tx2 } else { b.tx3 }));
+        x.cx.c.fill_rr((w.vw - 6.0, ty, 2.0, th), 1.0, op(if w.drag.is_some() { b.tx2 } else { b.tx3 }));
     }
     x.menu();
     x.screens_menu();
     x.pick_card();
     // The menu's hits first, then the banners', the side list's, the column's.
-    x.out.hits.sort_by_key(|h| std::cmp::Reverse(h.group));
-    x.out
+    x.cx.hits.sort_by_key(|h| std::cmp::Reverse(h.group));
+    Out { hits: x.cx.hits, said: x.cx.said, ..x.out }
 }
 
 fn hwnd() -> Option<HWND> {

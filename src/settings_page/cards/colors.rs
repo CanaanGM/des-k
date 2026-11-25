@@ -55,13 +55,13 @@ impl Ctx<'_, '_> {
 
     pub(super) fn colors(&mut self, y: f32) -> f32 {
         let mut h = 0.0;
-        if self.c.t.hc {
+        if self.cx.c.t.hc {
             let n = NoteSpec { tone: Tone::Info, icon: I_INFO, title: "High contrast is on, so des-k uses Windows' contrast colors".into(), lines: vec![t("Your colors stay in the file and come back when it's off.")], buttons: vec![], group: 1 };
-            h += self.note(X0, y, self.cw, &n) + 12.0;
+            h += self.cx.note(X0, y, self.cw, &n) + 12.0;
         }
         h += self.card(y + h, |c, y| {
             let mut h = 0.0;
-            if !c.c.t.hc {
+            if !c.cx.c.t.hc {
                 h += c.sample(y);
                 c.sep(y + h);
             }
@@ -83,38 +83,38 @@ impl Ctx<'_, '_> {
                 h += c.hex_row(key, y + h);
             }
             let cap = [t(format!("One row per workspace you have ({n} now, set under ")), P::Link("Workspaces".into(), Ctl::Link(Link::Workspaces)), t("). Colors for workspaces you don't have are kept.")];
-            h + 4.0 + c.caption(X0 + 16.0, y + h + 4.0, c.cw - 32.0, &cap) + 14.0
+            h + 4.0 + c.cx.caption(X0 + 16.0, y + h + 4.0, c.cw - 32.0, &cap) + 14.0
         })
     }
 
     /// des-k's own parts in the colors in use, and what each of the three colors paints.
     fn sample(&mut self, y: f32) -> f32 {
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         let (wx, ww) = (X0 + 16.0, self.cw - 32.0);
         let wy = y + 16.0;
         let foot = "des-k makes both neighbors from the accent, and picks black or white text for each. The des-k logo keeps its own colors.";
-        let fh = self.measured(|c| c.c.para(0.0, 0.0, ww - 32.0, 16.0, &[(foot, F::Small, b.tx2)]));
+        let fh = self.measured(|c| c.cx.c.para(0.0, 0.0, ww - 32.0, 16.0, &[(foot, F::Small, b.tx2)]));
         let body = 3.0 * 44.0;
         let well_h = 16.0 + body + 12.0 + 1.0 + 10.0 + fh + 12.0;
-        self.c.boxed((wx, wy, ww, well_h), 6.0, b.track, Some(b.line));
+        self.cx.c.boxed((wx, wy, ww, well_h), 6.0, b.track, Some(b.line));
         // The little card: a header with its badge, a row with a switch and a button.
         let (cx, cy, cw) = (wx + 16.0, wy + 16.0 + (body - 80.0) / 2.0, 300.0);
-        self.c.boxed((cx, cy, cw, 80.0), 6.0, b.card, Some(b.line));
-        self.c.fill_rr((cx + 1.0, cy + 1.0, cw - 2.0, 34.0), 5.0, op(mix(b.card, b.acc_a, 0.09)));
-        self.c.fill_rr((cx + 1.0, cy + 20.0, cw - 2.0, 15.0), 0.0, op(mix(b.card, b.acc_a, 0.09)));
-        self.c.rule(cx + 1.0, cy + 35.0, cw - 2.0, op(b.line));
-        self.c.circle(cx + 23.0, cy + 18.0, 11.0, Some(op(b.acc_b)), None);
-        let dw = self.c.width("3", F::SmallBold);
-        self.c.text(cx + 23.0 - dw / 2.0, cy + 7.0, 22.0, "3", F::SmallBold, b.on_acc_b);
-        self.c.text(cx + 44.0, cy + 7.0, 22.0, "A section header", F::Bold, b.tx);
-        self.c.text(cx + 12.0, cy + 36.0, 44.0, "A row", F::Bold, b.tx);
-        let bw = self.c.width("Button", F::Body) + 28.0;
+        self.cx.c.boxed((cx, cy, cw, 80.0), 6.0, b.card, Some(b.line));
+        self.cx.c.fill_rr((cx + 1.0, cy + 1.0, cw - 2.0, 34.0), 5.0, op(mix(b.card, b.acc_a, 0.09)));
+        self.cx.c.fill_rr((cx + 1.0, cy + 20.0, cw - 2.0, 15.0), 0.0, op(mix(b.card, b.acc_a, 0.09)));
+        self.cx.c.rule(cx + 1.0, cy + 35.0, cw - 2.0, op(b.line));
+        self.cx.c.circle(cx + 23.0, cy + 18.0, 11.0, Some(op(b.acc_b)), None);
+        let dw = self.cx.c.width("3", F::SmallBold);
+        self.cx.c.text(cx + 23.0 - dw / 2.0, cy + 7.0, 22.0, "3", F::SmallBold, b.on_acc_b);
+        self.cx.c.text(cx + 44.0, cy + 7.0, 22.0, "A section header", F::Bold, b.tx);
+        self.cx.c.text(cx + 12.0, cy + 36.0, 44.0, "A row", F::Bold, b.tx);
+        let bw = self.cx.c.width("Button", F::Body) + 28.0;
         let bx = cx + cw - 12.0 - bw;
-        self.c.fill_rr((bx, cy + 42.0, bw, 32.0), 4.0, op(b.acc));
-        self.c.text(bx + 14.0, cy + 42.0, 32.0, "Button", F::Body, b.on_acc);
+        self.cx.c.fill_rr((bx, cy + 42.0, bw, 32.0), 4.0, op(b.acc));
+        self.cx.c.text(bx + 14.0, cy + 42.0, 32.0, "Button", F::Body, b.on_acc);
         let sx = bx - 16.0 - 40.0;
-        self.c.fill_rr((sx, cy + 48.0, 40.0, 20.0), 10.0, op(b.acc));
-        self.c.circle(sx + 30.0, cy + 58.0, 6.0, Some(op(b.on_acc)), None);
+        self.cx.c.fill_rr((sx, cy + 48.0, 40.0, 20.0), 10.0, op(b.acc));
+        self.cx.c.circle(sx + 30.0, cy + 58.0, 6.0, Some(op(b.on_acc)), None);
         // What each color paints.
         let lx = cx + cw + 20.0;
         let legend = [
@@ -125,15 +125,15 @@ impl Ctx<'_, '_> {
         let mut lw: f32 = 0.0;
         for (i, (col, name, line)) in legend.iter().enumerate() {
             let ly = wy + 16.0 + i as f32 * 44.0;
-            self.c.fill_rr((lx, ly + 6.0, 28.0, 20.0), 4.0, op(*col));
-            self.c.text(lx + 38.0, ly, 22.0, name, F::Bold, b.tx);
-            self.c.text(lx + 38.0, ly + 21.0, 16.0, line, F::Small, b.tx2);
-            lw = lw.max(38.0 + self.c.width(name, F::Bold).max(self.c.width(line, F::Small)));
+            self.cx.c.fill_rr((lx, ly + 6.0, 28.0, 20.0), 4.0, op(*col));
+            self.cx.c.text(lx + 38.0, ly, 22.0, name, F::Bold, b.tx);
+            self.cx.c.text(lx + 38.0, ly + 21.0, 16.0, line, F::Small, b.tx2);
+            lw = lw.max(38.0 + self.cx.c.width(name, F::Bold).max(self.cx.c.width(line, F::Small)));
         }
         self.out.geo.legend = Some((lx, wy + 16.0, lw, body));
         let ry = wy + 16.0 + body + 12.0;
-        self.c.rule(wx + 16.0, ry, ww - 32.0, op(b.line));
-        self.c.para(wx + 16.0, ry + 11.0, ww - 32.0, 16.0, &[(foot, F::Small, b.tx2)]);
+        self.cx.c.rule(wx + 16.0, ry, ww - 32.0, op(b.line));
+        self.cx.c.para(wx + 16.0, ry + 11.0, ww - 32.0, 16.0, &[(foot, F::Small, b.tx2)]);
         16.0 + well_h + 16.0
     }
 
@@ -148,7 +148,7 @@ impl Ctx<'_, '_> {
     /// Accent color: Windows or My own, one stop. Greyed and blank in high contrast.
     fn accent_row(&mut self, y: f32) -> f32 {
         let own = matches!(self.s.accent, settings::Accent::Rgb(_));
-        let hc = self.c.t.hc;
+        let hc = self.cx.c.t.hc;
         let note = self.color_bad(ACCENT);
         let mut cap = vec![];
         if own {
@@ -165,16 +165,16 @@ impl Ctx<'_, '_> {
             cap.push(P::Link(" Reset".into(), Ctl::Reset(ACCENT)));
         }
         let words = ["Windows", "My own"];
-        let size = (self.seg_w(&words), 28.0);
-        self.say(Ctl::Pick(ACCENT), UIA_ComboBoxControlTypeId, "Accent color", "", self.ro || hc, (None, Some(words[own as usize].into())));
-        self.row(y, "Accent color", &cap, size, |c, x, y| c.seg(x, y, &words, Some(own as usize), hc, |i| Ctl::Choice(ACCENT, i), Ctl::Pick(ACCENT)), note.as_ref())
+        let size = (self.cx.seg_w(&words), 28.0);
+        self.cx.say(Ctl::Pick(ACCENT), UIA_ComboBoxControlTypeId, "Accent color", "", self.cx.ro || hc, (None, Some(words[own as usize].into())));
+        self.row(y, "Accent color", &cap, size, |c, x, y| c.cx.seg(x, y, &words, Some(own as usize), hc, |i| Ctl::Choice(ACCENT, i), Ctl::Pick(ACCENT)), note.as_ref())
     }
 
     /// Your accent or Workspace N: the swatch and the hex box, with the default and Reset; a
     /// tinted band and a line under it while you type.
     fn hex_row(&mut self, key: &'static str, y: f32) -> f32 {
-        let b = self.c.t.b;
-        let hc = self.c.t.hc;
+        let b = self.cx.c.t.b;
+        let hc = self.cx.c.t.hc;
         let wi = ws_index(key);
         let saved = match wi {
             Some(i) => self.s.ws_colors[i],
@@ -199,13 +199,13 @@ impl Ctx<'_, '_> {
         if bad.is_some() && wi.is_some() && saved.is_none() {
             cap.push(P::Link(" Reset".into(), Ctl::Reset(key)));
         }
-        let typing = !hc && hex.as_ref().is_some_and(|x| focused && Some(x.digits.as_str()) != shown_digits(self.c.t, self.s, key).as_deref());
+        let typing = !hc && hex.as_ref().is_some_and(|x| focused && Some(x.digits.as_str()) != shown_digits(self.cx.c.t, self.s, key).as_deref());
         let note = bad.or_else(|| match &hex {
             Some(Hex { line: Some(l), .. }) => Some(NoteSpec { tone: Tone::Warn, icon: I_WARN, title: (*l).into(), lines: vec![], buttons: vec![], group: 1 }),
             _ if typing => Some(NoteSpec { tone: Tone::Info, icon: I_INFO, title: String::new(), lines: vec![t("Enter saves it; Esc puts back the saved color. Leaving the box saves it too.")], buttons: vec![], group: 1 }),
             _ => None,
         });
-        let digits = hex.as_ref().map_or_else(|| shown_digits(self.c.t, self.s, key).unwrap_or_default(), |x| x.digits.clone());
+        let digits = hex.as_ref().map_or_else(|| shown_digits(self.cx.c.t, self.s, key).unwrap_or_default(), |x| x.digits.clone());
         // The color picker's preview shows here too, live (spec 0021 AC-5).
         let digits = match &self.w.pick {
             Some(p) if p.key == key && p.preview.is_some() => format!("{:06X}", p.color),
@@ -216,8 +216,8 @@ impl Ctx<'_, '_> {
         let sel = hex.as_ref().map(|x| (x.caret, x.anchor));
         let spoken = if hc { String::new() } else { format!("#{digits}") };
         let help: String = cap.iter().map(|p| match p { P::T(s) | P::Why(s) | P::Link(s, _) | P::Mono(s) | P::Warn(s) => s.as_str() }).collect();
-        self.say(Ctl::Swatch(key), UIA_ButtonControlTypeId, &format!("{title} color"), "Opens the color picker.", self.ro || hc, (None, None));
-        self.say(Ctl::Hex(key), UIA_EditControlTypeId, &format!("{title} color"), help.trim(), self.ro || hc, (None, Some(spoken)));
+        self.cx.say(Ctl::Swatch(key), UIA_ButtonControlTypeId, &format!("{title} color"), "Opens the color picker.", self.cx.ro || hc, (None, None));
+        self.cx.say(Ctl::Hex(key), UIA_EditControlTypeId, &format!("{title} color"), help.trim(), self.cx.ro || hc, (None, Some(spoken)));
         let draw = |c: &mut Self, y: f32| {
             c.row(y, &title, &cap, (164.0, 32.0), |c, x, y| {
                 c.swatch(key, x, y, wi, swatch);
@@ -228,8 +228,8 @@ impl Ctx<'_, '_> {
             let rh = self.measured(|c| draw(c, y));
             let band = op(mix(b.card, b.acc_a, 0.06));
             // Your accent is its card's last row: the band keeps the card's round bottom corners.
-            self.c.fill_rr((X0 + 1.0, y, self.cw - 2.0, rh - 1.0), 7.0, band);
-            self.c.fill_rr((X0 + 1.0, y, self.cw - 2.0, rh - 9.0), 0.0, band);
+            self.cx.c.fill_rr((X0 + 1.0, y, self.cw - 2.0, rh - 1.0), 7.0, band);
+            self.cx.c.fill_rr((X0 + 1.0, y, self.cw - 2.0, rh - 9.0), 0.0, band);
         }
         draw(self, y)
     }
@@ -237,32 +237,32 @@ impl Ctx<'_, '_> {
     /// A color's swatch: a workspace's is its tile with its number in its ink; None (high
     /// contrast) draws it greyed and blank. A button: it opens the color picker (spec 0021 AC-3).
     fn swatch(&mut self, key: &'static str, x: f32, y: f32, wi: Option<usize>, color: Option<u32>) {
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         let bx = (x, y, 48.0, 32.0);
         let ctl = Ctl::Swatch(key);
-        self.hit(ctl, bx, 1);
+        self.cx.hit(ctl, bx, 1);
         self.out.geo.swatches.push((key, bx));
         match color {
-            None => self.c.boxed(bx, 4.0, b.card, Some(b.tx3)),
+            None => self.cx.c.boxed(bx, 4.0, b.card, Some(b.tx3)),
             Some(c) => {
-                self.c.fill_rr(bx, 4.0, op(c));
+                self.cx.c.fill_rr(bx, 4.0, op(c));
                 if b.ws_edge > 0.0 {
-                    self.c.stroke_rr((x + 0.5, y + 0.5, 47.0, 31.0), 3.5, 1.0, op(mix(c, 0, b.ws_edge)));
+                    self.cx.c.stroke_rr((x + 0.5, y + 0.5, 47.0, 31.0), 3.5, 1.0, op(mix(c, 0, b.ws_edge)));
                 }
             }
         }
         if let Some(i) = wi {
             let ink = color.map_or(b.tx3, ui::ink);
-            self.c.text(x + 6.0, y + 32.0 - 17.0, 16.0, &(i + 1).to_string(), F::SmallBold, ink);
+            self.cx.c.text(x + 6.0, y + 32.0 - 17.0, 16.0, &(i + 1).to_string(), F::SmallBold, ink);
         }
         if let Some(c) = color
-            && self.hovered(ctl)
+            && self.cx.hovered(ctl)
             && self.picks()
-            && !self.focused(ctl)
+            && !self.cx.focused(ctl)
         {
-            self.cue(bx, ui::ink(c));
+            self.cx.cue(bx, ui::ink(c));
         }
-        self.ring(bx, 4.0, ctl);
+        self.cx.ring(bx, 4.0, ctl);
     }
 
     /// The hex box (spec 0020): a fixed grey #, then up to six digits in Cascadia Mono. Focus
@@ -270,39 +270,39 @@ impl Ctx<'_, '_> {
     /// six shows a warn edge. `na`: greyed and blank (high contrast).
     #[allow(clippy::too_many_arguments)]
     fn hex_box(&mut self, key: &'static str, x: f32, y: f32, digits: &str, sel: Option<(usize, usize)>, warn: bool, na: bool) {
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         let ctl = Ctl::Hex(key);
-        let focused = self.w.focus == Some(ctl) && !na && !self.ro;
+        let focused = self.w.focus == Some(ctl) && !na && !self.cx.ro;
         let bx = (x, y, 108.0, 32.0);
         if warn {
-            self.c.fill_rr(bx, 6.0, op(b.warn));
-            self.c.fill_rr((x + 1.0, y + 1.0, 106.0, 30.0), 5.0, op(b.card));
-            self.c.fill_rr((x + 1.0, y + 29.0, 106.0, 2.0), 0.0, op(b.warn));
+            self.cx.c.fill_rr(bx, 6.0, op(b.warn));
+            self.cx.c.fill_rr((x + 1.0, y + 1.0, 106.0, 30.0), 5.0, op(b.card));
+            self.cx.c.fill_rr((x + 1.0, y + 29.0, 106.0, 2.0), 0.0, op(b.warn));
         } else {
-            self.field(bx, b.card, None);
+            self.cx.field(bx, b.card, None);
             if focused {
-                self.c.fill_rr((x + 1.0, y + 29.0, 106.0, 2.0), 0.0, op(b.acc));
+                self.cx.c.fill_rr((x + 1.0, y + 29.0, 106.0, 2.0), 0.0, op(b.acc));
             }
         }
-        let cw = self.c.width("0", F::Code);
+        let cw = self.cx.c.width("0", F::Code);
         let hx = x + 10.0;
-        self.c.text(hx, y, 32.0, "#", F::Code, b.tx3);
+        self.cx.c.text(hx, y, 32.0, "#", F::Code, b.tx3);
         let dx = hx + cw;
         let (lo, hi) = sel.filter(|_| focused).map_or((0, 0), |(c, a)| (c.min(a), c.max(a)));
         if hi > lo {
-            self.c.fill_rr((dx + lo as f32 * cw, y + 7.0, (hi - lo) as f32 * cw, 18.0), 2.0, op(b.acc));
+            self.cx.c.fill_rr((dx + lo as f32 * cw, y + 7.0, (hi - lo) as f32 * cw, 18.0), 2.0, op(b.acc));
         }
         for (i, ch) in digits.chars().enumerate() {
-            let ink = if na || self.ro { b.tx3 } else if i >= lo && i < hi { b.on_acc } else { b.tx };
-            self.c.text(dx + i as f32 * cw, y, 32.0, &ch.to_string(), F::Code, ink);
+            let ink = if na || self.cx.ro { b.tx3 } else if i >= lo && i < hi { b.on_acc } else { b.tx };
+            self.cx.c.text(dx + i as f32 * cw, y, 32.0, &ch.to_string(), F::Code, ink);
         }
         if focused && hi == lo && let Some((c, _)) = sel {
-            self.c.fill_rr((dx + c as f32 * cw, y + 7.0, 1.0, 18.0), 0.0, op(b.tx));
+            self.cx.c.fill_rr((dx + c as f32 * cw, y + 7.0, 1.0, 18.0), 0.0, op(b.tx));
         }
-        if self.focused(ctl) && !focused {
-            self.ring(bx, 6.0, ctl);
+        if self.cx.focused(ctl) && !focused {
+            self.cx.ring(bx, 6.0, ctl);
         }
-        self.hit(ctl, bx, 1);
+        self.cx.hit(ctl, bx, 1);
     }
 }
 

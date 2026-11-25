@@ -4,7 +4,7 @@ use super::*;
 impl Ctx<'_, '_> {
     /// Every des-k motion on one time axis, in the grey well, or "At once" (spec 0017 AC-11).
     pub(super) fn motion(&mut self, y: f32) -> f32 {
-        let th = self.c.t;
+        let th = self.cx.c.t;
         let b = th.b;
         let s = self.s;
         let max = if (s.fade_ms.max(s.overview_fade_ms)) > 1000 { 2000.0 } else { 1000.0 };
@@ -22,17 +22,17 @@ impl Ctx<'_, '_> {
             let mut h = 14.0;
             for (name, ms, none, each) in lanes {
                 let ly = top + h;
-                c.c.text(nx, ly, 24.0, name, F::Body, b.tx);
+                c.cx.c.text(nx, ly, 24.0, name, F::Body, b.tx);
                 for q in 0..4 {
-                    c.c.fill_rr((tx + q as f32 * trw / 4.0, ly, 1.0, 24.0), 0.0, op(b.grid));
+                    c.cx.c.fill_rr((tx + q as f32 * trw / 4.0, ly, 1.0, 24.0), 0.0, op(b.grid));
                 }
-                c.c.fill_rr((tx + trw - 1.0, ly, 1.0, 24.0), 0.0, op(b.grid));
+                c.cx.c.fill_rr((tx + trw - 1.0, ly, 1.0, 24.0), 0.0, op(b.grid));
                 if s.fastest {
-                    c.c.fill_rr((tx, ly + 6.0, 3.0, 12.0), 1.5, op(bar));
+                    c.cx.c.fill_rr((tx, ly + 6.0, 3.0, 12.0), 1.5, op(bar));
                 } else if none.is_none() && ms > 0 {
                     let bw = trw * (ms as f32 / max).min(1.0);
-                    c.c.fill_rr((tx, ly + 8.0, bw, 8.0), 0.0, op(bar));
-                    c.c.fill_rr((tx + (bw - 8.0).max(0.0), ly + 8.0, bw.min(8.0), 8.0), 4.0, op(bar));
+                    c.cx.c.fill_rr((tx, ly + 8.0, bw, 8.0), 0.0, op(bar));
+                    c.cx.c.fill_rr((tx + (bw - 8.0).max(0.0), ly + 8.0, bw.min(8.0), 8.0), 4.0, op(bar));
                 }
                 let v: Vec<(String, F, u32)> = if s.fastest {
                     vec![("At once".into(), F::SmallBold, b.tx)]
@@ -41,27 +41,27 @@ impl Ctx<'_, '_> {
                 } else {
                     vec![(format!("{ms} ms"), F::SmallBold, b.tx), (each.into(), F::Small, b.tx2)]
                 };
-                let vw: f32 = v.iter().map(|(t, f, _)| c.c.width(t, *f)).sum();
+                let vw: f32 = v.iter().map(|(t, f, _)| c.cx.c.width(t, *f)).sum();
                 let runs: Vec<(&str, F, u32)> = v.iter().map(|(t, f, col)| (t.as_str(), *f, *col)).collect();
-                c.c.para(vx - vw, ly + 4.0, vw + 1.0, 16.0, &runs);
+                c.cx.c.para(vx - vw, ly + 4.0, vw + 1.0, 16.0, &runs);
                 h += 24.0 + 6.0;
             }
             let ay = top + h;
-            c.c.text(tx, ay, 16.0, "0", F::Small, b.tx2);
+            c.cx.c.text(tx, ay, 16.0, "0", F::Small, b.tx2);
             let half = format!("{} ms", max as u32 / 2);
-            let hw = c.c.width(&half, F::Small);
-            c.c.text(tx + trw / 2.0 - hw / 2.0, ay, 16.0, &half, F::Small, b.tx2);
+            let hw = c.cx.c.width(&half, F::Small);
+            c.cx.c.text(tx + trw / 2.0 - hw / 2.0, ay, 16.0, &half, F::Small, b.tx2);
             let full = format!("{} ms", max as u32);
-            c.c.text(tx + trw - c.c.width(&full, F::Small), ay, 16.0, &full, F::Small, b.tx2);
+            c.cx.c.text(tx + trw - c.cx.c.width(&full, F::Small), ay, 16.0, &full, F::Small, b.tx2);
             h += 16.0 + 10.0;
-            c.c.rule(nx, top + h, ww - 32.0, op(b.line));
+            c.cx.c.rule(nx, top + h, ww - 32.0, op(b.line));
             h += 8.0;
             let foot = [t("You set these times in "), P::Link("Indicator".into(), Ctl::Link(Link::Indicator)), t(" and "), P::Link("Overview".into(), Ctl::Link(Link::Overview)), t(".")];
-            h += c.caption(nx, top + h, ww - 32.0, &foot);
+            h += c.cx.caption(nx, top + h, ww - 32.0, &foot);
             h + 10.0
         };
         let h = self.measured(|c| body(c, 0.0));
-        self.c.boxed((wx, wy, ww, h), 6.0, b.track, Some(b.line));
+        self.cx.c.boxed((wx, wy, ww, h), 6.0, b.track, Some(b.line));
         // One image for Narrator, read as a sentence built from the lanes drawn.
         let said = if s.fastest {
             "Every des-k motion happens at once".to_string()
@@ -70,10 +70,10 @@ impl Ctx<'_, '_> {
             let ov = if fade { format!("fades in and out over {} ms each", s.overview_fade_ms) } else { "has no fade".into() };
             format!("Indicator fades out over {ind}; the overview {ov}")
         };
-        if !self.out.said.iter().any(|(c, _)| *c == Ctl::Chart) {
-            let s = self.c.s;
+        if !self.cx.said.iter().any(|(c, _)| *c == Ctl::Chart) {
+            let s = self.cx.c.s;
             let rect = RECT { left: (wx * s) as i32, top: (wy * s) as i32, right: ((wx + ww) * s) as i32, bottom: ((wy + h) * s) as i32 };
-            self.out.said.push((Ctl::Chart, Node { role: UIA_ImageControlTypeId, name: said, rect, ..Node::default() }));
+            self.cx.said.push((Ctl::Chart, Node { role: UIA_ImageControlTypeId, name: said, rect, ..Node::default() }));
         }
         body(self, wy);
         16.0 + h + 14.0

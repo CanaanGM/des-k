@@ -115,7 +115,7 @@ impl Ctx<'_, '_> {
     /// checked, the default marked, kept inside the window.
     pub(super) fn menu(&mut self) {
         let Some(m) = self.w.menu else { return };
-        let t = self.c.t;
+        let t = self.cx.c.t;
         let b = t.b;
         let lines = menu_lines(&m, self.s);
         let (fingers, motion) = settings::GESTURE_ROWS[m.row];
@@ -142,16 +142,16 @@ impl Ctx<'_, '_> {
         });
         let my = (m.at.1 - off).clamp(8.0, (self.w.vh - mh - 8.0).max(8.0));
         let mx = m.at.0.min(self.w.vw - mw - 16.0).max(NAV);
-        self.c.fill_rr((mx - 1.0, my - 1.0, mw + 2.0, mh + 2.0), 9.0, op(if t.hc { b.tx } else { mix(b.bg, b.tx, 0.10) }));
+        self.cx.c.fill_rr((mx - 1.0, my - 1.0, mw + 2.0, mh + 2.0), 9.0, op(if t.hc { b.tx } else { mix(b.bg, b.tx, 0.10) }));
         if !t.hc {
-            self.c.fill_rr((mx, my + 4.0, mw, mh), 8.0, ui::alpha(0, 0.08));
+            self.cx.c.fill_rr((mx, my + 4.0, mw, mh), 8.0, ui::alpha(0, 0.08));
         }
-        self.c.fill_rr((mx, my, mw, mh), 8.0, op(b.card));
-        self.c.text(mx + 14.0, my + 4.0, 24.0, &head, F::SmallBold, b.tx2);
+        self.cx.c.fill_rr((mx, my, mw, mh), 8.0, op(b.card));
+        self.cx.c.text(mx + 14.0, my + 4.0, 24.0, &head, F::SmallBold, b.tx2);
         let mut ys = [my + 28.0; 2];
         if !small {
-            self.c.text(mx + 14.0, my + 28.0, 24.0, "des-k", F::SmallBold, b.tx2);
-            self.c.text(mx + 4.0 + colw + 4.0 + 10.0, my + 28.0, 24.0, "Windows and media", F::SmallBold, b.tx2);
+            self.cx.c.text(mx + 14.0, my + 28.0, 24.0, "des-k", F::SmallBold, b.tx2);
+            self.cx.c.text(mx + 4.0 + colw + 4.0 + 10.0, my + 28.0, 24.0, "Windows and media", F::SmallBold, b.tx2);
             ys = [my + 52.0; 2];
         }
         let foot_y = my + 4.0 + 24.0 + if small { 0.0 } else { 24.0 } + rows * 28.0;
@@ -170,7 +170,7 @@ impl Ctx<'_, '_> {
                     let row = (c - 2) as usize;
                     let y = foot_y + row as f32 * 37.0 + 9.0;
                     if !drew_rule[row] {
-                        self.c.rule(mx + 4.0, y - 5.0, mw - 8.0, op(b.line));
+                        self.cx.c.rule(mx + 4.0, y - 5.0, mw - 8.0, op(b.line));
                         drew_rule[row] = true;
                         fx = 0.0;
                     }
@@ -182,7 +182,7 @@ impl Ctx<'_, '_> {
                 }
             };
             let ctl = Ctl::Item(i);
-            let hot = self.hovered(ctl) || (self.w.kb && focus_line == i);
+            let hot = self.cx.hovered(ctl) || (self.w.kb && focus_line == i);
             let (fill, ink, check) = match () {
                 _ if l.on && t.hc => (Some(b.hi), b.on_acc, b.on_acc),
                 _ if l.on => (Some(b.track), b.tx, b.acc),
@@ -190,34 +190,34 @@ impl Ctx<'_, '_> {
                 _ => (None, b.tx, b.acc),
             };
             if let Some(f) = fill {
-                self.c.fill_rr((x, y, w, 28.0), 4.0, op(f));
+                self.cx.c.fill_rr((x, y, w, 28.0), 4.0, op(f));
             }
             if l.on {
-                self.icon(x + 10.0, y, 28.0, I_OK, F::IconSmall, check);
+                self.cx.icon(x + 10.0, y, 28.0, I_OK, F::IconSmall, check);
             }
             let tx = x + 30.0;
             let more = matches!(l.does, Does::Family(_) | Does::Twice);
             let room = w - 30.0 - 6.0 - if l.default { 52.0 } else { 0.0 } - if more { 16.0 } else { 0.0 };
-            let shown = self.c.fit(&l.text, F::Body, room);
-            self.c.text(tx, y, 28.0, &shown, F::Body, ink);
+            let shown = self.cx.c.fit(&l.text, F::Body, room);
+            self.cx.c.text(tx, y, 28.0, &shown, F::Body, ink);
             let mut rx = x + w - 10.0;
             if more {
-                let cw = self.c.width(I_MORE, F::IconTiny);
+                let cw = self.cx.c.width(I_MORE, F::IconTiny);
                 rx -= cw;
-                self.icon(rx, y, 28.0, I_MORE, F::IconTiny, b.tx2);
+                self.cx.icon(rx, y, 28.0, I_MORE, F::IconTiny, b.tx2);
                 rx -= 6.0;
             }
             if l.default {
-                let dw = self.c.width("Default", F::Small);
-                self.c.text(rx - dw, y, 28.0, "Default", F::Small, b.tx2);
+                let dw = self.cx.c.width("Default", F::Small);
+                self.cx.c.text(rx - dw, y, 28.0, "Default", F::Small, b.tx2);
             }
             if self.w.kb && focus_line == i {
-                self.c.stroke_rr((x + 1.0, y + 1.0, w - 2.0, 26.0), 4.0, 2.0, op(b.tx));
+                self.cx.c.stroke_rr((x + 1.0, y + 1.0, w - 2.0, 26.0), 4.0, 2.0, op(b.tx));
             }
-            self.hit(ctl, (x, y, w, 28.0), 3);
+            self.cx.hit(ctl, (x, y, w, 28.0), 3);
         }
         // Inside the menu, between lines; after them, since a click takes the first hit it is in.
-        self.hit(Ctl::Item(usize::MAX), (mx, my, mw, mh), 3);
+        self.cx.hit(Ctl::Item(usize::MAX), (mx, my, mw, mh), 3);
     }
 }
 

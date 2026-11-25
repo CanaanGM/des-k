@@ -9,8 +9,8 @@ impl Ctx<'_, '_> {
         let w = self.w;
         let n = self.s.workspaces;
         // Pointing at the last tile only offers the picker; the removal preview waits for the ×.
-        let removing = !self.ro && n > 2 && (self.hovered(Ctl::TileRemove) || self.focused(Ctl::Tiles));
-        let resetting = !self.ro && n > DEFAULTS.workspaces && (self.hovered(Ctl::Reset("workspaces")) || self.focused(Ctl::Reset("workspaces")));
+        let removing = !self.cx.ro && n > 2 && (self.cx.hovered(Ctl::TileRemove) || self.cx.focused(Ctl::Tiles));
+        let resetting = !self.cx.ro && n > DEFAULTS.workspaces && (self.cx.hovered(Ctl::Reset("workspaces")) || self.cx.focused(Ctl::Reset("workspaces")));
         let gone: Vec<usize> = if removing { vec![n - 1] } else if resetting { (DEFAULTS.workspaces..n).collect() } else { vec![] };
         for (i, sc) in w.pics.screens.clone().iter().enumerate() {
             if i > 0 || h > 0.0 {
@@ -28,9 +28,9 @@ impl Ctx<'_, '_> {
         cap.extend(self.default_pieces("workspaces", false));
         let hh = self.measured(|c| c.row(0.0, "Workspaces per screen", &cap, (0.0, 0.0), |_, _, _| {}, note.as_ref()));
         if note.is_some() {
-            let b = self.c.t.b;
-            let tint = if self.c.t.hc { b.card } else { mix(b.card, b.acc_a, 0.06) };
-            self.c.fill_rr((X0 + 1.0, y + h + 1.0, self.cw - 2.0, hh - 1.0), 0.0, op(tint));
+            let b = self.cx.c.t.b;
+            let tint = if self.cx.c.t.hc { b.card } else { mix(b.card, b.acc_a, 0.06) };
+            self.cx.c.fill_rr((X0 + 1.0, y + h + 1.0, self.cw - 2.0, hh - 1.0), 0.0, op(tint));
         }
         h += self.row(y + h, "Workspaces per screen", &cap, (0.0, 0.0), |_, _, _| {}, note.as_ref());
         self.sep(y + h);
@@ -40,17 +40,17 @@ impl Ctx<'_, '_> {
     }
 
     pub(in crate::settings_page) fn ws_chip_w(&self, k: usize) -> f32 {
-        (self.c.width(&(k + 1).to_string(), F::SmallBold) + 10.0).max(20.0)
+        (self.cx.c.width(&(k + 1).to_string(), F::SmallBold) + 10.0).max(20.0)
     }
 
     /// Workspace `k`'s chip, as the overview draws a shown workspace's: its color, its number.
     pub(in crate::settings_page) fn ws_chip(&self, x: f32, y: f32, k: usize) {
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         let (w, color) = (self.ws_chip_w(k), b.ws[k.min(8)]);
-        self.c.boxed((x, y, w, 18.0), 4.0, color, (b.ws_edge > 0.0).then(|| mix(color, 0, b.ws_edge)));
+        self.cx.c.boxed((x, y, w, 18.0), 4.0, color, (b.ws_edge > 0.0).then(|| mix(color, 0, b.ws_edge)));
         let label = (k + 1).to_string();
-        let tw = self.c.width(&label, F::SmallBold);
-        self.c.text(x + (w - tw) / 2.0, y, 18.0, &label, F::SmallBold, b.on_ws[k.min(8)]);
+        let tw = self.cx.c.width(&label, F::SmallBold);
+        self.cx.c.text(x + (w - tw) / 2.0, y, 18.0, &label, F::SmallBold, b.on_ws[k.min(8)]);
     }
 }
 

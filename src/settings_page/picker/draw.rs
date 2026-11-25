@@ -12,16 +12,16 @@ impl Ctx<'_, '_> {
         if self.w.ease.is_some_and(|e| e.opening) {
             return;
         }
-        let t = self.c.t;
+        let t = self.cx.c.t;
         let b = t.b;
         let (x, y, kb) = (at.x, at.y, self.w.kb);
         let wi = ws_index(p.key);
         // The page's popup, as its menus are: edge, shadow, card.
         if !t.hc {
-            self.c.fill_rr((x, y + 4.0, PICK_W, PICK_H), 8.0, ui::alpha(0, if t.dark { 0.30 } else { 0.08 }));
+            self.cx.c.fill_rr((x, y + 4.0, PICK_W, PICK_H), 8.0, ui::alpha(0, if t.dark { 0.30 } else { 0.08 }));
         }
-        self.c.fill_rr((x - 1.0, y - 1.0, PICK_W + 2.0, PICK_H + 2.0), 9.0, op(if t.hc { b.tx } else { mix(b.bg, b.tx, 0.10) }));
-        self.c.fill_rr((x, y, PICK_W, PICK_H), 8.0, op(b.card));
+        self.cx.c.fill_rr((x - 1.0, y - 1.0, PICK_W + 2.0, PICK_H + 2.0), 9.0, op(if t.hc { b.tx } else { mix(b.bg, b.tx, 0.10) }));
+        self.cx.c.fill_rr((x, y, PICK_W, PICK_H), 8.0, op(b.card));
         // Header: the chip (start and now once they differ), the title, the hex.
         let changed = p.color != p.start;
         let pale = if t.hc { op(b.tx) } else if t.dark { op(mix(b.bg, b.tx, 0.10)) } else { ui::alpha(0, 0.10) };
@@ -32,57 +32,57 @@ impl Ctx<'_, '_> {
             Some(_) => 28.0,
         };
         if wi.is_none() {
-            self.c.circle(hx + 11.0, hy + 14.0, 11.0, Some(op(p.color)), None);
-            self.c.circle(hx + 11.0, hy + 14.0, 10.5, None, Some((pale, 1.0)));
+            self.cx.c.circle(hx + 11.0, hy + 14.0, 11.0, Some(op(p.color)), None);
+            self.cx.c.circle(hx + 11.0, hy + 14.0, 10.5, None, Some((pale, 1.0)));
         } else {
-            self.c.fill_rr((hx, hy + 3.0, chip_w, 22.0), 4.0, op(if changed { p.start } else { p.color }));
+            self.cx.c.fill_rr((hx, hy + 3.0, chip_w, 22.0), 4.0, op(if changed { p.start } else { p.color }));
             if changed {
-                self.c.fill_rr((hx + 20.0, hy + 3.0, 20.0, 22.0), 4.0, op(p.color));
-                self.c.fill_rr((hx + 20.0, hy + 3.0, 4.0, 22.0), 0.0, op(p.color));
-                self.c.fill_rr((hx + 20.0, hy + 3.0, 1.0, 22.0), 0.0, op(b.card));
+                self.cx.c.fill_rr((hx + 20.0, hy + 3.0, 20.0, 22.0), 4.0, op(p.color));
+                self.cx.c.fill_rr((hx + 20.0, hy + 3.0, 4.0, 22.0), 0.0, op(p.color));
+                self.cx.c.fill_rr((hx + 20.0, hy + 3.0, 1.0, 22.0), 0.0, op(b.card));
             }
             // Above the fill, so a pale color still has an outline.
-            self.c.stroke_rr((hx + 0.5, hy + 3.5, chip_w - 1.0, 21.0), 3.5, 1.0, pale);
+            self.cx.c.stroke_rr((hx + 0.5, hy + 3.5, chip_w - 1.0, 21.0), 3.5, 1.0, pale);
         }
         let title = wi.map_or("Accent".to_string(), |i| format!("Workspace {}", i + 1));
-        self.c.text(hx + chip_w + 10.0, hy, 28.0, &title, F::Bold, b.tx);
+        self.cx.c.text(hx + chip_w + 10.0, hy, 28.0, &title, F::Bold, b.tx);
         let now = format!("#{:06X}", p.color);
-        let right = x + PICK_W - 16.0 - self.c.width(&now, F::Mono);
-        self.c.text(right, hy, 28.0, &now, F::Mono, b.tx);
+        let right = x + PICK_W - 16.0 - self.cx.c.width(&now, F::Mono);
+        self.cx.c.text(right, hy, 28.0, &now, F::Mono, b.tx);
         if changed {
             let was = format!("#{:06X} → ", p.start);
-            self.c.text(right - self.c.width(&was, F::Mono), hy, 28.0, &was, F::Mono, b.tx2);
+            self.cx.c.text(right - self.cx.c.width(&was, F::Mono), hy, 28.0, &was, F::Mono, b.tx2);
         }
-        self.c.text(x + 16.0, y + 44.0, 20.0, "des-k colors", F::SmallBold, b.tx2);
-        self.c.text(x + 172.0, y + 44.0, 20.0, "Any color", F::SmallBold, b.tx2);
+        self.cx.c.text(x + 16.0, y + 44.0, 20.0, "des-k colors", F::SmallBold, b.tx2);
+        self.cx.c.text(x + 172.0, y + 44.0, 20.0, "Any color", F::SmallBold, b.tx2);
         // The presets, 3 by 4: the one shown checked, a workspace's own color with its number.
         for (i, &c) in ui::PRESETS.iter().enumerate() {
             let (sx, sy) = (x + 16.0 + (i % 3) as f32 * 48.0, y + 68.0 + (i / 3) as f32 * 48.0);
             let bx = (sx, sy, 40.0, 40.0);
             let ink = ui::ink(c);
-            self.c.fill_rr(bx, 4.0, op(c));
+            self.cx.c.fill_rr(bx, 4.0, op(c));
             if b.ws_edge > 0.0 {
-                self.c.stroke_rr((sx + 0.5, sy + 0.5, 39.0, 39.0), 3.5, 1.0, op(mix(c, 0, b.ws_edge)));
+                self.cx.c.stroke_rr((sx + 0.5, sy + 0.5, 39.0, 39.0), 3.5, 1.0, op(mix(c, 0, b.ws_edge)));
             }
             if wi == Some(i) {
-                self.c.text(sx + 5.0, sy + 22.0, 16.0, &(i + 1).to_string(), F::SmallBold, ink);
+                self.cx.c.text(sx + 5.0, sy + 22.0, 16.0, &(i + 1).to_string(), F::SmallBold, ink);
             }
-            if self.hovered(Ctl::Preset(i)) {
-                self.cue(bx, ink);
+            if self.cx.hovered(Ctl::Preset(i)) {
+                self.cx.cue(bx, ink);
             }
             if c == p.color {
                 let (cx, cy) = (sx + 28.0, sy + 12.0);
-                self.c.circle(cx, cy, 9.0, Some(op(b.card)), Some((ui::alpha(0, 0.12), 1.0)));
-                let iw = self.c.width(I_OK, F::IconTiny);
-                self.icon(cx - iw / 2.0, cy - 9.0, 18.0, I_OK, F::IconTiny, b.tx);
+                self.cx.c.circle(cx, cy, 9.0, Some(op(b.card)), Some((ui::alpha(0, 0.12), 1.0)));
+                let iw = self.cx.c.width(I_OK, F::IconTiny);
+                self.cx.icon(cx - iw / 2.0, cy - 9.0, 18.0, I_OK, F::IconTiny, b.tx);
             }
             if kb && p.focus == Stop::Swatches(i) {
-                self.c.stroke_rr((sx - 3.0, sy - 3.0, 46.0, 46.0), 7.0, 2.0, op(b.tx));
+                self.cx.c.stroke_rr((sx - 3.0, sy - 3.0, 46.0, 46.0), 7.0, 2.0, op(b.tx));
             }
-            self.hit(Ctl::Preset(i), bx, 3);
+            self.cx.hit(Ctl::Preset(i), bx, 3);
         }
         // The wheel: the toned ring and the square at the hue, drawn pixel for pixel.
-        let s = self.c.s;
+        let s = self.cx.c.s;
         let ((cx, cy), sq) = wheel_at(at, s);
         let (n, ro, ri, _) = wheel_px(s);
         let half = n as f32 / 2.0 / s;
@@ -91,7 +91,7 @@ impl Ctx<'_, '_> {
                 *r = Some((s.to_bits(), ring_px(s)));
             }
             if let Some((_, pic)) = r {
-                self.c.image(cx - half, cy - half, pic);
+                self.cx.c.image(cx - half, cy - half, pic);
             }
         });
         let hue = p.hsv.0;
@@ -100,65 +100,65 @@ impl Ctx<'_, '_> {
                 *q = Some((s.to_bits(), hue.to_bits(), square_px(s, hue)));
             }
             if let Some((_, _, pic)) = q {
-                self.c.image(sq.0, sq.1, pic);
+                self.cx.c.image(sq.0, sq.1, pic);
             }
         });
         if !t.dark && !t.hc {
             let line = ui::alpha(0, 0.10);
-            self.c.circle(cx, cy, ro / s - 0.5, None, Some((line, 1.0)));
-            self.c.circle(cx, cy, ri / s + 0.5, None, Some((line, 1.0)));
-            self.c.stroke_rr((sq.0 + 0.5, sq.1 + 0.5, sq.2 - 1.0, sq.3 - 1.0), 2.5, 1.0, line);
+            self.cx.c.circle(cx, cy, ro / s - 0.5, None, Some((line, 1.0)));
+            self.cx.c.circle(cx, cy, ri / s + 0.5, None, Some((line, 1.0)));
+            self.cx.c.stroke_rr((sq.0 + 0.5, sq.1 + 0.5, sq.2 - 1.0, sq.3 - 1.0), 2.5, 1.0, line);
         }
         let (h, sat, val) = p.hsv;
         let (mr, a) = ((ro + ri) / 2.0 / s, h.to_radians());
         self.mark(cx + a.sin() * mr, cy - a.cos() * mr, 9.0, ui::ring_color(h.round()), kb && p.focus == Stop::Ring);
         self.mark(sq.0 + sat * sq.2, sq.1 + (1.0 - val) * sq.3, 7.0, p.color, kb && p.focus == Stop::Square);
-        self.hit(Ctl::Square, (sq.0 - 8.0, sq.1 - 8.0, sq.2 + 16.0, sq.3 + 16.0), 3);
-        self.hit(Ctl::Ring, (cx - 106.0, cy - 106.0, 212.0, 212.0), 3);
+        self.cx.hit(Ctl::Square, (sq.0 - 8.0, sq.1 - 8.0, sq.2 + 16.0, sq.3 + 16.0), 3);
+        self.cx.hit(Ctl::Ring, (cx - 106.0, cy - 106.0, 212.0, 212.0), 3);
         // Footer: the status line, Done, Cancel.
         let fy = y + 282.0;
-        let cw = (self.c.width("Cancel", F::Body) + 28.0).max(96.0);
-        let dw = (self.c.width("Done", F::Body) + 28.0).max(96.0);
+        let cw = (self.cx.c.width("Cancel", F::Body) + 28.0).max(96.0);
+        let dw = (self.cx.c.width("Done", F::Body) + 28.0).max(96.0);
         let (cancel_x, done_x) = (x + PICK_W - 16.0 - cw, x + PICK_W - 16.0 - cw - 8.0 - dw);
         let done = (done_x, fy, dw, 32.0);
-        self.c.fill_rr(done, 6.0, op(if self.hovered(Ctl::PickDone) { mix(b.acc, b.card, 0.10) } else { b.acc }));
+        self.cx.c.fill_rr(done, 6.0, op(if self.cx.hovered(Ctl::PickDone) { mix(b.acc, b.card, 0.10) } else { b.acc }));
         if ui::contrast(b.acc, b.card) < 1.5 {
-            self.c.stroke_rr((done_x + 0.5, fy + 0.5, dw - 1.0, 31.0), 5.5, 1.0, op(b.tx2));
+            self.cx.c.stroke_rr((done_x + 0.5, fy + 0.5, dw - 1.0, 31.0), 5.5, 1.0, op(b.tx2));
         }
-        let lw = self.c.width("Done", F::Body);
-        self.c.text(done_x + (dw - lw) / 2.0, fy, 32.0, "Done", F::Body, b.on_acc);
+        let lw = self.cx.c.width("Done", F::Body);
+        self.cx.c.text(done_x + (dw - lw) / 2.0, fy, 32.0, "Done", F::Body, b.on_acc);
         let cancel = (cancel_x, fy, cw, 32.0);
-        self.field(cancel, if self.hovered(Ctl::PickCancel) { mix(b.card, b.tx, 0.05) } else { b.card }, None);
-        let lw = self.c.width("Cancel", F::Body);
-        self.c.text(cancel_x + (cw - lw) / 2.0, fy, 32.0, "Cancel", F::Body, b.tx);
+        self.cx.field(cancel, if self.cx.hovered(Ctl::PickCancel) { mix(b.card, b.tx, 0.05) } else { b.card }, None);
+        let lw = self.cx.c.width("Cancel", F::Body);
+        self.cx.c.text(cancel_x + (cw - lw) / 2.0, fy, 32.0, "Cancel", F::Body, b.tx);
         for (bx, stop) in [(done, Stop::Done), (cancel, Stop::Cancel)] {
             if kb && p.focus == stop {
-                self.c.stroke_rr((bx.0 - 3.0, bx.1 - 3.0, bx.2 + 6.0, bx.3 + 6.0), 9.0, 2.0, op(b.tx));
+                self.cx.c.stroke_rr((bx.0 - 3.0, bx.1 - 3.0, bx.2 + 6.0, bx.3 + 6.0), 9.0, 2.0, op(b.tx));
             }
         }
-        self.hit(Ctl::PickDone, done, 3);
-        self.hit(Ctl::PickCancel, cancel, 3);
+        self.cx.hit(Ctl::PickDone, done, 3);
+        self.cx.hit(Ctl::PickCancel, cancel, 3);
         let (sx, room) = (x + 16.0, done_x - 12.0 - x - 16.0);
         if p.failed.is_some() {
-            let th = self.c.measuring().para(0.0, 0.0, room - 24.0, 16.0, &[(NOT_SAVED, F::SmallBold, b.tx)]);
+            let th = self.cx.c.measuring().para(0.0, 0.0, room - 24.0, 16.0, &[(NOT_SAVED, F::SmallBold, b.tx)]);
             let top = fy + (32.0 - th) / 2.0;
-            self.icon(sx, top, 16.0, I_WARN, F::IconSmall, b.warn);
-            self.c.para(sx + 24.0, top, room - 24.0, 16.0, &[(NOT_SAVED, F::SmallBold, b.tx)]);
+            self.cx.icon(sx, top, 16.0, I_WARN, F::IconSmall, b.warn);
+            self.cx.c.para(sx + 24.0, top, room - 24.0, 16.0, &[(NOT_SAVED, F::SmallBold, b.tx)]);
         } else if let Some(i) = wi
             && let Some((j, same)) = dup_of(p.color, i, &b.ws, self.s.workspaces)
         {
             let line = format!("Workspace {} {}", j + 1, if same { "uses this color too." } else { "has a very close color." });
-            let th = self.c.measuring().para(0.0, 0.0, room - 30.0, 16.0, &[(&line, F::Small, b.tx2)]);
+            let th = self.cx.c.measuring().para(0.0, 0.0, room - 30.0, 16.0, &[(&line, F::Small, b.tx2)]);
             let top = fy + (32.0 - th) / 2.0;
-            self.c.fill_rr((sx, top, 22.0, 16.0), 3.0, op(b.ws[j]));
+            self.cx.c.fill_rr((sx, top, 22.0, 16.0), 3.0, op(b.ws[j]));
             if b.ws_edge > 0.0 {
-                self.c.stroke_rr((sx + 0.5, top + 0.5, 21.0, 15.0), 2.5, 1.0, op(mix(b.ws[j], 0, b.ws_edge)));
+                self.cx.c.stroke_rr((sx + 0.5, top + 0.5, 21.0, 15.0), 2.5, 1.0, op(mix(b.ws[j], 0, b.ws_edge)));
             }
-            self.c.text(sx + 4.0, top + 3.0, 13.0, &(j + 1).to_string(), F::TinyBold, b.on_ws[j]);
-            self.c.para(sx + 30.0, top, room - 30.0, 16.0, &[(&line, F::Small, b.tx2)]);
+            self.cx.c.text(sx + 4.0, top + 3.0, 13.0, &(j + 1).to_string(), F::TinyBold, b.on_ws[j]);
+            self.cx.c.para(sx + 30.0, top, room - 30.0, 16.0, &[(&line, F::Small, b.tx2)]);
         }
         // Last, so every part above wins the click.
-        self.hit(Ctl::PickCard, (x, y, PICK_W, PICK_H), 3);
+        self.cx.hit(Ctl::PickCard, (x, y, PICK_W, PICK_H), 3);
     }
 }
 

@@ -12,9 +12,9 @@ impl Ctx<'_, '_> {
     // pdesk-design/apps/apps-design.html r1 ----
 
     pub(super) fn app_add(&mut self, y: f32) -> f32 {
-        let bw = self.btn_w("Add app", Some(I_ADD));
+        let bw = self.cx.btn_w("Add app", Some(I_ADD));
         self.row(y, "Add an app", &[t("Pick an app that's open now. Its rule starts where its window is now.")], (bw, 32.0), |c, x, y| {
-            c.button(Ctl::AppAdd, x, y, "Add app", Some(I_ADD), false, 1);
+            c.cx.button(Ctl::AppAdd, x, y, "Add app", Some(I_ADD), false, 1);
         }, None)
     }
 
@@ -28,19 +28,19 @@ impl Ctx<'_, '_> {
     }
 
     pub(super) fn app_rules(&mut self, y: f32) -> f32 {
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         let n = self.s.apps.len();
         self.header(y, "Rules", Some(n.min(99) as u8), "");
         let (plain, bold) = ("New windows only · ", "your screens stay");
-        let rw = self.c.width(plain, F::Small) + self.c.width(bold, F::SmallBold);
-        self.c.para(X0 + self.cw - 16.0 - rw, y + 11.0, rw + 1.0, 16.0, &[(plain, F::Small, b.tx2), (bold, F::SmallBold, b.tx)]);
+        let rw = self.cx.c.width(plain, F::Small) + self.cx.c.width(bold, F::SmallBold);
+        self.cx.c.para(X0 + self.cw - 16.0 - rw, y + 11.0, rw + 1.0, 16.0, &[(plain, F::Small, b.tx2), (bold, F::SmallBold, b.tx)]);
         let mut h = 38.0;
         if n == 0 {
             return h + self.apps_empty(y + h);
         }
         let (_, name, _, ws, screen) = self.app_cols();
         for (text, x) in [("App", name), ("Workspace", ws), ("Screen", screen)] {
-            self.c.text(x, y + h, 33.0, text, F::Small, b.tx2);
+            self.cx.c.text(x, y + h, 33.0, text, F::Small, b.tx2);
         }
         h += 33.0;
         for i in 0..n {
@@ -53,7 +53,7 @@ impl Ctx<'_, '_> {
     /// One rule: the app's icon and name while it runs, else its key; under the name its note,
     /// or its key, or Not running; then its workspace and screen menus and remove.
     fn app_row(&mut self, y: f32, i: usize) -> f32 {
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         let (key, rule) = &self.s.apps[i];
         let (x, nx, nw, wx, sx) = self.app_cols();
         let seen = self.w.pics.apps.iter().find(|a| a.key == *key).cloned();
@@ -61,42 +61,42 @@ impl Ctx<'_, '_> {
         let note = app_note(&self.w.pics.view, self.s, rule);
         let note_ink = |warn: bool| if warn { b.warn } else { b.tx2 };
         let sub_h = match &note {
-            Some((text, warn)) => self.measured(|c| c.c.para(nx + 18.0, 0.0, nw - 18.0, 16.0, &[(text, F::Small, note_ink(*warn))])),
+            Some((text, warn)) => self.measured(|c| c.cx.c.para(nx + 18.0, 0.0, nw - 18.0, 16.0, &[(text, F::Small, note_ink(*warn))])),
             None => 16.0,
         };
         let h = (10.0 + 20.0 + 2.0 + sub_h + 10.0).max(60.0);
         let ty = y + (h - 22.0 - sub_h) / 2.0;
         let iy = y + (h - 24.0) / 2.0;
         match &seen {
-            Some(a) => self.c.icon(x, iy, 24.0, a.icon),
+            Some(a) => self.cx.c.icon(x, iy, 24.0, a.icon),
             None => {
-                self.c.stroke_rr((x + 0.5, iy + 0.5, 23.0, 23.0), 6.0, 1.0, op(b.tx3));
-                let gw = self.c.width(I_APP, F::IconSmall);
-                self.icon(x + (24.0 - gw) / 2.0, iy, 24.0, I_APP, F::IconSmall, b.tx3);
+                self.cx.c.stroke_rr((x + 0.5, iy + 0.5, 23.0, 23.0), 6.0, 1.0, op(b.tx3));
+                let gw = self.cx.c.width(I_APP, F::IconSmall);
+                self.cx.icon(x + (24.0 - gw) / 2.0, iy, 24.0, I_APP, F::IconSmall, b.tx3);
             }
         }
-        let shown = self.c.fit(&name, F::Bold, nw);
-        self.c.text(nx, ty, 20.0, &shown, F::Bold, b.tx);
+        let shown = self.cx.c.fit(&name, F::Bold, nw);
+        self.cx.c.text(nx, ty, 20.0, &shown, F::Bold, b.tx);
         match &note {
             Some((text, warn)) => {
-                self.icon(nx, ty + 22.0, 16.0, if *warn { I_WARN } else { I_INFO }, F::IconTiny, note_ink(*warn));
-                self.c.para(nx + 18.0, ty + 22.0, nw - 18.0, 16.0, &[(text, F::Small, note_ink(*warn))]);
+                self.cx.icon(nx, ty + 22.0, 16.0, if *warn { I_WARN } else { I_INFO }, F::IconTiny, note_ink(*warn));
+                self.cx.c.para(nx + 18.0, ty + 22.0, nw - 18.0, 16.0, &[(text, F::Small, note_ink(*warn))]);
             }
-            None if seen.is_none() => self.c.text(nx, ty + 22.0, 16.0, "Not running", F::Small, b.tx2),
+            None if seen.is_none() => self.cx.c.text(nx, ty + 22.0, 16.0, "Not running", F::Small, b.tx2),
             None => {
                 // A Store app's id is long and spelled as the file holds it.
                 let f = if key.contains('!') { F::Mono } else { F::Small };
-                let k = self.c.fit(key, f, nw);
-                self.c.text(nx, ty + 22.0, 16.0, &k, f, b.tx2);
+                let k = self.cx.c.fit(key, f, nw);
+                self.cx.c.text(nx, ty + 22.0, 16.0, &k, f, b.tx2);
             }
         }
         let my = y + (h - 32.0) / 2.0;
         let (ws, grey) = ws_label(self.s, rule.screen.as_deref(), rule.workspace);
         let screen = rule.screen.as_deref().map_or_else(|| "Any screen".to_string(), |id| self.screen_called(id));
         let help = note.as_ref().map_or(String::new(), |(text, _)| text.clone());
-        self.say(Ctl::AppWs(i), UIA_ComboBoxControlTypeId, &format!("Workspace for {name}"), &help, self.ro, (None, Some(ws.clone())));
+        self.cx.say(Ctl::AppWs(i), UIA_ComboBoxControlTypeId, &format!("Workspace for {name}"), &help, self.cx.ro, (None, Some(ws.clone())));
         self.app_picker(Ctl::AppWs(i), (wx, my, APP_WS_W), Mark::Chip(rule.workspace), &ws, grey);
-        self.say(Ctl::AppScreen(i), UIA_ComboBoxControlTypeId, &format!("Screen for {name}"), "", self.ro, (None, Some(screen.clone())));
+        self.cx.say(Ctl::AppScreen(i), UIA_ComboBoxControlTypeId, &format!("Screen for {name}"), "", self.cx.ro, (None, Some(screen.clone())));
         self.app_picker(Ctl::AppScreen(i), (sx, my, APP_SCREEN_W), Mark::Glyph(I_SCREEN), &screen, false);
         self.app_x(i, sx + APP_SCREEN_W + 12.0, my, &name);
         h
@@ -105,12 +105,12 @@ impl Ctx<'_, '_> {
     /// A menu button, as the screen chooser draws one: a workspace's chip and name, or a mark
     /// (a screen, a picture) and a name.
     pub(super) fn app_picker(&mut self, ctl: Ctl, (x, y, w): (f32, f32, f32), mark: Mark, label: &str, grey: bool) {
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         if matches!(self.w.chooser, Some((from, ..)) if from == ctl) {
-            self.field((x, y, w, 32.0), b.card, Some(b.acc));
+            self.cx.field((x, y, w, 32.0), b.card, Some(b.acc));
         } else {
-            let fill = if self.hovered(ctl) && !self.ro { mix(b.track, b.tx, 0.05) } else { b.track };
-            self.field((x, y, w, 32.0), fill, None);
+            let fill = if self.cx.hovered(ctl) && !self.cx.ro { mix(b.track, b.tx, 0.05) } else { b.track };
+            self.cx.field((x, y, w, 32.0), fill, None);
         }
         let mut tx = x + 10.0;
         match mark {
@@ -119,64 +119,64 @@ impl Ctx<'_, '_> {
                 tx += self.ws_chip_w(k) + 8.0;
             }
             Mark::Glyph(g) => {
-                self.icon(tx, y, 32.0, g, F::Icon, b.tx2);
+                self.cx.icon(tx, y, 32.0, g, F::Icon, b.tx2);
                 tx += 26.0;
             }
             Mark::Stack => {
                 // Two pictures, the front one masked by the button's own fill (spec 0028 AC-11).
-                let fill = if matches!(self.w.chooser, Some((from, ..)) if from == ctl) { b.card } else if self.hovered(ctl) && !self.ro { mix(b.track, b.tx, 0.05) } else { b.track };
-                self.icon(tx + 4.0, y - 3.0, 32.0, I_PIC, F::IconSmall, mix(fill, b.tx2, 0.6));
-                let gw = self.c.width(I_PIC, F::IconSmall);
-                self.c.fill_rr((tx - 1.0, y + 11.0, gw + 2.0, 14.0), 2.0, op(fill));
-                self.icon(tx, y + 2.0, 32.0, I_PIC, F::IconSmall, b.tx2);
+                let fill = if matches!(self.w.chooser, Some((from, ..)) if from == ctl) { b.card } else if self.cx.hovered(ctl) && !self.cx.ro { mix(b.track, b.tx, 0.05) } else { b.track };
+                self.cx.icon(tx + 4.0, y - 3.0, 32.0, I_PIC, F::IconSmall, mix(fill, b.tx2, 0.6));
+                let gw = self.cx.c.width(I_PIC, F::IconSmall);
+                self.cx.c.fill_rr((tx - 1.0, y + 11.0, gw + 2.0, 14.0), 2.0, op(fill));
+                self.cx.icon(tx, y + 2.0, 32.0, I_PIC, F::IconSmall, b.tx2);
                 tx += 26.0;
             }
         }
-        let cw = self.c.width(I_CHEV, F::IconTiny);
-        let shown = self.c.fit(label, F::Body, x + w - 18.0 - cw - tx);
-        self.c.text(tx, y, 32.0, &shown, F::Body, if grey || self.ro { b.tx2 } else { b.tx });
-        self.icon(x + w - 10.0 - cw, y, 32.0, I_CHEV, F::IconTiny, b.tx2);
-        self.ring((x, y, w, 32.0), 6.0, ctl);
-        self.hit(ctl, (x, y, w, 32.0), 1);
+        let cw = self.cx.c.width(I_CHEV, F::IconTiny);
+        let shown = self.cx.c.fit(label, F::Body, x + w - 18.0 - cw - tx);
+        self.cx.c.text(tx, y, 32.0, &shown, F::Body, if grey || self.cx.ro { b.tx2 } else { b.tx });
+        self.cx.icon(x + w - 10.0 - cw, y, 32.0, I_CHEV, F::IconTiny, b.tx2);
+        self.cx.ring((x, y, w, 32.0), 6.0, ctl);
+        self.cx.hit(ctl, (x, y, w, 32.0), 1);
     }
 
     /// A rule's remove button: an × that shows its square under the pointer.
     fn app_x(&mut self, i: usize, x: f32, y: f32, name: &str) {
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         let ctl = Ctl::AppX(i);
-        let hot = self.hovered(ctl) && !self.ro;
+        let hot = self.cx.hovered(ctl) && !self.cx.ro;
         if hot {
-            self.c.boxed((x, y, 32.0, 32.0), 4.0, mix(b.card, b.tx, 0.06), Some(b.line));
+            self.cx.c.boxed((x, y, 32.0, 32.0), 4.0, mix(b.card, b.tx, 0.06), Some(b.line));
         }
-        let iw = self.c.width(I_X, F::IconTiny);
+        let iw = self.cx.c.width(I_X, F::IconTiny);
         let ink = match () {
-            _ if self.ro => b.tx3,
+            _ if self.cx.ro => b.tx3,
             _ if hot => b.tx,
             _ => b.tx2,
         };
-        self.icon(x + (32.0 - iw) / 2.0, y, 32.0, I_X, F::IconTiny, ink);
-        self.ring((x, y, 32.0, 32.0), 6.0, ctl);
-        self.hit(ctl, (x, y, 32.0, 32.0), 1);
-        self.say(ctl, UIA_ButtonControlTypeId, &format!("Remove {name}"), "Takes this app's rule out of settings.toml.", self.ro, (None, None));
+        self.cx.icon(x + (32.0 - iw) / 2.0, y, 32.0, I_X, F::IconTiny, ink);
+        self.cx.ring((x, y, 32.0, 32.0), 6.0, ctl);
+        self.cx.hit(ctl, (x, y, 32.0, 32.0), 1);
+        self.cx.say(ctl, UIA_ButtonControlTypeId, &format!("Remove {name}"), "Takes this app's rule out of settings.toml.", self.cx.ro, (None, None));
     }
 
     /// No rules yet: what a rule does, and where else you can write one.
     fn apps_empty(&mut self, y: f32) -> f32 {
-        let b = self.c.t.b;
-        let hc = self.c.t.hc;
+        let b = self.cx.c.t.b;
+        let hc = self.cx.c.t.hc;
         let cx = X0 + self.cw / 2.0;
         let tile = if hc { b.card } else { mix(b.card, b.acc_a, 0.09) };
-        self.c.boxed((cx - 24.0, y + 28.0, 48.0, 48.0), 12.0, tile, hc.then_some(b.line));
-        let gw = self.c.width(I_APPS, F::Icon);
-        self.icon(cx - gw / 2.0, y + 28.0, 48.0, I_APPS, F::Icon, if hc { b.tx } else { b.acc });
+        self.cx.c.boxed((cx - 24.0, y + 28.0, 48.0, 48.0), 12.0, tile, hc.then_some(b.line));
+        let gw = self.cx.c.width(I_APPS, F::Icon);
+        self.cx.icon(cx - gw / 2.0, y + 28.0, 48.0, I_APPS, F::Icon, if hc { b.tx } else { b.acc });
         let mut ly = y + 86.0;
         for (text, f, ink, lh) in [
             ("No rules yet", F::Bold, b.tx, 20.0),
             ("Add an app and its new windows open on the workspace you pick, wherever you are.", F::Small, b.tx2, 16.0),
             ("You can also write rules under [apps] in settings.toml.", F::Small, b.tx2, 16.0),
         ] {
-            let tw = self.c.width(text, f);
-            self.c.text(cx - tw / 2.0, ly, lh, text, f, ink);
+            let tw = self.cx.c.width(text, f);
+            self.cx.c.text(cx - tw / 2.0, ly, lh, text, f, ink);
             ly += lh + 2.0;
         }
         ly - y + 26.0

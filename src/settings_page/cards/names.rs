@@ -110,15 +110,15 @@ impl Ctx<'_, '_> {
     /// Screen name row, then a row per workspace in use. With one: that screen's Screen name
     /// row, then All screens' rows.
     pub(super) fn names(&mut self, y: f32) -> f32 {
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         let (list, i) = names_chosen(self.w);
         let two = list.len() > 2;
         self.out.cards.push((Card::Names, y - self.top0));
         self.header(y, "Names", None, "");
         if two {
             let who = if i == 0 { "all screens".to_string() } else { list[i].name.clone() };
-            let rw = self.c.width("For ", F::Small) + self.c.width(&who, F::SmallBold);
-            self.c.para(X0 + self.cw - 16.0 - rw, y + 11.0, rw + 1.0, 16.0, &[("For ", F::Small, b.tx2), (&who, F::SmallBold, b.tx)]);
+            let rw = self.cx.c.width("For ", F::Small) + self.cx.c.width(&who, F::SmallBold);
+            self.cx.c.para(X0 + self.cw - 16.0 - rw, y + 11.0, rw + 1.0, 16.0, &[("For ", F::Small, b.tx2), (&who, F::SmallBold, b.tx)]);
         }
         let mut h = 38.0;
         if two {
@@ -148,7 +148,7 @@ impl Ctx<'_, '_> {
             }
         };
         let name = list[i].name.clone();
-        self.say(Ctl::NameScreens, UIA_ComboBoxControlTypeId, "Screen", &cap, false, (None, Some(name.clone())));
+        self.cx.say(Ctl::NameScreens, UIA_ComboBoxControlTypeId, "Screen", &cap, false, (None, Some(name.clone())));
         self.row(y, "Screen", &[t(cap)], (240.0, 32.0), |c, x, y| c.screen_picker(Ctl::NameScreens, x, y, 240.0, &name), None)
     }
 
@@ -157,7 +157,7 @@ impl Ctx<'_, '_> {
     fn name_row(&mut self, y: f32, row: Nm) -> f32 {
         let look = name_look(self.w, self.s, row);
         let ctl = Ctl::Name(row);
-        let focused = self.w.focus == Some(ctl) && !self.ro;
+        let focused = self.w.focus == Some(ctl) && !self.cx.ro;
         let text = if focused { self.w.typed.clone().unwrap_or_else(|| look.shown.clone()) } else { look.shown.clone() };
         // No link takes focus on a read only page.
         let same = |k: usize, ro: bool| (!ro).then(|| P::Link(" Same as all screens".into(), Ctl::NameSame(k)));
@@ -170,8 +170,8 @@ impl Ctx<'_, '_> {
             (NameState::All, Nm::Ws(k)) => self.differ_pieces(k),
             (NameState::Follow, _) if look.all.is_empty() => vec![t("Follows all screens, which has no name for it.")],
             (NameState::Follow, _) => vec![t("Follows all screens.")],
-            (NameState::Own, Nm::Ws(k)) => [Some(t("Its own name on this screen.")), same(k, self.ro)].into_iter().flatten().collect(),
-            (NameState::NoName, Nm::Ws(k)) => [Some(t("Only the number shows here.")), same(k, self.ro)].into_iter().flatten().collect(),
+            (NameState::Own, Nm::Ws(k)) => [Some(t("Its own name on this screen.")), same(k, self.cx.ro)].into_iter().flatten().collect(),
+            (NameState::NoName, Nm::Ws(k)) => [Some(t("Only the number shows here.")), same(k, self.cx.ro)].into_iter().flatten().collect(),
             _ => vec![],
         };
         let note = focused.then(|| {
@@ -189,7 +189,7 @@ impl Ctx<'_, '_> {
             NoteSpec { tone: Tone::Info, icon: I_INFO, title: String::new(), lines: vec![t(line)], buttons: vec![], group: 1 }
         });
         let help: String = cap.iter().map(|p| match p { P::T(s) | P::Why(s) | P::Link(s, _) | P::Mono(s) | P::Warn(s) => s.as_str() }).collect();
-        self.say(ctl, UIA_EditControlTypeId, &name_title(row), help.trim(), self.ro, (None, Some(text.clone())));
+        self.cx.say(ctl, UIA_EditControlTypeId, &name_title(row), help.trim(), self.cx.ro, (None, Some(text.clone())));
         let (title, chip) = match row {
             Nm::Screen => ("Screen name".to_string(), 0.0),
             Nm::Ws(k) => (format!("Workspace {}", k + 1), self.ws_chip_w(k) + 10.0),
@@ -219,25 +219,25 @@ impl Ctx<'_, '_> {
     /// A name box, drawn as the popup words' box: an empty one shows its hint. On a read only
     /// page names are greyed, empty boxes show no hint, and no box takes focus.
     fn name_box(&mut self, ctl: Ctl, x: f32, y: f32, text: &str, hint: &str, focused: bool) {
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         let bx = (x, y, NAME_W, 32.0);
-        if !self.ro {
-            self.hit(ctl, bx, 1);
+        if !self.cx.ro {
+            self.cx.hit(ctl, bx, 1);
         }
-        self.field(bx, b.card, None);
+        self.cx.field(bx, b.card, None);
         if focused {
-            self.c.fill_rr((x + 1.0, y + 29.0, NAME_W - 2.0, 2.0), 0.0, op(b.acc));
+            self.cx.c.fill_rr((x + 1.0, y + 29.0, NAME_W - 2.0, 2.0), 0.0, op(b.acc));
         }
         let room = NAME_W - 24.0;
-        let shown = self.c.fit(text, F::Body, room);
+        let shown = self.cx.c.fit(text, F::Body, room);
         if !text.is_empty() {
-            self.c.text(x + 12.0, y, 32.0, &shown, F::Body, if self.ro { b.tx3 } else { b.tx });
-        } else if !self.ro {
-            self.c.text(x + 12.0, y, 32.0, &self.c.fit(hint, F::Body, room), F::Body, b.hint);
+            self.cx.c.text(x + 12.0, y, 32.0, &shown, F::Body, if self.cx.ro { b.tx3 } else { b.tx });
+        } else if !self.cx.ro {
+            self.cx.c.text(x + 12.0, y, 32.0, &self.cx.c.fit(hint, F::Body, room), F::Body, b.hint);
         }
         if focused {
-            let tw = if text.is_empty() { 0.0 } else { self.c.width(&shown, F::Body) + 1.0 };
-            self.c.fill_rr((x + 12.0 + tw, y + 7.0, 1.0, 18.0), 0.0, op(b.tx));
+            let tw = if text.is_empty() { 0.0 } else { self.cx.c.width(&shown, F::Body) + 1.0 };
+            self.cx.c.fill_rr((x + 12.0 + tw, y + 7.0, 1.0, 18.0), 0.0, op(b.tx));
         }
     }
 }

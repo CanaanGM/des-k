@@ -13,7 +13,7 @@ impl Ctx<'_, '_> {
         let (note, head, chips) = pad_state(&st, back);
         let mut h = 0.0;
         if let Some(n) = note {
-            h += self.note(X0, y, self.cw, &n) + 12.0;
+            h += self.cx.note(X0, y, self.cw, &n) + 12.0;
         }
         for (g, fingers) in [(0usize, 3u8), (1, 4)] {
             h += self.card(y + h, |c, y| {
@@ -38,8 +38,8 @@ impl Ctx<'_, '_> {
             if give {
                 c.sep(y + h);
                 let cap = [t("Windows uses its own 3- and 4-finger gestures again from your next sign-in. Until then, none work. Quit does the same.")];
-                let bw = c.btn_w("Give back", None);
-                h += c.row(y + h, "Give back to Windows", &cap, (bw, 32.0), |c, x, y| { c.button(Ctl::Pad(Pad::GiveBack), x, y, "Give back", None, false, 1); }, None);
+                let bw = c.cx.btn_w("Give back", None);
+                h += c.row(y + h, "Give back to Windows", &cap, (bw, 32.0), |c, x, y| { c.cx.button(Ctl::Pad(Pad::GiveBack), x, y, "Give back", None, false, 1); }, None);
             }
             h
         });
@@ -48,7 +48,7 @@ impl Ctx<'_, '_> {
 
     /// One gesture row: Swipe or Tap, Windows' state for it, and its pickers.
     fn gesture_row(&mut self, y: f32, fingers: u8, tap: bool, chip: Option<Chip>) -> f32 {
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         let motions: &[Motion] = if tap { &[Motion::Tap] } else { &[Motion::Left, Motion::Right, Motion::Up, Motion::Down] };
         let (x, px) = (X0 + 16.0, X0 + 16.0 + 116.0 + 16.0);
         let pw_all = X0 + self.cw - 16.0 - px;
@@ -61,7 +61,7 @@ impl Ctx<'_, '_> {
             let h = self.picker(row, cx, cy, pw);
             ph = ph.max(cy - y - 8.0 + h);
         }
-        self.c.text(x, y + 8.0 + 6.0, 20.0, if tap { "Tap" } else { "Swipe" }, F::Bold, b.tx);
+        self.cx.c.text(x, y + 8.0 + 6.0, 20.0, if tap { "Tap" } else { "Swipe" }, F::Bold, b.tx);
         if let Some(ch) = chip {
             let (icon, text, col) = match ch {
                 Chip::Ok => (Some(I_OK), "Off in Windows", b.good),
@@ -73,17 +73,17 @@ impl Ctx<'_, '_> {
             };
             let mut cx = x;
             if let Some(i) = icon {
-                self.icon(cx, y + 36.0, 16.0, i, F::IconSmall, col);
+                self.cx.icon(cx, y + 36.0, 16.0, i, F::IconSmall, col);
                 cx += 16.0;
             }
-            self.c.text(cx, y + 36.0, 16.0, text, F::Small, b.tx2);
+            self.cx.c.text(cx, y + 36.0, 16.0, text, F::Small, b.tx2);
         }
         8.0 + ph.max(52.0) + 8.0
     }
 
     /// A gesture picker: its direction mark, what it does, its twice action and default, ▾.
     fn picker(&mut self, row: usize, x: f32, y: f32, w: f32) -> f32 {
-        let t = self.c.t;
+        let t = self.cx.c.t;
         let b = t.b;
         let (fingers, motion) = settings::GESTURE_ROWS[row];
         let s = self.s;
@@ -104,10 +104,10 @@ impl Ctx<'_, '_> {
         let sub = sub.join(" · ");
         let h = if sub.is_empty() { 32.0 } else { 40.0 };
         if open || waiting {
-            self.field((x, y, w, h), b.card, Some(b.acc));
+            self.cx.field((x, y, w, h), b.card, Some(b.acc));
         } else {
-            let fill = if self.hovered(ctl) && !self.ro { mix(b.track, b.tx, 0.05) } else { b.track };
-            self.field((x, y, w, h), fill, None);
+            let fill = if self.cx.hovered(ctl) && !self.cx.ro { mix(b.track, b.tx, 0.05) } else { b.track };
+            self.cx.field((x, y, w, h), fill, None);
         }
         let glyph = match motion {
             Motion::Left => "\u{E72B}",
@@ -118,29 +118,29 @@ impl Ctx<'_, '_> {
         };
         let my = y + (h - 22.0) / 2.0;
         if t.hc {
-            self.c.stroke_rr((x + 6.5, my + 0.5, 21.0, 21.0), 4.0, 1.0, op(b.acc));
+            self.cx.c.stroke_rr((x + 6.5, my + 0.5, 21.0, 21.0), 4.0, 1.0, op(b.acc));
         } else {
-            self.c.fill_rr((x + 6.0, my, 22.0, 22.0), 4.0, op(b.held));
+            self.cx.c.fill_rr((x + 6.0, my, 22.0, 22.0), 4.0, op(b.held));
         }
         let mark = if t.dark && !t.hc { mix(b.acc_b, 0xFFFFFF, 0.28) } else { b.acc_b };
-        let gw = self.c.width(glyph, F::IconTiny);
-        self.icon(x + 6.0 + (22.0 - gw) / 2.0, my, 22.0, glyph, F::IconTiny, mark);
+        let gw = self.cx.c.width(glyph, F::IconTiny);
+        self.cx.icon(x + 6.0 + (22.0 - gw) / 2.0, my, 22.0, glyph, F::IconTiny, mark);
         let lx = x + 36.0;
         let lw = w - 36.0 - 26.0;
-        let ink = if self.ro { b.tx3 } else { b.tx };
+        let ink = if self.cx.ro { b.tx3 } else { b.tx };
         if sub.is_empty() {
-            let shown = self.c.fit(&text, F::Body, lw);
-            self.c.text(lx, y, 32.0, &shown, F::Body, ink);
+            let shown = self.cx.c.fit(&text, F::Body, lw);
+            self.cx.c.text(lx, y, 32.0, &shown, F::Body, ink);
         } else {
-            let shown = self.c.fit(&text, F::Body, lw);
-            self.c.text(lx, y + 2.0, 20.0, &shown, F::Body, ink);
-            let s2 = self.c.fit(&sub, F::Small, lw);
-            self.c.text(lx, y + 21.0, 16.0, &s2, F::Small, b.tx2);
+            let shown = self.cx.c.fit(&text, F::Body, lw);
+            self.cx.c.text(lx, y + 2.0, 20.0, &shown, F::Body, ink);
+            let s2 = self.cx.c.fit(&sub, F::Small, lw);
+            self.cx.c.text(lx, y + 21.0, 16.0, &s2, F::Small, b.tx2);
         }
-        let cw = self.c.width(I_CHEV, F::IconTiny);
-        self.icon(x + w - 10.0 - cw, y, h, I_CHEV, F::IconTiny, b.tx2);
-        self.ring((x, y, w, h), 6.0, ctl);
-        self.hit(ctl, (x, y, w, h), 1);
+        let cw = self.cx.c.width(I_CHEV, F::IconTiny);
+        self.cx.icon(x + w - 10.0 - cw, y, h, I_CHEV, F::IconTiny, b.tx2);
+        self.cx.ring((x, y, w, h), 6.0, ctl);
+        self.cx.hit(ctl, (x, y, w, h), 1);
         let dir = match motion {
             Motion::Left => "swipe left",
             Motion::Right => "swipe right",
@@ -149,7 +149,7 @@ impl Ctx<'_, '_> {
             Motion::Tap => "tap",
         };
         let name = format!("{fingers} fingers, {dir}");
-        self.say(ctl, UIA_ComboBoxControlTypeId, &name, &sub, self.ro, (None, Some(text)));
+        self.cx.say(ctl, UIA_ComboBoxControlTypeId, &name, &sub, self.cx.ro, (None, Some(text)));
         h
     }
 }

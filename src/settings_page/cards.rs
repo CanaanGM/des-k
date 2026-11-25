@@ -66,60 +66,6 @@ pub(super) fn changed(key: &str, was: &str, now: &str) -> String {
 }
 
 impl Ctx<'_, '_> {
-    fn tone_color(&self, tone: Tone) -> u32 {
-        let b = self.c.t.b;
-        match tone {
-            Tone::Info => b.tx2,
-            Tone::Warn => b.warn,
-            Tone::Good => b.good,
-            Tone::Rec => b.acc,
-        }
-    }
-
-    /// A note's text and buttons, from `x`; returns its height. Buttons sit on the right when
-    /// they leave the text room, else under it.
-    fn note_body(&mut self, x: f32, y: f32, w: f32, n: &NoteSpec) -> f32 {
-        let col = self.tone_color(n.tone);
-        let b = self.c.t.b;
-        self.icon(x, y + 2.0, 16.0, n.icon, F::Icon, col);
-        let bw: f32 = n.buttons.iter().map(|(_, l)| self.btn_w(l, None) + 8.0).sum();
-        let beside = bw > 0.0 && bw < w * 0.4;
-        let tx = x + 28.0;
-        let tw = if beside { w - 28.0 - bw - 4.0 } else { w - 28.0 };
-        // No title: the caption alone, on the icon's line (a hex box's typing line).
-        let mut h = if n.title.is_empty() { 2.0 } else { self.c.para(tx, y, tw, 20.0, &[(&n.title, F::Bold, b.tx)]) };
-        if !n.lines.is_empty() {
-            h += self.caption(tx, y + h, tw, &n.lines);
-        }
-        if bw > 0.0 {
-            let by = if beside { y + ((h - 32.0) / 2.0).max(0.0) } else { y + h + 8.0 };
-            let mut bx = if beside { x + w - bw + 8.0 } else { tx };
-            for (ctl, label) in &n.buttons {
-                bx += self.button(*ctl, bx, by, label, None, false, n.group) + 8.0;
-            }
-            h = if beside { h.max(32.0) } else { h + 8.0 + 32.0 };
-        }
-        h
-    }
-
-    /// A note on its own: card colored, with its edge (above a section, a banner, Notes).
-    pub(super) fn note(&mut self, x: f32, y: f32, w: f32, n: &NoteSpec) -> f32 {
-        let h = self.measured(|c| c.note_body(x + 12.0, y + 10.0, w - 24.0, n)) + 20.0;
-        let b = self.c.t.b;
-        self.c.boxed((x, y, w, h), 6.0, b.card, Some(b.line));
-        self.note_body(x + 12.0, y + 10.0, w - 24.0, n);
-        h
-    }
-
-    /// A note inside a row: a dashed line over it, on the row's own background.
-    pub(super) fn in_note(&mut self, x: f32, y: f32, w: f32, n: &NoteSpec) -> f32 {
-        let b = self.c.t.b;
-        if self.c.draw {
-            self.c.stroke_dash((x, y, w, 0.0), 0.0, 1.0, op(b.line), DashStyleDash);
-        }
-        10.0 + self.note_body(x, y + 10.0, w, n) + 2.0
-    }
-
     /// The default and Reset at the end of a caption, when the value differs, or is bad.
     fn default_pieces(&self, key: &'static str, bad: bool) -> Vec<P> {
         let Some(r) = find_row(key) else { return vec![] };
@@ -184,43 +130,43 @@ impl Ctx<'_, '_> {
         }
         cap.extend(self.default_pieces(key, note.is_some()));
         let help: String = cap.iter().map(|p| match p { P::T(s) | P::Why(s) | P::Link(s, _) | P::Mono(s) | P::Warn(s) => s.as_str() }).collect::<String>().trim().to_string();
-        let ro = self.ro;
+        let ro = self.cx.ro;
         match r.kind {
             Kind::Toggle => {
-                let size = (self.switch_w(v != 0), 20.0);
-                self.say(Ctl::Toggle(key), UIA_ButtonControlTypeId, r.title, &help, ro || na, (Some(v != 0), None));
-                self.row(y, r.title, &cap, size, |c, x, y| c.switch(key, x, y, v != 0, na), note.as_ref())
+                let size = (self.cx.switch_w(v != 0), 20.0);
+                self.cx.say(Ctl::Toggle(key), UIA_ButtonControlTypeId, r.title, &help, ro || na, (Some(v != 0), None));
+                self.row(y, r.title, &cap, size, |c, x, y| c.cx.switch(Ctl::Toggle(key), x, y, v != 0, na), note.as_ref())
             }
             Kind::Pair(on, off) => {
-                let size = (self.seg_w(&[on, off]), 28.0);
-                self.say(Ctl::Pick(key), UIA_ComboBoxControlTypeId, r.title, &help, ro, (None, Some(shown(r, v))));
+                let size = (self.cx.seg_w(&[on, off]), 28.0);
+                self.cx.say(Ctl::Pick(key), UIA_ComboBoxControlTypeId, r.title, &help, ro, (None, Some(shown(r, v))));
                 let sel = Some(if v != 0 { 0 } else { 1 });
-                self.row(y, r.title, &cap, size, |c, x, y| c.seg(x, y, &[on, off], sel, false, |i| Ctl::Choice(key, i), Ctl::Pick(key)), note.as_ref())
+                self.row(y, r.title, &cap, size, |c, x, y| c.cx.seg(x, y, &[on, off], sel, false, |i| Ctl::Choice(key, i), Ctl::Pick(key)), note.as_ref())
             }
             Kind::Choice(words) => {
                 let labels: Vec<&str> = words.iter().map(|(_, l)| *l).collect();
-                let size = (self.seg_w(&labels), 28.0);
-                self.say(Ctl::Pick(key), UIA_ComboBoxControlTypeId, r.title, &help, ro || na, (None, Some(shown(r, v))));
-                self.row(y, r.title, &cap, size, |c, x, y| c.seg(x, y, &labels, Some(v as usize), na, |i| Ctl::Choice(key, i), Ctl::Pick(key)), note.as_ref())
+                let size = (self.cx.seg_w(&labels), 28.0);
+                self.cx.say(Ctl::Pick(key), UIA_ComboBoxControlTypeId, r.title, &help, ro || na, (None, Some(shown(r, v))));
+                self.row(y, r.title, &cap, size, |c, x, y| c.cx.seg(x, y, &labels, Some(v as usize), na, |i| Ctl::Choice(key, i), Ctl::Pick(key)), note.as_ref())
             }
             Kind::Step { lo, hi, unit, .. } => {
                 // A bad value shows what des-k uses: the default, already v.
                 let text = shown(r, v);
-                let size = (self.stepper_w(&text), 32.0);
+                let size = (self.cx.stepper_w(&text), 32.0);
                 let spoken = match unit {
                     "%" if v == 0 => "Off".to_string(),
                     "%" => format!("{v} percent"),
                     _ => format!("{v} {}", if unit == "ms" { "milliseconds" } else if unit == "min" { "minutes" } else if unit == "mm" { "millimetres" } else { "" }).trim().to_string(),
                 };
-                self.say(Ctl::Stepper(key), UIA_SpinnerControlTypeId, r.title, &help, ro || na, (None, Some(spoken)));
-                self.row(y, r.title, &cap, size, |c, x, y| c.stepper(key, x, y, (v, unit), (v > lo, v < hi), na, false), note.as_ref())
+                self.cx.say(Ctl::Stepper(key), UIA_SpinnerControlTypeId, r.title, &help, ro || na, (None, Some(spoken)));
+                self.row(y, r.title, &cap, size, |c, x, y| c.cx.stepper(Ctl::steps(key), x, y, step_words(v, unit), (v > lo, v < hi), na, false), note.as_ref())
             }
             Kind::Ladder(ladder) => {
                 let text = shown(r, v);
-                let size = (self.stepper_w(&text), 32.0);
-                self.say(Ctl::Stepper(key), UIA_SpinnerControlTypeId, r.title, &help, ro || na, (None, Some(text)));
+                let size = (self.cx.stepper_w(&text), 32.0);
+                self.cx.say(Ctl::Stepper(key), UIA_SpinnerControlTypeId, r.title, &help, ro || na, (None, Some(text)));
                 let (lo, hi) = (ladder[0], ladder[ladder.len() - 1]);
-                self.row(y, r.title, &cap, size, |c, x, y| c.stepper(key, x, y, (v, MINUTES), (v > lo, v < hi), na, false), note.as_ref())
+                self.row(y, r.title, &cap, size, |c, x, y| c.cx.stepper(Ctl::steps(key), x, y, step_words(v, MINUTES), (v > lo, v < hi), na, false), note.as_ref())
             }
         }
     }
@@ -228,12 +174,12 @@ impl Ctx<'_, '_> {
     // ---- Sections ----
 
     pub(super) fn heading(&mut self, sec: Option<Section>, y: f32) -> f32 {
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         self.out.tops.push((sec, y - self.top0));
         let name = sec.map_or("Notes", Section::name);
-        self.c.text(X0, y, 28.0, name, F::Title, b.tx);
+        self.cx.c.text(X0, y, 28.0, name, F::Title, b.tx);
         if sec == Some(Section::Restore) {
-            self.chip(X0 + self.c.width(name, F::Title) + 12.0, y + 2.0, "\u{E777}", "Applies from des-k's next start");
+            self.cx.chip(X0 + self.cx.c.width(name, F::Title) + 12.0, y + 2.0, "\u{E777}", "Applies from des-k's next start");
         }
         let line = sec.map_or("Lines in settings.toml that des-k skips. Fix them in the file; each note goes once its line is fixed.", Section::line);
         // The color picker's way in, said only when a click works (spec 0021 AC-1, AC-2).
@@ -244,7 +190,7 @@ impl Ctx<'_, '_> {
             _ => "",
         };
         let line = format!("{line}{more}");
-        let h = 30.0 + self.c.para(X0, y + 30.0, self.cw, 20.0, &[(&line, F::Body, b.tx2)]);
+        let h = 30.0 + self.cx.c.para(X0, y + 30.0, self.cw, 20.0, &[(&line, F::Body, b.tx2)]);
         h + 12.0
     }
 
@@ -260,7 +206,7 @@ impl Ctx<'_, '_> {
                 _ => "",
             };
             let n = NoteSpec { tone: Tone::Warn, icon: I_WARN, title: title(p, self.s), lines: vec![t(fix), P::Mono(p.message.clone())], buttons: vec![], group: 1 };
-            h += self.note(X0, y + h, self.cw, &n) + 12.0;
+            h += self.cx.note(X0, y + h, self.cw, &n) + 12.0;
         }
         h
     }
@@ -343,26 +289,19 @@ impl Ctx<'_, '_> {
         if list.is_empty() {
             return 0.0;
         }
-        let b = self.c.t.b;
-        let total = 12.0 + self.measured(|c| list.iter().map(|n| c.note(X0, 0.0, c.cw, n) + 8.0).sum::<f32>()) - 8.0 + 12.0;
-        self.c.fill_rr((NAV, 0.0, self.w.vw - NAV, total), 0.0, op(b.bg));
+        let b = self.cx.c.t.b;
+        let total = 12.0 + self.measured(|c| list.iter().map(|n| c.cx.note(X0, 0.0, c.cw, n) + 8.0).sum::<f32>()) - 8.0 + 12.0;
+        self.cx.c.fill_rr((NAV, 0.0, self.w.vw - NAV, total), 0.0, op(b.bg));
         let mut y = 12.0;
         for n in &list {
-            y += self.note(X0, y, self.cw, n) + 8.0;
+            y += self.cx.note(X0, y, self.cw, n) + 8.0;
         }
         total
     }
 }
 
 /// A note as it is drawn: its tone and icon, title, caption pieces and buttons.
-pub(super) struct NoteSpec {
-    pub(super) tone: Tone,
-    pub(super) icon: &'static str,
-    pub(super) title: String,
-    pub(super) lines: Vec<P>,
-    pub(super) buttons: Vec<(Ctl, &'static str)>,
-    pub(super) group: u8,
-}
+pub(super) type NoteSpec = crate::controls::NoteSpec<Ctl, u8>;
 
 #[cfg(test)]
 mod tests;

@@ -18,6 +18,7 @@ mod log; // first: its info!, warn! and error! macros reach only the modules aft
 mod apps;
 mod backdrop;
 mod cloak;
+mod controls;
 #[cfg(feature = "drill")]
 mod drill;
 mod finder;

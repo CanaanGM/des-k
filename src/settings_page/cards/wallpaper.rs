@@ -281,15 +281,15 @@ impl Ctx<'_, '_> {
     /// The Wallpaper card, built like the Names card: with two or more known screens the
     /// chooser, then a row per workspace in use, then Fit, Dim and Transition.
     pub(super) fn wallpaper(&mut self, y: f32) -> f32 {
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         let (list, i) = wall_chosen(self.w);
         let two = wall_two(self.w, self.s);
         self.out.cards.push((Card::Wallpaper, y - self.top0));
         self.header(y, "Wallpaper", None, "");
         if two {
             let who = if i == 0 { "all screens".to_string() } else { list[i].name.clone() };
-            let rw = self.c.width("For ", F::Small) + self.c.width(&who, F::SmallBold);
-            self.c.para(X0 + self.cw - 16.0 - rw, y + 11.0, rw + 1.0, 16.0, &[("For ", F::Small, b.tx2), (&who, F::SmallBold, b.tx)]);
+            let rw = self.cx.c.width("For ", F::Small) + self.cx.c.width(&who, F::SmallBold);
+            self.cx.c.para(X0 + self.cw - 16.0 - rw, y + 11.0, rw + 1.0, 16.0, &[("For ", F::Small, b.tx2), (&who, F::SmallBold, b.tx)]);
         }
         let mut h = 38.0;
         if self.w.pics.wall_failed {
@@ -301,7 +301,7 @@ impl Ctx<'_, '_> {
                 buttons: vec![],
                 group: 1,
             };
-            h += 12.0 + self.note_body(X0 + 16.0, y + h + 12.0, self.cw - 32.0, &n) + 12.0;
+            h += 12.0 + self.cx.note_body(X0 + 16.0, y + h + 12.0, self.cw - 32.0, &n) + 12.0;
             self.sep(y + h);
         }
         if two {
@@ -336,7 +336,7 @@ impl Ctx<'_, '_> {
             }
         };
         let name = list[i].name.clone();
-        self.say(Ctl::WallScreens, UIA_ComboBoxControlTypeId, "Screen", &cap, false, (None, Some(name.clone())));
+        self.cx.say(Ctl::WallScreens, UIA_ComboBoxControlTypeId, "Screen", &cap, false, (None, Some(name.clone())));
         self.row(y, "Screen", &[t(cap)], (WALL_PICK_W, 32.0), |c, x, y| c.screen_picker(Ctl::WallScreens, x, y, WALL_PICK_W, &name), None)
     }
 
@@ -382,7 +382,7 @@ impl Ctx<'_, '_> {
                 }
                 // One click from the reason to the fix, for the screens plugged in only (spec 0026
                 // AC-13 grown on 2026-11-21: you asked for it, VS Code's "also modified in" style).
-                if unused && !self.ro {
+                if unused && !self.cx.ro {
                     cap.push(P::Link(" Use this there too".into(), Ctl::WallUse(k)));
                 }
                 cap
@@ -390,9 +390,9 @@ impl Ctx<'_, '_> {
             (None, WallState::Follow) if all_none => vec![t("Follows all screens, which has no picture for it.")],
             (None, WallState::Follow) if show => vec![t(format!("Follows all screens: a slideshow of {pictures}."))],
             (None, WallState::Follow) => vec![t("Follows all screens.")],
-            (None, WallState::Own) if show => [Some(t("Its own slideshow on this screen.")), same(self.ro)].into_iter().flatten().collect(),
-            (None, WallState::Own) => [Some(t("Its own picture on this screen.")), same(self.ro)].into_iter().flatten().collect(),
-            (None, WallState::Windows) => [Some(t("Your Windows wallpaper on this screen.")), same(self.ro)].into_iter().flatten().collect(),
+            (None, WallState::Own) if show => [Some(t("Its own slideshow on this screen.")), same(self.cx.ro)].into_iter().flatten().collect(),
+            (None, WallState::Own) => [Some(t("Its own picture on this screen.")), same(self.cx.ro)].into_iter().flatten().collect(),
+            (None, WallState::Windows) => [Some(t("Your Windows wallpaper on this screen.")), same(self.cx.ro)].into_iter().flatten().collect(),
         };
         let (label, grey) = match state {
             WallState::Follow => (format!("{} · all screens", if key.is_empty() { "Windows wallpaper" } else { name.as_str() }), true),
@@ -405,7 +405,7 @@ impl Ctx<'_, '_> {
             _ => Mark::Glyph(I_PIC),
         };
         let help: String = cap.iter().map(|p| match p { P::T(s) | P::Why(s) | P::Link(s, _) | P::Mono(s) | P::Warn(s) => s.as_str() }).collect();
-        self.say(Ctl::WallPick(k), UIA_ComboBoxControlTypeId, &format!("Workspace {} wallpaper", k + 1), help.trim(), self.ro, (None, Some(label.clone())));
+        self.cx.say(Ctl::WallPick(k), UIA_ComboBoxControlTypeId, &format!("Workspace {} wallpaper", k + 1), help.trim(), self.cx.ro, (None, Some(label.clone())));
         // A value that can't show leaves your Windows wallpaper on the screen (AC-8).
         let shown = if problem.is_some() { Some(String::new()) } else { wall_shows(self.w, self.s, screen.as_deref(), k) };
         let rect = wall_rect(&self.w.pics.view, screen.as_deref());
@@ -416,7 +416,7 @@ impl Ctx<'_, '_> {
         let iv = self.s.interval_for(k) as i64;
         let iv_grey = self.s.wallpaper_intervals[k].is_none();
         if show {
-            self.say(Ctl::Stepper(IV_KEYS[k]), UIA_SpinnerControlTypeId, &format!("Workspace {} time per picture", k + 1), "", self.ro, (None, Some(minutes(iv))));
+            self.cx.say(Ctl::Stepper(IV_KEYS[k]), UIA_SpinnerControlTypeId, &format!("Workspace {} time per picture", k + 1), "", self.cx.ro, (None, Some(minutes(iv))));
         }
         let ends = (LADDER[0], LADDER[LADDER.len() - 1]);
         self.row(y, &format!("Workspace {}", k + 1), &cap, (cw, 40.0), |c, x, y| {
@@ -425,7 +425,7 @@ impl Ctx<'_, '_> {
             let px = x + chip + 74.0;
             c.app_picker(Ctl::WallPick(k), (px, y + 4.0, WALL_PICK_W), mark, &label, grey);
             if show {
-                c.stepper(IV_KEYS[k], px + WALL_PICK_W + 10.0, y + 4.0, (iv, MINUTES), (iv > ends.0, iv < ends.1), false, iv_grey);
+                c.cx.stepper(Ctl::steps(IV_KEYS[k]), px + WALL_PICK_W + 10.0, y + 4.0, step_words(iv, MINUTES), (iv > ends.0, iv < ends.1), false, iv_grey);
             }
         }, None)
     }
@@ -448,37 +448,37 @@ impl Ctx<'_, '_> {
     /// there (AC-18), or with "" that screen's Windows wallpaper, never dimmed. A plain tile
     /// until its decode is ready; None, a slideshow with no picture yet, is a folder tile.
     fn wall_preview(&mut self, x: f32, y: f32, rect: Option<RECT>, file: Option<&str>) {
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         let (w, h) = wall_box(rect);
         let bx = (x + (64.0 - w) / 2.0, y + (40.0 - h) / 2.0, w, h);
         let size = wall_px(rect, self.w.scale);
         let Some(file) = file else {
-            self.c.fill_rr(bx, 3.0, op(b.track));
-            let gw = self.c.width(I_FOLDER, F::IconSmall);
-            self.icon(bx.0 + (w - gw) / 2.0, bx.1, h, I_FOLDER, F::IconSmall, b.tx2);
-            let edge = if self.c.t.hc { op(b.line) } else { ui::alpha(b.tx, 0.18) };
-            self.c.stroke_rr((bx.0 + 0.5, bx.1 + 0.5, bx.2 - 1.0, bx.3 - 1.0), 3.0, 1.0, edge);
+            self.cx.c.fill_rr(bx, 3.0, op(b.track));
+            let gw = self.cx.c.width(I_FOLDER, F::IconSmall);
+            self.cx.icon(bx.0 + (w - gw) / 2.0, bx.1, h, I_FOLDER, F::IconSmall, b.tx2);
+            let edge = if self.cx.c.t.hc { op(b.line) } else { ui::alpha(b.tx, 0.18) };
+            self.cx.c.stroke_rr((bx.0 + 0.5, bx.1 + 0.5, bx.2 - 1.0, bx.3 - 1.0), 3.0, 1.0, edge);
             return;
         };
         let mut drawn = false;
         match rect {
             Some(r) if !file.is_empty() => {
                 if let Some(p) = crate::wallpaper::cached_ws(r, file, size) {
-                    self.c.picture_rr(bx, 3.0, &p);
+                    self.cx.c.picture_rr(bx, 3.0, &p);
                     let a = crate::backdrop::dim_alpha(self.s.wallpaper_dim);
                     if a > 0 {
-                        self.c.fill_rr(bx, 3.0, ui::alpha(0, a as f32 / 255.0));
+                        self.cx.c.fill_rr(bx, 3.0, ui::alpha(0, a as f32 / 255.0));
                     }
                     drawn = true;
                 }
             }
             Some(r) => match crate::wallpaper::cached(r, size) {
                 Some(crate::wallpaper::Face::Picture(p)) => {
-                    self.c.picture_rr(bx, 3.0, &p);
+                    self.cx.c.picture_rr(bx, 3.0, &p);
                     drawn = true;
                 }
                 Some(crate::wallpaper::Face::Color(c)) => {
-                    self.c.fill_rr(bx, 3.0, op(c));
+                    self.cx.c.fill_rr(bx, 3.0, op(c));
                     drawn = true;
                 }
                 _ => {}
@@ -486,10 +486,10 @@ impl Ctx<'_, '_> {
             None => {}
         }
         if !drawn {
-            self.c.fill_rr(bx, 3.0, op(b.track));
+            self.cx.c.fill_rr(bx, 3.0, op(b.track));
         }
-        let edge = if self.c.t.hc { op(b.line) } else { ui::alpha(b.tx, 0.18) };
-        self.c.stroke_rr((bx.0 + 0.5, bx.1 + 0.5, bx.2 - 1.0, bx.3 - 1.0), 3.0, 1.0, edge);
+        let edge = if self.cx.c.t.hc { op(b.line) } else { ui::alpha(b.tx, 0.18) };
+        self.cx.c.stroke_rr((bx.0 + 0.5, bx.1 + 0.5, bx.2 - 1.0, bx.3 - 1.0), 3.0, 1.0, edge);
     }
 
     /// A Wallpaper row's open menu (spec 0026 AC-13, AC-14; spec 0028 AC-11): Windows wallpaper,
@@ -499,7 +499,7 @@ impl Ctx<'_, '_> {
     /// follows again; an empty folder says which files to put there.
     pub(in crate::settings_page) fn wall_menu(&mut self) {
         let Some((Ctl::WallPick(k), at, focus)) = self.w.chooser else { return };
-        let t = self.c.t;
+        let t = self.cx.c.t;
         let b = t.b;
         let screen = wall_screen(self.w, self.s);
         let files = self.w.wall_files.clone();
@@ -526,29 +526,29 @@ impl Ctx<'_, '_> {
             (false, true) => follow.to_string(),
             (false, false) => String::new(),
         };
-        let para_h = |c: &mut Self, text: &str| c.measured(|c| c.c.para(0.0, 0.0, mw - 28.0, 16.0, &[(text, F::Small, b.tx2)]));
+        let para_h = |c: &mut Self, text: &str| c.measured(|c| c.cx.c.para(0.0, 0.0, mw - 28.0, 16.0, &[(text, F::Small, b.tx2)]));
         let slot = if total == 0 { para_h(self, empty) + 12.0 } else { rows as f32 * 28.0 };
         let foot = if foot_text.is_empty() { 0.0 } else { para_h(self, &foot_text) + 12.0 };
         let mh = 4.0 + 24.0 + 28.0 + 9.0 + slot + 9.0 + 28.0 + foot + 4.0;
         let below = at.1 + at.3 + 4.0;
         let my = if below + mh <= self.w.vh - 8.0 { below } else { (at.1 - mh - 4.0).max(8.0) };
         let mx = at.0.min(self.w.vw - mw - 16.0).max(NAV);
-        self.c.fill_rr((mx - 1.0, my - 1.0, mw + 2.0, mh + 2.0), 9.0, op(if t.hc { b.tx } else { mix(b.bg, b.tx, 0.10) }));
+        self.cx.c.fill_rr((mx - 1.0, my - 1.0, mw + 2.0, mh + 2.0), 9.0, op(if t.hc { b.tx } else { mix(b.bg, b.tx, 0.10) }));
         if !t.hc {
-            self.c.fill_rr((mx, my + 4.0, mw, mh), 8.0, ui::alpha(0, 0.08));
+            self.cx.c.fill_rr((mx, my + 4.0, mw, mh), 8.0, ui::alpha(0, 0.08));
         }
-        self.c.fill_rr((mx, my, mw, mh), 8.0, op(b.card));
-        self.c.text(mx + 14.0, my + 4.0, 24.0, "Picture", F::SmallBold, b.tx2);
+        self.cx.c.fill_rr((mx, my, mw, mh), 8.0, op(b.card));
+        self.cx.c.text(mx + 14.0, my + 4.0, 24.0, "Picture", F::SmallBold, b.tx2);
         let (x, w) = (mx + 4.0, mw - 8.0);
         // On one screen, the line All screens uses says so.
         let tag = |name: &str| -> &'static str { if screen.is_some() && name == all { "All screens" } else { "" } };
         let mut ly = my + 28.0;
         self.wall_line(0, (x, ly, w), "Windows wallpaper", tag(""), Lead::Check(cur == Some(0)), focus == 0);
         ly += 28.0;
-        self.c.rule(mx + 10.0, ly + 4.0, mw - 20.0, op(b.line));
+        self.cx.c.rule(mx + 10.0, ly + 4.0, mw - 20.0, op(b.line));
         ly += 9.0;
         if total == 0 {
-            self.c.para(mx + 14.0, ly + 6.0, mw - 28.0, 16.0, &[(empty, F::Small, b.tx2)]);
+            self.cx.c.para(mx + 14.0, ly + 6.0, mw - 28.0, 16.0, &[(empty, F::Small, b.tx2)]);
         } else {
             for (row, place) in (top..total).take(rows).enumerate() {
                 let ry = ly + row as f32 * 28.0;
@@ -557,9 +557,9 @@ impl Ctx<'_, '_> {
                     self.wall_line(place + 1, (x, ry, w), name, tag(name), Lead::Tick(ticked(name)), focus == place + 1);
                 } else if place == n {
                     if n > 0 {
-                        self.c.rule(mx + 10.0, ry + 4.0, mw - 20.0, op(b.line));
+                        self.cx.c.rule(mx + 10.0, ry + 4.0, mw - 20.0, op(b.line));
                     }
-                    self.c.text(mx + 14.0, ry + 8.0, 20.0, "Slideshows", F::Small, b.tx2);
+                    self.cx.c.text(mx + 14.0, ry + 8.0, 20.0, "Slideshows", F::Small, b.tx2);
                 } else {
                     let (name, count) = &dirs[place - n - 1];
                     let i = place;
@@ -574,30 +574,30 @@ impl Ctx<'_, '_> {
             if total > rows {
                 let th = (slot * rows as f32 / total as f32).max(16.0);
                 let ty = ly + (slot - th) * top as f32 / (total - rows) as f32;
-                self.c.fill_rr((mx + mw - 6.0, ty + 2.0, 3.0, th - 4.0), 1.5, op(b.tx3));
+                self.cx.c.fill_rr((mx + mw - 6.0, ty + 2.0, 3.0, th - 4.0), 1.5, op(b.tx3));
             }
         }
         ly += slot;
-        self.c.rule(mx + 10.0, ly + 4.0, mw - 20.0, op(b.line));
+        self.cx.c.rule(mx + 10.0, ly + 4.0, mw - 20.0, op(b.line));
         ly += 9.0;
         self.wall_line(n + m + 1, (x, ly, w), "Open folder", "", Lead::Open, focus == n + m + 1);
         ly += 28.0;
         if foot > 0.0 {
-            self.c.para(mx + 14.0, ly + 6.0, mw - 28.0, 16.0, &[(&foot_text, F::Small, b.tx2)]);
+            self.cx.c.para(mx + 14.0, ly + 6.0, mw - 28.0, 16.0, &[(&foot_text, F::Small, b.tx2)]);
         }
         // Inside the menu, between lines; after them, since a click takes the first hit it is in.
-        self.hit(Ctl::ScreenItem(usize::MAX), (mx, my, mw, mh), 3);
+        self.cx.hit(Ctl::ScreenItem(usize::MAX), (mx, my, mw, mh), 3);
     }
 
     /// One line of a Wallpaper menu: what leads it (a check, a picture's tick box, a folder mark,
     /// Open folder's mark with its open mark on the right), the name, and on the right "All
     /// screens" or a folder's picture count.
     fn wall_line(&mut self, i: usize, (x, y, w): (f32, f32, f32), name: &str, side: &str, lead: Lead, focus: bool) {
-        let t = self.c.t;
+        let t = self.cx.c.t;
         let b = t.b;
         let ctl = Ctl::ScreenItem(i);
         let on = matches!(lead, Lead::Check(true) | Lead::Folder(true));
-        let hot = self.hovered(ctl) || self.hovered(Ctl::WallTick(i)) || (self.w.kb && focus);
+        let hot = self.cx.hovered(ctl) || self.cx.hovered(Ctl::WallTick(i)) || (self.w.kb && focus);
         let (fill, ink) = match () {
             _ if on && t.hc => (Some(b.hi), b.on_acc),
             _ if on => (Some(b.track), b.tx),
@@ -605,10 +605,10 @@ impl Ctx<'_, '_> {
             _ => (None, b.tx),
         };
         if let Some(f) = fill {
-            self.c.fill_rr((x, y, w, 28.0), 4.0, op(f));
+            self.cx.c.fill_rr((x, y, w, 28.0), 4.0, op(f));
         }
         if on {
-            self.icon(x + 10.0, y, 28.0, I_OK, F::IconSmall, if t.hc { b.on_acc } else { b.acc });
+            self.cx.icon(x + 10.0, y, 28.0, I_OK, F::IconSmall, if t.hc { b.on_acc } else { b.acc });
         }
         let mut nx = x + 30.0;
         let side_ink = if on && t.hc { b.on_acc } else { b.tx2 };
@@ -618,40 +618,40 @@ impl Ctx<'_, '_> {
                 let bx = (x + 8.0, y + 6.0, 16.0, 16.0);
                 if ticked {
                     // High contrast pairs its check ink with the highlight, as a checked line does.
-                    self.c.fill_rr(bx, 3.0, op(if t.hc { b.hi } else { b.acc }));
-                    let iw = self.c.width(I_OK, F::IconTiny);
-                    self.icon(bx.0 + (16.0 - iw) / 2.0, y, 28.0, I_OK, F::IconTiny, b.on_acc);
+                    self.cx.c.fill_rr(bx, 3.0, op(if t.hc { b.hi } else { b.acc }));
+                    let iw = self.cx.c.width(I_OK, F::IconTiny);
+                    self.cx.icon(bx.0 + (16.0 - iw) / 2.0, y, 28.0, I_OK, F::IconTiny, b.on_acc);
                 } else {
-                    self.c.fill_rr(bx, 3.0, op(b.card));
-                    let edge = if self.hovered(Ctl::WallTick(i)) { b.tx } else { b.tx2 };
-                    self.c.stroke_rr((bx.0 + 0.5, bx.1 + 0.5, 15.0, 15.0), 3.0, 1.0, op(edge));
+                    self.cx.c.fill_rr(bx, 3.0, op(b.card));
+                    let edge = if self.cx.hovered(Ctl::WallTick(i)) { b.tx } else { b.tx2 };
+                    self.cx.c.stroke_rr((bx.0 + 0.5, bx.1 + 0.5, 15.0, 15.0), 3.0, 1.0, op(edge));
                 }
                 nx = x + 34.0;
                 // Before the line's own hit, since a click takes the first hit it is in.
-                self.hit(Ctl::WallTick(i), (x, y, 30.0, 28.0), 3);
+                self.cx.hit(Ctl::WallTick(i), (x, y, 30.0, 28.0), 3);
             }
             Lead::Folder(_) => {
-                self.icon(nx, y, 28.0, I_FOLDER, F::IconSmall, side_ink);
+                self.cx.icon(nx, y, 28.0, I_FOLDER, F::IconSmall, side_ink);
                 nx += 24.0;
             }
             Lead::Open => {
-                self.icon(nx, y, 28.0, I_FOLDER, F::IconSmall, side_ink);
+                self.cx.icon(nx, y, 28.0, I_FOLDER, F::IconSmall, side_ink);
                 nx += 24.0;
-                let ow = self.c.width(I_OUT, F::IconSmall);
-                self.icon(x + w - 10.0 - ow, y, 28.0, I_OUT, F::IconSmall, side_ink);
+                let ow = self.cx.c.width(I_OUT, F::IconSmall);
+                self.cx.icon(x + w - 10.0 - ow, y, 28.0, I_OUT, F::IconSmall, side_ink);
             }
             Lead::Check(_) => {}
         }
-        let sw = if side.is_empty() { 0.0 } else { self.c.width(side, F::Small) + 10.0 };
-        let shown = self.c.fit(name, F::Body, x + w - nx - 6.0 - sw);
-        self.c.text(nx, y, 28.0, &shown, F::Body, ink);
+        let sw = if side.is_empty() { 0.0 } else { self.cx.c.width(side, F::Small) + 10.0 };
+        let shown = self.cx.c.fit(name, F::Body, x + w - nx - 6.0 - sw);
+        self.cx.c.text(nx, y, 28.0, &shown, F::Body, ink);
         if !side.is_empty() {
-            self.c.text(x + w - sw, y, 28.0, side, F::Small, side_ink);
+            self.cx.c.text(x + w - sw, y, 28.0, side, F::Small, side_ink);
         }
         if self.w.kb && focus {
-            self.c.stroke_rr((x + 1.0, y + 1.0, w - 2.0, 26.0), 4.0, 2.0, op(b.tx));
+            self.cx.c.stroke_rr((x + 1.0, y + 1.0, w - 2.0, 26.0), 4.0, 2.0, op(b.tx));
         }
-        self.hit(ctl, (x, y, w, 28.0), 3);
+        self.cx.hit(ctl, (x, y, w, 28.0), 3);
     }
 }
 
