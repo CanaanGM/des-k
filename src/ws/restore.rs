@@ -48,7 +48,7 @@ pub(super) fn restore_in(s: &mut State) {
             // No shell: every window still exists and stays hidden, so every one is kept.
             let (_, stuck) = show_all(std::mem::take(list), |raw| match &shell {
                 Some(sh) => uncloak(sh, raw),
-                None => unsafe { IsWindow(Some(HWND(raw as *mut _))) }.as_bool().then_some(false),
+                None => win::is_window(Some(HWND(raw as *mut _))).as_bool().then_some(false),
             });
             left += stuck.len();
             *list = stuck;
@@ -172,7 +172,7 @@ pub fn load() -> Restoring {
     };
     // A restart in the same sign in: the same window, same pid, is still pinned.
     if !new_sign_in {
-        let same = |&(raw, pid): &(isize, u32)| unsafe { IsWindow(Some(HWND(raw as *mut _))) }.as_bool() && pid_of(HWND(raw as *mut _)) == pid;
+        let same = |&(raw, pid): &(isize, u32)| win::is_window(Some(HWND(raw as *mut _))).as_bool() && pid_of(HWND(raw as *mut _)) == pid;
         s.pinned.extend(pins.iter().filter(|p| same(p)).map(|&(raw, _)| raw));
         // Still that window, still open: it still waits for its screen (spec 0016 AC-8).
         for (raw, a, fp) in adopt_away {
@@ -219,7 +219,7 @@ pub fn load() -> Restoring {
         for (dev, ws, raw, pid) in adopt {
             let h = HWND(raw as *mut _);
             let on_current = unsafe { vdm.IsWindowOnCurrentVirtualDesktop(h) }.is_ok_and(|b| b.as_bool());
-            if !(unsafe { IsWindow(Some(h)) }.as_bool() && pid_of(h) == pid && cloaked(h) == 2 && on_current) {
+            if !(win::is_window(Some(h)).as_bool() && pid_of(h) == pid && cloaked(h) == 2 && on_current) {
                 continue; // closed, reused handle, or not hidden by us any more
             }
             match s.monitors.get_mut(&dev) {
@@ -439,7 +439,7 @@ pub fn restore_tick() -> bool {
                 info!("restore: {} -> {dev} workspace {}/{count}", p.app, ws + 1);
                 if was_fg {
                     let mon = unsafe { MonitorFromWindow(p.h, MONITOR_DEFAULTTONEAREST) };
-                    let next = app_windows_on(mon).first().copied().unwrap_or(unsafe { GetShellWindow() });
+                    let next = app_windows_on(mon).first().copied().unwrap_or(win::get_shell_window());
                     unsafe {
                         let _ = SetForegroundWindow(next);
                         if GetForegroundWindow() != next {
@@ -540,7 +540,7 @@ pub fn resync() {
         for list in &mut m.hidden {
             list.retain(|&raw| {
                 let h = HWND(raw as *mut _);
-                if !unsafe { IsWindow(Some(h)) }.as_bool() {
+                if !win::is_window(Some(h)).as_bool() {
                     return false;
                 }
                 match shell.hide(h, true) {

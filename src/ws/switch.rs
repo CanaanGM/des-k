@@ -55,7 +55,7 @@ pub(super) fn pick<T>(from: Source, act_on: settings::ActOn, focus: impl FnOnce(
 pub(super) fn focused_screen() -> Option<HMONITOR> {
     let fg = unsafe { GetForegroundWindow() };
     let class = class_name(fg);
-    if is_desktop(fg, unsafe { GetShellWindow() }, &class) || matches!(class.as_str(), "Shell_TrayWnd" | "Shell_SecondaryTrayWnd") {
+    if is_desktop(fg, win::get_shell_window(), &class) || matches!(class.as_str(), "Shell_TrayWnd" | "Shell_SecondaryTrayWnd") {
         return None;
     }
     let mon = unsafe { MonitorFromWindow(fg, MONITOR_DEFAULTTONULL) };
@@ -172,7 +172,7 @@ pub fn follow(hwnd: HWND) {
     }
     let mut s = state();
     // An owned dialog is never hidden itself, so it follows its owner.
-    let owner = unsafe { GetAncestor(hwnd, GA_ROOTOWNER) };
+    let owner = win::get_ancestor(hwnd, GA_ROOTOWNER);
     let found = [hwnd, owner].into_iter().find_map(|h| {
         s.monitors.iter().find_map(|(dev, m)| Some((h, dev.clone(), m.hidden.iter().position(|l| l.contains(&(h.0 as isize)))?)))
     });
@@ -334,7 +334,7 @@ pub(super) fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize,
 
     let fg = unsafe { GetForegroundWindow() };
     // Leaving an empty workspace left focus on the desktop; nobody's focus to keep there.
-    let fg_desktop = is_desktop(fg, unsafe { GetShellWindow() }, &class_name(fg));
+    let fg_desktop = is_desktop(fg, win::get_shell_window(), &class_name(fg));
     let mut fg_hidden = false;
     let hides = to_hide(crate::cloak::unknown(), || app_windows_on(mon), keep, &s.pinned);
     // Top first, as a hidden list keeps them, so showing them later is top-down (no flash).
@@ -401,7 +401,7 @@ pub(super) fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize,
             }
         },
         FocusAfter::Next(h) => unsafe { let _ = SetForegroundWindow(h); },
-        FocusAfter::Desktop => unsafe { let _ = SetForegroundWindow(GetShellWindow()); },
+        FocusAfter::Desktop => unsafe { let _ = SetForegroundWindow(win::get_shell_window()); },
     }
     if crate::cloak::unknown() {
         info!("{name}: workspace {}/{count} (hiding is off on this Windows)", target + 1);
@@ -445,7 +445,7 @@ pub(super) fn show_all(list: Vec<isize>, mut show: impl FnMut(isize) -> Option<b
 /// show_all's `show` for one window des-k hid.
 pub(super) fn uncloak(shell: &Shell, raw: isize) -> Option<bool> {
     let h = HWND(raw as *mut _);
-    if !unsafe { IsWindow(Some(h)) }.as_bool() {
+    if !win::is_window(Some(h)).as_bool() {
         return None;
     }
     // On an unknown layout nothing can be shown: kept, and the caller says so once (spec 0030 AC-5).

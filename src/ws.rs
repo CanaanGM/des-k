@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use windows::Win32::{
     Foundation::{HWND, LPARAM, POINT, RECT},
     Graphics::{
-        Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute},
+        Dwm::DWMWA_CLOAKED,
         Gdi::{
             EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MONITORINFOEXW, MonitorFromPoint, MonitorFromRect,
             MonitorFromWindow,
@@ -17,7 +17,6 @@ use windows::Win32::{
     },
     System::{
         Com::{CLSCTX_ALL, CoCreateInstance},
-        SystemInformation::GetTickCount,
     },
     UI::{
         Shell::{IVirtualDesktopManager, VirtualDesktopManager},
@@ -39,6 +38,7 @@ pub(crate) mod screens;
 pub(crate) mod store;
 pub(crate) mod switch;
 pub(crate) mod views;
+mod win;
 
 // Each piece sees the others through these, the way their code saw one file before.
 use focus::*;

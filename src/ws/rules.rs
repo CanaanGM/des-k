@@ -95,7 +95,7 @@ pub(super) fn place_in(s: &mut State, h: HWND, rule: &settings::Rule, name: Stri
         match hide_new(&shell, h) {
             Ok(retries) => {
                 how = match shown {
-                    Some(t) => format!("hidden {} ms after it showed, {retries} retries", unsafe { GetTickCount() }.wrapping_sub(t)),
+                    Some(t) => format!("hidden {} ms after it showed, {retries} retries", win::get_tick_count().wrapping_sub(t)),
                     None => format!("hidden, open since before des-k started, {retries} retries"),
                 }
             }
@@ -139,7 +139,7 @@ pub(super) fn place_in(s: &mut State, h: HWND, rule: &settings::Rule, name: Stri
 /// the desktop (AC-5). It is cloaked now, so `app_windows_on` skips it. Windows lets only the
 /// process that got the last input move focus, so des-k types its masked key first.
 pub(super) fn focus_off(app: &str, mon: HMONITOR) {
-    let next = app_windows_on(mon).first().copied().unwrap_or(unsafe { GetShellWindow() });
+    let next = app_windows_on(mon).first().copied().unwrap_or(win::get_shell_window());
     keys::mask();
     // Its return, not GetForegroundWindow: the other app's thread may take a moment to activate.
     if !unsafe { SetForegroundWindow(next) }.as_bool() {
@@ -161,7 +161,7 @@ pub fn recloak(h: HWND) {
     let s = &mut *guard;
     let raw = h.0 as isize;
     let Some(r) = s.ruled.get(&raw) else { return };
-    if r.at.elapsed() >= HOLD_FOR || !unsafe { IsWindow(Some(h)) }.as_bool() || cloaked(h) != 0 {
+    if r.at.elapsed() >= HOLD_FOR || !win::is_window(Some(h)).as_bool() || cloaked(h) != 0 {
         return;
     }
     let Some((id, k)) = hidden_on(s, raw) else { return };
@@ -195,7 +195,7 @@ pub fn recloak(h: HWND) {
         r.recloaks += 1;
     }
     let fg = unsafe { GetForegroundWindow() };
-    if fg == h || unsafe { GetAncestor(fg, GA_ROOTOWNER) } == h {
+    if fg == h || win::get_ancestor(fg, GA_ROOTOWNER) == h {
         let mon = mon_of(s, &from).unwrap_or_else(|| unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) });
         focus_off(&app, mon);
     }
@@ -215,7 +215,7 @@ pub(super) fn hide_new(shell: &Shell, h: HWND) -> windows::core::Result<u32> {
                 let _ = shell.hide(h, false);
                 return Err(e);
             }
-            Err(e) if e.code() == NO_VIEW && retries < NEW_TRIES && unsafe { IsWindow(Some(h)) }.as_bool() => {
+            Err(e) if e.code() == NO_VIEW && retries < NEW_TRIES && win::is_window(Some(h)).as_bool() => {
                 std::thread::sleep(NEW_RETRY);
                 retries += 1;
             }
@@ -239,7 +239,7 @@ pub fn settle_tick() -> bool {
         let h = HWND(raw as *mut _);
         let Some(st) = s.settle.get(&raw) else { continue };
         let (target, spot, puts) = (st.target.clone(), st.spot, st.puts);
-        if Instant::now() >= st.until || !unsafe { IsWindow(Some(h)) }.as_bool() {
+        if Instant::now() >= st.until || !win::is_window(Some(h)).as_bool() {
             s.settle.remove(&raw);
             continue;
         }

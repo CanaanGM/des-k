@@ -6,11 +6,9 @@ pub(super) fn focus(h: HWND) {
     if hung(h) {
         return;
     }
-    unsafe {
-        let _ = SetForegroundWindow(h);
-        if IsIconic(h).as_bool() {
-            let _ = ShowWindow(h, SW_RESTORE);
-        }
+    unsafe { let _ = SetForegroundWindow(h); }
+    if win::is_iconic(h).as_bool() {
+        let _ = win::show_window(h, SW_RESTORE);
     }
 }
 
@@ -26,7 +24,7 @@ pub fn show_desktop() {
         let back: Vec<HWND> = std::mem::take(&mut m.desktop)
             .into_iter()
             .map(|raw| HWND(raw as *mut _))
-            .filter(|&h| unsafe { IsWindow(Some(h)).as_bool() && IsIconic(h).as_bool() })
+            .filter(|&h| win::is_window(Some(h)).as_bool() && win::is_iconic(h).as_bool())
             .collect();
         // Bottom first, so the old top one ends on top, with focus.
         for &h in back.iter().rev() {
@@ -34,14 +32,14 @@ pub fn show_desktop() {
         }
         return info!("show desktop: {name}, {} window(s) back", back.len());
     }
-    let list: Vec<HWND> = app_windows_on(mon).into_iter().filter(|&h| !unsafe { IsIconic(h) }.as_bool() && !hung(h)).collect();
+    let list: Vec<HWND> = app_windows_on(mon).into_iter().filter(|&h| !win::is_iconic(h).as_bool() && !hung(h)).collect();
     let fg = unsafe { GetForegroundWindow() };
     for &h in &list {
-        unsafe { let _ = ShowWindow(h, SW_SHOWMINNOACTIVE); }
+        let _ = win::show_window(h, SW_SHOWMINNOACTIVE);
     }
     // Don't leave keyboard focus in a window we just minimized.
     if list.contains(&fg) {
-        unsafe { let _ = SetForegroundWindow(GetShellWindow()); }
+        unsafe { let _ = SetForegroundWindow(win::get_shell_window()); }
     }
     m.desktop = list.iter().map(|h| h.0 as isize).collect();
     info!("show desktop: {name}, {} window(s) minimized", list.len());
@@ -51,7 +49,7 @@ pub fn show_desktop() {
 /// the mouse, not minimized, top first.
 pub(super) fn stack() -> (String, Vec<HWND>) {
     let (mon, name) = under_mouse();
-    (name, app_windows_on(mon).into_iter().filter(|&h| !unsafe { IsIconic(h) }.as_bool()).collect())
+    (name, app_windows_on(mon).into_iter().filter(|&h| !win::is_iconic(h).as_bool()).collect())
 }
 
 /// The bottom window comes to the top, with focus; repeated, it visits every window (spec 0011).
@@ -72,7 +70,7 @@ pub fn app_previous() {
     };
     let next = stack.get(1).copied().unwrap_or(top);
     if next != top && !hung(top) {
-        unsafe { let _ = SetWindowPos(top, Some(HWND_BOTTOM), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE); }
+        let _ = win::set_window_pos(top, Some(HWND_BOTTOM), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
     focus(next);
     info!("app_previous: {} on {name}", who(next));
@@ -93,7 +91,7 @@ pub fn attention(h: HWND) -> Option<Popup> {
         return None;
     }
     let mut s = state();
-    let root = unsafe { GetAncestor(h, GA_ROOTOWNER) };
+    let root = win::get_ancestor(h, GA_ROOTOWNER);
     let (raw, (id, ws)) = [h, root].into_iter().filter(|w| !w.is_invalid()).find_map(|w| Some((w.0 as isize, hidden_on(&s, w.0 as isize)?)))?;
     if !s.wants.insert(raw) {
         return None;

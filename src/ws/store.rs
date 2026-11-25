@@ -84,7 +84,7 @@ pub(super) fn try_save(s: &mut State) -> Result<(), String> {
     let ruled = std::mem::take(&mut s.ruled);
     s.ruled = ruled.into_iter().filter(|&(h, _)| hidden_on(s, h).is_some()).collect();
     // A closed window's handle can come back for a new window, which must count as new.
-    s.opened.retain(|&(h, pid)| unsafe { IsWindow(Some(HWND(h as *mut _))) }.as_bool() && pid_of(HWND(h as *mut _)) == pid);
+    s.opened.retain(|&(h, pid)| win::is_window(Some(HWND(h as *mut _))).as_bool() && pid_of(HWND(h as *mut _)) == pid);
     save_lines(s, true)
 }
 
@@ -149,7 +149,7 @@ pub(super) fn save_lines(s: &mut State, fingerprints: bool) -> Result<(), String
         }
         line(&Fp { app, class: crate::restore::clean(&class_name(h)), title: crate::restore::clean(&title(h)) })
     };
-    s.pinned.retain(|&raw| unsafe { IsWindow(Some(HWND(raw as *mut _))) }.as_bool());
+    s.pinned.retain(|&raw| win::is_window(Some(HWND(raw as *mut _))).as_bool());
     // The spot of the last check: a hidden window of a screen just unplugged keeps its old one.
     let spot = |raw: isize| s.spots.get(&raw).map_or_else(|| spot_of(HWND(raw as *mut _)), |x| x.1).text();
     // A window listed but not cloaked yet (spec 0034 AC-1) is still in view: its W line is its only one.
@@ -277,7 +277,7 @@ pub fn rescue() {
     let (out, shown, left) = rescued(&text, |raw, pid| {
         let h = HWND(raw as *mut _);
         let on_current = vdm.as_ref().is_some_and(|v| unsafe { v.IsWindowOnCurrentVirtualDesktop(h) }.is_ok_and(|b| b.as_bool()));
-        if !(unsafe { IsWindow(Some(h)) }.as_bool() && pid_of(h) == pid && cloaked(h) == 2 && on_current) {
+        if !(win::is_window(Some(h)).as_bool() && pid_of(h) == pid && cloaked(h) == 2 && on_current) {
             return None; // closed, reused handle, or not hidden by des-k
         }
         // On an unknown layout it stays listed; cloak.rs logged why once (spec 0030 AC-10).

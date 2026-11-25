@@ -174,7 +174,7 @@ pub(super) fn moved(s: &State, count: usize, name: fn(&State, &str) -> String) -
     let at = |m: &Monitor| m.device.as_ref().and_then(|d| order.iter().position(|o| o == d));
     let mut ids: Vec<&String> = s.monitors.keys().collect();
     ids.sort_by_key(|id| (at(&s.monitors[*id]).unwrap_or(usize::MAX), id.to_string()));
-    let live = |raw: isize| unsafe { IsWindow(Some(HWND(raw as *mut _))) }.as_bool();
+    let live = |raw: isize| win::is_window(Some(HWND(raw as *mut _))).as_bool();
     let mut out = Vec::new();
     for id in ids {
         let m = &s.monitors[id];
@@ -317,17 +317,17 @@ pub fn forget(id: &str) {
 /// Where a window really sits, in screen coordinates; a minimized one where it restores to.
 pub fn real_rect(hwnd: HWND) -> RECT {
     let mut r = RECT::default();
-    if unsafe { IsIconic(hwnd) }.as_bool() {
+    if win::is_iconic(hwnd).as_bool() {
         return normal_rect(hwnd);
     }
-    unsafe { let _ = GetWindowRect(hwnd, &mut r); }
+    let _ = win::get_window_rect(hwnd, &mut r);
     r
 }
 
 /// Where a window restores to, in screen coordinates.
 pub(super) fn normal_rect(hwnd: HWND) -> RECT {
     let mut wp = WINDOWPLACEMENT { length: size_of::<WINDOWPLACEMENT>() as u32, ..Default::default() };
-    unsafe { let _ = GetWindowPlacement(hwnd, &mut wp); }
+    let _ = win::get_window_placement(hwnd, &mut wp);
     shift(wp.rcNormalPosition, 1)
 }
 
@@ -339,7 +339,7 @@ pub(super) fn shift(r: RECT, sign: i32) -> RECT {
 
 /// A window's spot now (spec 0016). A cloaked window reads the same: cloaking does not move it.
 pub(super) fn spot_of(h: HWND) -> Spot {
-    let (min, max) = unsafe { (IsIconic(h).as_bool(), IsZoomed(h).as_bool()) };
+    let (min, max) = (win::is_iconic(h).as_bool(), win::is_zoomed(h).as_bool());
     let state = if min { 'm' } else if max { 'x' } else { 'n' };
     let rect = if state == 'n' { real_rect(h) } else { normal_rect(h) };
     Spot { rect, state }
@@ -424,7 +424,7 @@ pub(super) fn check_in(s: &mut State, present: Vec<Screen>, tick: bool) -> Vec<N
     let mut dirty = settled && s.spots_fresh && claims(s, &now);
     let before = s.away.len();
     s.away.retain(|&raw, a| {
-        let open = unsafe { IsWindow(Some(HWND(raw as *mut _))) }.as_bool() && pid_of(HWND(raw as *mut _)) == a.pid;
+        let open = win::is_window(Some(HWND(raw as *mut _))).as_bool() && pid_of(HWND(raw as *mut _)) == a.pid;
         if !open {
             info!("a window waiting for {} closed", a.home);
         }
@@ -553,7 +553,7 @@ pub(super) fn mark_away(s: &mut State, id: &str) -> usize {
     let mut n = 0;
     for (raw, spot) in list {
         let h = HWND(raw as *mut _);
-        if !unsafe { IsWindow(Some(h)) }.as_bool() || s.away.contains_key(&raw) {
+        if !win::is_window(Some(h)).as_bool() || s.away.contains_key(&raw) {
             continue; // closed, or already away from a screen it left before (invariant 3)
         }
         let pinned = s.pinned.contains(&raw);
@@ -586,7 +586,7 @@ pub(super) fn fold(s: &mut State, id: &str, notes: &mut Vec<Note>) {
     for (ws, list) in lists.into_iter().enumerate() {
         for raw in list {
             let h = HWND(raw as *mut _);
-            if !unsafe { IsWindow(Some(h)) }.as_bool() {
+            if !win::is_window(Some(h)).as_bool() {
                 continue;
             }
             let spot = fold_spot(s.spots.get(&raw), id, || spot_of(h));
@@ -754,7 +754,7 @@ pub(super) fn give_back(s: &mut State, id: &str, last: bool, notes: &mut Vec<Not
     }
     if fg_hidden {
         // Never leave keyboard focus in a window just hidden.
-        let next = app_windows().first().copied().unwrap_or(unsafe { GetShellWindow() });
+        let next = app_windows().first().copied().unwrap_or(win::get_shell_window());
         unsafe { let _ = SetForegroundWindow(next); }
     }
     let e = s.back.get_mut(id).expect("counted by check_in");
@@ -850,7 +850,7 @@ pub(super) fn refresh_spots(s: &mut State, now: &HashSet<String>) {
     }
     // Off every screen for a moment (Windows still moving it): keep what it had.
     for (raw, old) in std::mem::take(&mut s.spots) {
-        if s.away.contains_key(&raw) && unsafe { IsWindow(Some(HWND(raw as *mut _))) }.as_bool() {
+        if s.away.contains_key(&raw) && win::is_window(Some(HWND(raw as *mut _))).as_bool() {
             fresh.entry(raw).or_insert(old);
         }
     }

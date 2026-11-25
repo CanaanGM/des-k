@@ -6,7 +6,7 @@ use super::*;
 /// The indicator lights every workspace while it is pinned.
 pub fn pin() {
     // A dialog is never hidden itself, so its owner is what a switch would hide.
-    let h = unsafe { GetAncestor(GetForegroundWindow(), GA_ROOTOWNER) };
+    let h = unsafe { win::get_ancestor(GetForegroundWindow(), GA_ROOTOWNER) };
     if !app_windows().contains(&h) {
         return info!("pin: nothing to pin ({}, {})", who(h), class_name(h));
     }
@@ -48,7 +48,7 @@ pub fn send(to: To, follow: bool) {
     // A quick second stay press moves the window the last one sent, not the one that got focus.
     let repeat = s
         .sent
-        .filter(|&(raw, t)| !follow && recent(t) && unsafe { IsWindow(Some(HWND(raw as *mut _))) }.as_bool())
+        .filter(|&(raw, t)| !follow && recent(t) && win::is_window(Some(HWND(raw as *mut _))).as_bool())
         .and_then(|(raw, _)| s.monitors.iter().find_map(|(dev, m)| Some((raw, dev.clone(), m.hidden.iter().position(|l| l.contains(&raw))?))));
     let is_repeat = repeat.is_some();
     let (h, mon, name, from) = match repeat {
@@ -60,7 +60,7 @@ pub fn send(to: To, follow: bool) {
         }
         None => {
             // A dialog is never hidden itself, so its owner goes.
-            let h = unsafe { GetAncestor(GetForegroundWindow(), GA_ROOTOWNER) };
+            let h = unsafe { win::get_ancestor(GetForegroundWindow(), GA_ROOTOWNER) };
             // Only what a switch would hide: never the desktop, the taskbar, or a tool window.
             if !app_windows().contains(&h) {
                 return info!("send: nothing to send ({}, {})", who(h), class_name(h));
@@ -139,7 +139,7 @@ pub fn send(to: To, follow: bool) {
         crate::drill::at(crate::drill::Stop::KillAfterSend);
         unpinned = sent(&mut s);
         // It is cloaked now, so the filter skips it.
-        let next = app_windows_on(mon).first().copied().unwrap_or(unsafe { GetShellWindow() });
+        let next = app_windows_on(mon).first().copied().unwrap_or(win::get_shell_window());
         unsafe { let _ = SetForegroundWindow(next); }
     } else if target == active {
         let Some(shell) = shell() else { return };
@@ -180,7 +180,7 @@ pub(super) fn work_area(mon: HMONITOR) -> RECT {
 /// Land on a window wherever it is: a hidden one switches its screen to its workspace,
 /// exactly like a switch; one on screen just gets focus (spec 0007).
 pub fn go_to(hwnd: HWND) -> Result<(), Miss> {
-    if !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+    if !win::is_window(Some(hwnd)).as_bool() {
         return Err(Miss::Gone);
     }
     let mut s = state();
@@ -216,7 +216,7 @@ pub fn bring(hwnd: HWND, device: &str) -> Result<(), Miss> {
 /// `bring`'s work. Without `activate` the window only comes to the front, restored, so the
 /// overview that dropped it keeps focus and stays open (spec 0010).
 pub(super) fn show_on(hwnd: HWND, device: &str, activate: bool, who: &str) -> Result<(), Miss> {
-    if !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+    if !win::is_window(Some(hwnd)).as_bool() {
         return Err(Miss::Gone);
     }
     let mut s = state();
@@ -272,12 +272,10 @@ pub(super) fn raise(h: HWND) {
     if hung(h) {
         return;
     }
-    unsafe {
-        if IsIconic(h).as_bool() {
-            let _ = ShowWindow(h, SW_SHOWNOACTIVATE);
-        }
-        let _ = SetWindowPos(h, Some(HWND_TOP), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    if win::is_iconic(h).as_bool() {
+        let _ = win::show_window(h, SW_SHOWNOACTIVATE);
     }
+    let _ = win::set_window_pos(h, Some(HWND_TOP), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
 /// Put a window on workspace `ws` of `device` without switching any screen (an overview
@@ -293,7 +291,7 @@ pub fn place(hwnd: HWND, device: &str, ws: usize) -> Result<(), Miss> {
     if ws == active(device) {
         return show_on(hwnd, device, false, "overview");
     }
-    if !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+    if !win::is_window(Some(hwnd)).as_bool() {
         return Err(Miss::Gone);
     }
     let mut s = state();
@@ -369,14 +367,14 @@ pub fn place(hwnd: HWND, device: &str, ws: usize) -> Result<(), Miss> {
 /// Maximized stays maximized; minimized comes back restored.
 pub(super) fn move_to(hwnd: HWND, old: HMONITOR, new: HMONITOR) -> windows::core::Result<()> {
     let rect = map_rect(work_area(old), work_area(new), normal_rect(hwnd));
-    put(hwnd, Spot { rect, state: if unsafe { IsZoomed(hwnd) }.as_bool() { 'x' } else { 'n' } })
+    put(hwnd, Spot { rect, state: if win::is_zoomed(hwnd).as_bool() { 'x' } else { 'n' } })
 }
 
 /// Place a window at `to`: its rect and normal, maximized or minimized (spec 0016). Never
 /// takes focus: a maximize that does gives it straight back.
 pub(super) fn put(hwnd: HWND, to: Spot) -> windows::core::Result<()> {
     let mut wp = WINDOWPLACEMENT { length: size_of::<WINDOWPLACEMENT>() as u32, ..Default::default() };
-    unsafe { GetWindowPlacement(hwnd, &mut wp)? };
+    win::get_window_placement(hwnd, &mut wp)?;
     let fg = unsafe { GetForegroundWindow() };
     wp.rcNormalPosition = shift(to.rect, -1);
     wp.flags = WINDOWPLACEMENT_FLAGS(0);
@@ -385,22 +383,20 @@ pub(super) fn put(hwnd: HWND, to: Spot) -> windows::core::Result<()> {
         'm' => SW_SHOWMINNOACTIVE.0 as u32,
         _ => SW_SHOWNOACTIVATE.0 as u32,
     };
-    unsafe { SetWindowPlacement(hwnd, &wp)? };
+    win::set_window_placement(hwnd, &wp)?;
     if to.state == 'x' {
         let new = unsafe { MonitorFromRect(&to.rect, MONITOR_DEFAULTTONEAREST) };
         if unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) } != new {
             // Some windows stay maximized where they were: restore onto the new screen, then maximize there.
             wp.showCmd = SW_SHOWNOACTIVATE.0 as u32;
-            unsafe {
-                SetWindowPlacement(hwnd, &wp)?;
-                let _ = ShowWindow(hwnd, SW_SHOWMAXIMIZED);
-            }
+            win::set_window_placement(hwnd, &wp)?;
+            let _ = win::show_window(hwnd, SW_SHOWMAXIMIZED);
         }
         // Crossing to a screen of another scaling, Windows rescales the restore rect, and each
         // trip shrank it (1080x1872, 720x1248, 522x832; tried 2026-11-22). On its screen now, so no rescale.
         if normal_rect(hwnd) != to.rect {
             wp.showCmd = SW_SHOWMAXIMIZED.0 as u32;
-            unsafe { SetWindowPlacement(hwnd, &wp)? };
+            win::set_window_placement(hwnd, &wp)?;
         }
         // There is no maximize without activation.
         if unsafe { GetForegroundWindow() } != fg && !fg.is_invalid() {
@@ -410,10 +406,10 @@ pub(super) fn put(hwnd: HWND, to: Spot) -> windows::core::Result<()> {
     if to.state == 'n' {
         // An app that rescales itself on the new screen's DPI can drift off the mapped size.
         let mut now = RECT::default();
-        unsafe { let _ = GetWindowRect(hwnd, &mut now); }
+        let _ = win::get_window_rect(hwnd, &mut now);
         if now != to.rect {
             let r = to.rect;
-            unsafe { let _ = SetWindowPos(hwnd, None, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE); }
+            let _ = win::set_window_pos(hwnd, None, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
         }
     }
     Ok(())

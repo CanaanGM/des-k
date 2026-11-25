@@ -37,13 +37,13 @@ pub fn names(device: &str) -> Vec<String> {
 
 pub(super) fn pid_of(hwnd: HWND) -> u32 {
     let mut pid = 0;
-    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    win::get_window_thread_process_id(hwnd, Some(&mut pid));
     pid
 }
 
 pub(crate) fn title(hwnd: HWND) -> String {
     let mut buf = [0u16; 256];
-    let n = unsafe { GetWindowTextW(hwnd, &mut buf) };
+    let n = win::get_window_text(hwnd, &mut buf);
     match n {
         1.. => String::from_utf16_lossy(&buf[..n as usize]),
         _ => "(no title)".into(),
@@ -52,13 +52,13 @@ pub(crate) fn title(hwnd: HWND) -> String {
 
 pub(super) fn cloaked(hwnd: HWND) -> u32 {
     let mut v = 0u32;
-    unsafe { let _ = DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &mut v as *mut _ as _, 4); }
+    let _ = win::dwm_get_window_attribute(hwnd, DWMWA_CLOAKED, &mut v);
     v
 }
 
 pub(crate) fn class_name(hwnd: HWND) -> String {
     let mut buf = [0u16; 64];
-    let n = unsafe { GetClassNameW(hwnd, &mut buf) };
+    let n = win::get_class_name(hwnd, &mut buf);
     String::from_utf16_lossy(&buf[..n.max(0) as usize])
 }
 
@@ -66,7 +66,7 @@ pub(crate) fn class_name(hwnd: HWND) -> String {
 /// subject or a document name (spec 0019). `window 0x…` when its process can't be read.
 pub(crate) fn who(hwnd: HWND) -> String {
     let mut pid = 0;
-    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    win::get_window_thread_process_id(hwnd, Some(&mut pid));
     crate::restore::exe_path(pid)
         .and_then(|p| Path::new(&p).file_name().map(|n| n.to_string_lossy().into_owned()))
         .unwrap_or_else(|| format!("window {:#X}", hwnd.0 as usize))
@@ -83,27 +83,21 @@ pub(crate) fn app_windows() -> Vec<HWND> {
 
 /// Every top level window, shown or not, top of z order first.
 pub(super) fn top_level() -> Vec<HWND> {
-    unsafe extern "system" fn push(hwnd: HWND, out: LPARAM) -> BOOL {
-        unsafe { (*(out.0 as *mut Vec<HWND>)).push(hwnd) };
-        BOOL(1)
-    }
-    let mut all = Vec::new();
-    unsafe { let _ = EnumWindows(Some(push), LPARAM(&mut all as *mut _ as isize)); }
-    all
+    win::enum_windows()
 }
 
 /// Whether `h` is the kind of window app_windows lists, else what it lacks (an app rule logs
 /// that, spec 0027).
 pub(crate) fn app_window(h: HWND) -> Result<(), &'static str> {
-    let ex = unsafe { GetWindowLongPtrW(h, GWL_EXSTYLE) } as u32;
+    let ex = win::get_window_long_ptr(h, GWL_EXSTYLE) as u32;
     let why = match () {
-        _ if !unsafe { IsWindowVisible(h) }.as_bool() => "not visible",
-        _ if unsafe { GetWindow(h, GW_OWNER) }.is_ok_and(|o| !o.is_invalid()) => "owned by another window",
+        _ if !win::is_window_visible(h).as_bool() => "not visible",
+        _ if win::get_window(h, GW_OWNER).is_ok_and(|o| !o.is_invalid()) => "owned by another window",
         _ if ex & WS_EX_TOOLWINDOW.0 != 0 => "a tool window",
-        _ if unsafe { GetWindowTextLengthW(h) } == 0 => "no title",
+        _ if win::get_window_text_length(h) == 0 => "no title",
         _ if cloaked(h) != 0 => "cloaked",
         // Never hide the desktop or taskbars.
-        _ if h == unsafe { GetShellWindow() } || matches!(class_name(h).as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd") => "the shell",
+        _ if h == win::get_shell_window() || matches!(class_name(h).as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd") => "the shell",
         // Never des-k's own settings page or welcome screen: a hidden one is one the
         // tray's Settings would focus where you cannot see it.
         _ if pid_of(h) == std::process::id() => "des-k's own",
@@ -150,7 +144,7 @@ pub(super) fn windows_in(s: &mut State) -> Vec<Place> {
         for (ws, list) in m.hidden.iter().enumerate() {
             for &raw in list {
                 let h = HWND(raw as *mut _);
-                if unsafe { IsWindow(Some(h)) }.as_bool() {
+                if win::is_window(Some(h)).as_bool() {
                     out.push(Place { hwnd: h, device: dev.clone(), workspace: ws, on_screen: false, screen: screen.clone(), pinned: false, unplugged, ws_name: ws_name(id, ws) });
                 }
             }
@@ -340,7 +334,7 @@ pub(super) fn waiting(s: &State) -> Vec<Waiting> {
 /// A window whose app stopped answering (paused in a debugger, say): ShowWindow and
 /// SetWindowPos would wait on it with no time limit, with des-k's lock held.
 pub(super) fn hung(h: HWND) -> bool {
-    let hung = unsafe { IsHungAppWindow(h) }.as_bool();
+    let hung = win::is_hung_app_window(h).as_bool();
     if hung {
         warn!("{} is not responding, left as it is", who(h));
     }
