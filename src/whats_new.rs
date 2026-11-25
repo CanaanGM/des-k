@@ -892,17 +892,9 @@ mod tests {
         assert_eq!(V0_9_0.len(), 5);
     }
 
-    // Not a check that can fail: draws the window offscreen into target/whatsnew/*.png, so the
-    // drawing can be compared with the approved design (pdesk-design whats-new/whats-new-r1.html,
-    // direction C) without updating des-k. Run with `cargo test render -- --ignored`.
-    #[test]
-    #[ignore]
-    fn render_whats_new() {
-        assert!(ui::gdiplus());
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("whatsnew");
-        std::fs::create_dir_all(&dir).unwrap();
-        let night_sky = ui::high_contrast([0x000000, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);
-        let runs: Vec<(&str, Theme, f32)> = vec![("light", ui::LIGHT, 1.0), ("dark", ui::DARK, 1.0), ("hc", night_sky, 1.0), ("light-150", ui::LIGHT, 1.5)];
+    /// Each render state, set up as the render test draws it: the releases shown, the focus,
+    /// the settings.
+    fn each_state(theme: Theme, scale: f32, f: &mut dyn FnMut(&str, &Win, &Settings)) {
         const NEXT: [Card; 1] = [Card { pic: Pic::Lands, title: "A card for 0.10.0", text: Text::Plain("Made up for this picture only, to show two releases at once."), button: "Open it", to: (Section::Apps, None) }];
         let plain = Settings::default();
         let no_key = Settings { back: vec![], ..Settings::default() };
@@ -916,27 +908,70 @@ mod tests {
             ("two-releases", &plain, |w| w.news.insert(0, (Version(0, 10, 0), &NEXT as &[Card]))),
             ("sidebar", &plain, |w| w.updated = false),
         ];
+        for (sname, s, setup) in &states {
+            let mut win = Win {
+                hwnd: HWND::default(), scale, theme, fonts: Fonts::new(scale), news: due(None, V(0, 9, 0)), ours: V(0, 9, 0), updated: true,
+                scroll: 0.0, content: 0.0, mid: (0.0, 0.0), hits: vec![], focus: Ctl::Got, kb: false, hover: None, press: None, vh: 10_000.0,
+            };
+            setup(&mut win);
+            let out = unsafe {
+                let dc = GetDC(None);
+                let out = compose(&mut Canvas::new(dc, false, scale, theme, &win.fonts), &win, s);
+                ReleaseDC(None, dc);
+                out
+            };
+            win.vh = (out.mid.0 + out.content + 8.0 + FOOT).min(MOST);
+            f(sname, &win, s);
+        }
+    }
+
+    // Not a check that can fail: draws the window offscreen into target/whatsnew/*.png, so the
+    // drawing can be compared with the approved design (pdesk-design whats-new/whats-new-r1.html,
+    // direction C) without updating des-k. Run with `cargo test render -- --ignored`.
+    #[test]
+    #[ignore]
+    fn render_whats_new() {
+        assert!(ui::gdiplus());
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("whatsnew");
+        std::fs::create_dir_all(&dir).unwrap();
+        let night_sky = ui::high_contrast([0x000000, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);
+        let runs: Vec<(&str, Theme, f32)> = vec![("light", ui::LIGHT, 1.0), ("dark", ui::DARK, 1.0), ("hc", night_sky, 1.0), ("light-150", ui::LIGHT, 1.5)];
         for (tname, theme, scale) in &runs {
-            for (sname, s, setup) in &states {
-                let mut win = Win {
-                    hwnd: HWND::default(), scale: *scale, theme: *theme, fonts: Fonts::new(*scale), news: due(None, V(0, 9, 0)), ours: V(0, 9, 0), updated: true,
-                    scroll: 0.0, content: 0.0, mid: (0.0, 0.0), hits: vec![], focus: Ctl::Got, kb: false, hover: None, press: None, vh: 10_000.0,
-                };
-                setup(&mut win);
-                let out = unsafe {
-                    let dc = GetDC(None);
-                    let out = compose(&mut Canvas::new(dc, false, *scale, *theme, &win.fonts), &win, s);
-                    ReleaseDC(None, dc);
-                    out
-                };
-                win.vh = (out.mid.0 + out.content + 8.0 + FOOT).min(MOST);
+            each_state(*theme, *scale, &mut |sname, win, s| {
                 let (pw, ph) = ((W * scale).round() as i32, (win.vh * scale).round() as i32);
                 ui::tests::save_png(pw, ph, &dir.join(format!("{sname}-{tname}.png")), |dc| {
                     let mut c = Canvas::new(dc, true, *scale, *theme, &win.fonts);
                     c.boxed((0.0, 0.0, W + 1.0, win.vh + 1.0), 0.0, theme.b.bg, None);
-                    compose(&mut c, &win, s);
+                    compose(&mut c, win, s);
                 });
-            }
+            });
         }
+    }
+
+    // The click areas in every render state, kept from before the controls merge so the merge
+    // can't change them (spec 0035 AC-7). Run by hand, as the PNGs are:
+    // `cargo test snapshot -- --ignored`.
+    #[test]
+    #[ignore]
+    fn snapshot_whats_new() {
+        use std::fmt::Write;
+        assert!(ui::gdiplus());
+        let night_sky = ui::high_contrast([0x000000, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);
+        let mut got = String::new();
+        for (tname, theme) in [("light", ui::LIGHT), ("hc", night_sky)] {
+            each_state(theme, 1.0, &mut |sname, win, s| {
+                let out = unsafe {
+                    let dc = GetDC(None);
+                    let out = compose(&mut Canvas::new(dc, false, win.scale, win.theme, &win.fonts), win, s);
+                    ReleaseDC(None, dc);
+                    out
+                };
+                let _ = writeln!(got, "== {sname} {tname}");
+                for h in &out.hits {
+                    let _ = writeln!(got, "hit {:?} {} {}", h.ctl, h.scrolled, crate::snapshot::bx(h.at));
+                }
+            });
+        }
+        crate::snapshot::check("whats_new", &got);
     }
 }

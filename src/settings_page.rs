@@ -864,4 +864,4 @@ fn work_area(mon: HMONITOR) -> (RECT, RECT) {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

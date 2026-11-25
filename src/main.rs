@@ -31,6 +31,8 @@ mod restore;
 mod settings;
 mod settings_page;
 mod setup;
+#[cfg(test)]
+mod snapshot;
 mod touchpad;
 mod tray;
 mod tray_menu;

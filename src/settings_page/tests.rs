@@ -24,7 +24,7 @@ pub(super) fn said(e: Option<Edit>) -> String {
 }
 
 // The page tests that set settings::get() for every reader run one at a time.
-pub(super) static SETTINGS: Mutex<()> = Mutex::new(());
+pub(crate) static SETTINGS: Mutex<()> = Mutex::new(());
 
 fn rect(l: i32, t: i32, r: i32, b: i32) -> RECT {
     RECT { left: l, top: t, right: r, bottom: b }
@@ -146,17 +146,9 @@ fn picking(key: &'static str, anchor: Anchor, color: u32) -> ColorPick {
     }
 }
 
-// Not a check that can fail: draws the page in the design's states into
-// target/settings/*.png, to compare by eye with the approved captures (AC-1). Run with
-// `cargo test render_settings -- --ignored`.
-#[test]
-#[ignore]
-fn render_settings() {
-    assert!(ui::gdiplus());
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("settings");
-    std::fs::create_dir_all(&dir).unwrap();
-    let night_sky = ui::high_contrast([0x000000, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);
-    let runs: Vec<(&str, Theme, f32)> = vec![("light", ui::LIGHT, 1.0), ("dark", ui::DARK, 1.0), ("hc", night_sky, 1.0), ("light-150", ui::LIGHT, 1.5), ("rose", ui::tests::rose(true), 1.0), ("rose-dark", ui::tests::rose(false), 1.0)];
+/// Each render state, set up as the render test draws it: the settings, the scroll, an open
+/// menu, chooser or picker. `skip_picks` leaves the picker's states out.
+pub(super) fn each_state(skip_picks: bool, theme: Theme, scale: f32, f: &mut dyn FnMut(&str, &Win)) {
     // Name, section to scroll to, what to set up.
     type Setup = fn(&mut Win);
     // Spec 0023: names on every screen, and the laptop's own (renamed Left, Notes on 2, no name on 3).
@@ -572,67 +564,109 @@ enabled = false
         }),
         ("attention-names", Some(Section::Attention), |_| settings::store::use_for_test(NAMES)),
     ];
+    for (sname, sec, setup) in &states {
+        if sname.starts_with("pick") && skip_picks {
+            continue;
+        }
+        let mut win = fake_win(theme, scale);
+        settings::store::use_for_test("");
+        setup(&mut win);
+        fake_wall(&win);
+        let out = measure(&win);
+        if let Some(top) = out.tops.iter().find(|(s, _)| *s == *sec).map(|(_, t)| *t) {
+            win.scroll = (top - 8.0 + win.scroll).clamp(0.0, (out.height - (win.vh - out.fixed)).max(0.0));
+        }
+        let out = measure(&win);
+        take(&mut win, out);
+        if *sname == "menu"
+            && let Some(at) = win.hits.iter().find(|h| h.ctl == Ctl::Picker(2)).map(|h| h.at)
+        {
+            win.menu = Some(Menu { row: 2, times: 1, family: None, at, focus: 0 });
+        }
+        if *sname == "names-menu"
+            && let Some(at) = win.hits.iter().find(|h| h.ctl == Ctl::NameScreens).map(|h| h.at)
+        {
+            win.chooser = Some((Ctl::NameScreens, at, 2));
+        }
+        let apps_menu = match *sname {
+            "apps-add" | "apps-add-none" | "apps-add-many" => Some((Ctl::AppAdd, 0)),
+            "apps-ws" => Some((Ctl::AppWs(0), 1)),
+            "apps-screen" => Some((Ctl::AppScreen(0), 3)),
+            "wallpaper-menu" | "wallpaper-many" => Some((Ctl::WallPick(0), 5)),
+            "wallpaper-menu-screen" => Some((Ctl::WallPick(1), 1)),
+            "wallpaper-empty" => Some((Ctl::WallPick(0), 1)),
+            "wallpaper-chooser" => Some((Ctl::WallScreens, 2)),
+            "wallpaper-slides-folders" => Some((Ctl::WallPick(1), 7)),
+            "wallpaper-slides-tick" => Some((Ctl::WallPick(2), 5)),
+            _ => None,
+        };
+        if let Some((from, focus)) = apps_menu
+            && let Some(at) = win.hits.iter().find(|h| h.ctl == from).map(|h| h.at)
+        {
+            win.chooser = Some((from, at, focus));
+        }
+        // An open picker: placed as on open, the page scrolled at once, the preview in place.
+        if let Some((anchor, levels, beside)) = win.pick.as_ref().and_then(|p| levels_of(&p.anchor, &win.geo).map(|(a, l)| (a, l, !matches!(p.anchor, Anchor::Swatch(_))))) {
+            let (at, d) = place(&room_of(&win), &levels, anchor, beside, (PICK_W, PICK_H), true);
+            win.scroll += d;
+            let p = win.pick.as_mut().unwrap();
+            p.placed = Some(at);
+            let shown = ws_index(p.key).map_or(theme.b.acc, |i| theme.b.ws[i]);
+            p.preview = (shown != p.color).then(|| ui::theme_preview(!theme.dark, ui::tests::plain(), ws_index(p.key), p.color));
+            let out = measure(&win);
+            take(&mut win, out);
+        }
+        f(sname, &win);
+    }
+}
+
+// Not a check that can fail: draws the page in the design's states into
+// target/settings/*.png, to compare by eye with the approved captures (AC-1). Run with
+// `cargo test render_settings -- --ignored`.
+#[test]
+#[ignore]
+fn render_settings() {
+    assert!(ui::gdiplus());
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("settings");
+    std::fs::create_dir_all(&dir).unwrap();
+    let night_sky = ui::high_contrast([0x000000, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);
+    let runs: Vec<(&str, Theme, f32)> = vec![("light", ui::LIGHT, 1.0), ("dark", ui::DARK, 1.0), ("hc", night_sky, 1.0), ("light-150", ui::LIGHT, 1.5), ("rose", ui::tests::rose(true), 1.0), ("rose-dark", ui::tests::rose(false), 1.0)];
     for (tname, theme, scale) in &runs {
-        for (sname, sec, setup) in &states {
-            // The picker opens in neither high contrast nor (for brevity) the rose accent.
-            if sname.starts_with("pick") && (theme.hc || tname.starts_with("rose")) {
-                continue;
-            }
-            let mut win = fake_win(*theme, *scale);
-            settings::store::use_for_test("");
-            setup(&mut win);
-            fake_wall(&win);
-            let out = measure(&win);
-            if let Some(top) = out.tops.iter().find(|(s, _)| *s == *sec).map(|(_, t)| *t) {
-                win.scroll = (top - 8.0 + win.scroll).clamp(0.0, (out.height - (win.vh - out.fixed)).max(0.0));
-            }
-            let out = measure(&win);
-    take(&mut win, out);
-            if *sname == "menu"
-                && let Some(at) = win.hits.iter().find(|h| h.ctl == Ctl::Picker(2)).map(|h| h.at)
-            {
-                win.menu = Some(Menu { row: 2, times: 1, family: None, at, focus: 0 });
-            }
-            if *sname == "names-menu"
-                && let Some(at) = win.hits.iter().find(|h| h.ctl == Ctl::NameScreens).map(|h| h.at)
-            {
-                win.chooser = Some((Ctl::NameScreens, at, 2));
-            }
-            let apps_menu = match *sname {
-                "apps-add" | "apps-add-none" | "apps-add-many" => Some((Ctl::AppAdd, 0)),
-                "apps-ws" => Some((Ctl::AppWs(0), 1)),
-                "apps-screen" => Some((Ctl::AppScreen(0), 3)),
-                "wallpaper-menu" | "wallpaper-many" => Some((Ctl::WallPick(0), 5)),
-                "wallpaper-menu-screen" => Some((Ctl::WallPick(1), 1)),
-                "wallpaper-empty" => Some((Ctl::WallPick(0), 1)),
-                "wallpaper-chooser" => Some((Ctl::WallScreens, 2)),
-                "wallpaper-slides-folders" => Some((Ctl::WallPick(1), 7)),
-                "wallpaper-slides-tick" => Some((Ctl::WallPick(2), 5)),
-                _ => None,
-            };
-            if let Some((from, focus)) = apps_menu
-                && let Some(at) = win.hits.iter().find(|h| h.ctl == from).map(|h| h.at)
-            {
-                win.chooser = Some((from, at, focus));
-            }
-            // An open picker: placed as on open, the page scrolled at once, the preview in place.
-            if let Some((anchor, levels, beside)) = win.pick.as_ref().and_then(|p| levels_of(&p.anchor, &win.geo).map(|(a, l)| (a, l, !matches!(p.anchor, Anchor::Swatch(_))))) {
-                let (at, d) = place(&room_of(&win), &levels, anchor, beside, (PICK_W, PICK_H), true);
-                win.scroll += d;
-                let p = win.pick.as_mut().unwrap();
-                p.placed = Some(at);
-                let shown = ws_index(p.key).map_or(theme.b.acc, |i| theme.b.ws[i]);
-                p.preview = (shown != p.color).then(|| ui::theme_preview(!theme.dark, ui::tests::plain(), ws_index(p.key), p.color));
-                let out = measure(&win);
-    take(&mut win, out);
-            }
+        // The picker opens in neither high contrast nor (for brevity) the rose accent.
+        each_state(theme.hc || tname.starts_with("rose"), *theme, *scale, &mut |sname, win| {
             let (pw, ph) = ((W * scale).round() as i32, (win.vh * scale).round() as i32);
-            let t = painted(&win);
+            let t = painted(win);
             ui::tests::save_png(pw, ph, &dir.join(format!("{sname}-{tname}.png")), |dc| {
                 let mut c = Canvas::new(dc, true, *scale, t, &win.fonts);
                 c.boxed((0.0, 0.0, W + 1.0, win.vh + 1.0), 0.0, t.b.bg, None);
-                compose(&mut c, &win);
+                compose(&mut c, win);
             });
-        }
+        });
     }
+}
+
+// The click areas and what Narrator reads in every render state, kept from before the controls
+// merge so the merge can't change them (spec 0035 AC-7). Run by hand, as the PNGs are:
+// `cargo test snapshot -- --ignored`.
+#[test]
+#[ignore]
+fn snapshot_settings() {
+    use std::fmt::Write;
+    assert!(ui::gdiplus());
+    let _one = SETTINGS.lock();
+    let night_sky = ui::high_contrast([0x000000, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);
+    let mut got = String::new();
+    for (tname, theme) in [("light", ui::LIGHT), ("hc", night_sky)] {
+        each_state(theme.hc, theme, 1.0, &mut |sname, win| {
+            let out = measure(win);
+            let _ = writeln!(got, "== {sname} {tname}");
+            for h in &out.hits {
+                let _ = writeln!(got, "hit {:?} {} {}", h.ctl, h.group, crate::snapshot::bx(h.at));
+            }
+            for (ctl, n) in &out.said {
+                let _ = writeln!(got, "say {ctl:?} {}", crate::snapshot::node(n));
+            }
+        });
+    }
+    crate::snapshot::check("settings_page", &got);
 }
