@@ -31,7 +31,7 @@ fn app_rules_write_one_thing_each() {
 #[test]
 fn app_rows_say_what_waits() {
     let mut w = fake_win(ui::LIGHT, 1.0);
-    w.pics.view.waiting = vec![crate::ws::Waiting { id: "LG-2".into(), name: "LG 27UL850".into(), windows_name: "LG 27UL850".into(), windows: vec![] }];
+    w.pics.view.waiting = vec![crate::ws::views::Waiting { id: "LG-2".into(), name: "LG 27UL850".into(), windows_name: "LG 27UL850".into(), windows: vec![] }];
     let s = loaded("[apps]\n\"slack.exe\" = { workspace = 6 }\n\"olk.exe\" = { workspace = 1, screen = \"LG-2\" }\n\"code.exe\" = { workspace = 1, screen = \"GSM-9\" }\n\"msedge.exe\" = { workspace = 2, screen = \"internal\" }\n");
     let notes: Vec<Option<(String, bool)>> = s.apps.iter().map(|(_, r)| app_note(&w.pics.view, s, r)).collect();
     assert_eq!(notes, vec![

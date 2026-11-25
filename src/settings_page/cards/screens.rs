@@ -37,12 +37,12 @@ impl Ctx<'_, '_> {
         NoteSpec { tone: Tone::Warn, icon: I_WARN, title, lines: vec![t(parts.join(" "))], buttons: vec![], group: 1 }
     }
 
-    pub(super) fn name_of(&self, sc: &crate::ws::ScreenInfo) -> String {
+    pub(super) fn name_of(&self, sc: &crate::ws::views::ScreenInfo) -> String {
         self.w.pics.view.names.iter().find(|(d, _)| *d == sc.device).map_or_else(|| sc.name.clone(), |(_, n)| n.clone())
     }
 
     /// Screen `device`'s workspace names, as its indicator shows them (spec 0023 build
-    /// conditions): the same lookup as `ws::names`, by the id the page's view already holds,
+    /// conditions): the same lookup as `ws::views::names`, by the id the page's view already holds,
     /// since the page can lay out from inside a switch and the ws lock is not reentrant.
     pub(super) fn names_here(&self, device: &str) -> Vec<String> {
         let Some(p) = self.w.pics.view.present.iter().find(|p| p.device == device) else { return vec![] };
@@ -59,7 +59,7 @@ impl Ctx<'_, '_> {
     }
 
     /// One present screen: its name and size, and its workspaces as tiles (AC-SET-3).
-    pub(super) fn screen_row(&mut self, y: f32, row: usize, sc: &crate::ws::ScreenInfo, gone: &[usize]) -> f32 {
+    pub(super) fn screen_row(&mut self, y: f32, row: usize, sc: &crate::ws::views::ScreenInfo, gone: &[usize]) -> f32 {
         let n = self.s.workspaces;
         let name = self.name_of(sc);
         let a = self.active_on(&sc.device);
@@ -161,7 +161,7 @@ impl Ctx<'_, '_> {
     }
 
     /// A screen not plugged in that windows wait for (spec 0016 AC-9), with Forget.
-    pub(super) fn away_row(&mut self, y: f32, i: usize, a: &crate::ws::Waiting) -> f32 {
+    pub(super) fn away_row(&mut self, y: f32, i: usize, a: &crate::ws::views::Waiting) -> f32 {
         let n = self.s.workspaces;
         let total: usize = a.windows.iter().sum();
         let wait = if total == 1 { "1 window waits".to_string() } else { format!("{total} windows wait") };
@@ -224,7 +224,7 @@ impl Ctx<'_, '_> {
 
 /// Screen `id` as des-k names it: plugged in or remembered, as `ws::label` gave it, else your
 /// rename, else the id.
-fn screen_called(v: &crate::ws::View, s: &Settings, id: &str) -> String {
+fn screen_called(v: &crate::ws::views::View, s: &Settings, id: &str) -> String {
     v.present
         .iter()
         .find(|p| p.id == id)

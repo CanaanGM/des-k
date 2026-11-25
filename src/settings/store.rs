@@ -63,7 +63,7 @@ fn modified(path: &std::path::Path) -> Option<SystemTime> {
 
 /// settings.toml in the data folder, shared by the installed and the dev copy.
 pub(crate) fn path() -> std::path::PathBuf {
-    crate::ws::data_dir().join("settings.toml")
+    crate::ws::store::data_dir().join("settings.toml")
 }
 
 /// Read the file (writing the default one if missing) and log every problem. Main thread, at start.
@@ -198,7 +198,7 @@ fn apply(old: &Settings, changes: &[Change]) -> Vec<String> {
     }
     let mut moves = vec![];
     if new.workspaces != old.workspaces {
-        moves = crate::ws::resize(new.workspaces);
+        moves = crate::ws::screens::resize(new.workspaces);
         for line in &moves {
             info!("settings: workspaces {} -> {}: {line}", old.workspaces, new.workspaces);
         }
@@ -216,7 +216,7 @@ fn apply(old: &Settings, changes: &[Change]) -> Vec<String> {
         crate::apps::sync();
     }
     if has("attention.enabled") && !new.attention_enabled {
-        crate::ws::forget_wants();
+        crate::ws::focus::forget_wants();
     }
     // Colors resolve in ui::theme_of on each paint; every window just needs to paint again.
     if changes.iter().any(|c| c.key.starts_with("colors.")) {

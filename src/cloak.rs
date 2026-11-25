@@ -80,7 +80,7 @@ pub fn unknown() -> bool {
     matches!(LAYOUT.get(), UNKNOWN_COLLECTION | UNKNOWN_VIEW)
 }
 
-/// At start, before `ws::load` (AC-3): checks the view id on the first of `windows` the shell
+/// At start, before `ws::restore::load` (AC-3): checks the view id on the first of `windows` the shell
 /// has a view for. Never waits: with explorer not up, or no view yet, the first hide decides.
 pub fn check_at_start(windows: &[HWND]) {
     let shell = match Shell::new() {

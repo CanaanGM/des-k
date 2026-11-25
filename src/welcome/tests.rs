@@ -5,16 +5,16 @@ use super::*;
 pub(super) fn each_state(theme: Theme, scale: f32, f: &mut dyn FnMut(&str, &Win)) {
     let r = |l, t, rr, b| RECT { left: l, top: t, right: rr, bottom: b };
     let screens = vec![
-        crate::ws::ScreenInfo { device: "DISPLAY1".into(), number: 1, name: "Built-in display".into(), rect: r(0, 540, 1440, 1440), scale: 150 },
-        crate::ws::ScreenInfo { device: "DISPLAY2".into(), number: 2, name: "DELL U2720Q".into(), rect: r(1440, 0, 4000, 1440), scale: 150 },
+        crate::ws::views::ScreenInfo { device: "DISPLAY1".into(), number: 1, name: "Built-in display".into(), rect: r(0, 540, 1440, 1440), scale: 150 },
+        crate::ws::views::ScreenInfo { device: "DISPLAY2".into(), number: 2, name: "DELL U2720Q".into(), rect: r(1440, 0, 4000, 1440), scale: 150 },
     ];
-    let view = crate::ws::View {
+    let view = crate::ws::views::View {
         active: vec![("DISPLAY1".into(), 0), ("DISPLAY2".into(), 0)],
         windows: vec![("DISPLAY1".into(), 0, r(0, 0, 9, 9)), ("DISPLAY2".into(), 0, r(0, 0, 9, 9)), ("DISPLAY2".into(), 3, r(0, 0, 9, 9))],
         names: vec![("DISPLAY1".into(), "Built-in display".into()), ("DISPLAY2".into(), "DELL U2720Q".into())],
         removals: vec![vec![
-            crate::ws::Moved { name: "DELL U2720Q".into(), device: Some("DISPLAY2".into()), unplugged: false, windows: 1, from: vec![3] },
-            crate::ws::Moved { name: "Built-in display".into(), device: Some("DISPLAY1".into()), unplugged: false, windows: 0, from: vec![] },
+            crate::ws::screens::Moved { name: "DELL U2720Q".into(), device: Some("DISPLAY2".into()), unplugged: false, windows: 1, from: vec![3] },
+            crate::ws::screens::Moved { name: "Built-in display".into(), device: Some("DISPLAY1".into()), unplugged: false, windows: 0, from: vec![] },
         ]],
         waiting: vec![],
         present: vec![],

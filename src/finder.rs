@@ -36,7 +36,7 @@ use windows::core::{HSTRING, PCWSTR, PWSTR, w};
 use crate::restore;
 use crate::ui::{self, canvas::Canvas, color::{alpha, mix, op}, fonts::F};
 use crate::uia::{self, Node, Tree};
-use crate::ws::{self, Miss};
+use crate::ws::{self, moves::Miss};
 
 mod draw;
 pub(crate) mod names;
@@ -398,12 +398,12 @@ fn delete_word(before: &[u16]) -> usize {
 }
 
 fn snapshot() -> Vec<Row> {
-    let order = ws::screen_order();
+    let order = ws::views::screen_order();
     let mut rows: Vec<Row> = RECENT.with_borrow(|recent| {
-        ws::windows()
+        ws::views::windows()
             .into_iter()
             .map(|p| Row {
-                title: ws::title(p.hwnd),
+                title: ws::views::title(p.hwnd),
                 program: program(p.hwnd),
                 icon: icon(p.hwnd),
                 screen: order.iter().position(|d| *d == p.device).map_or(0, |i| i + 1),
@@ -438,8 +438,8 @@ pub fn is_open() -> bool {
     SESSION.with_borrow(Option::is_some)
 }
 
-/// Win+F: open on the screen `ws::target` picks for `from` (spec 0038), or close if open.
-pub fn toggle(from: ws::Source) {
+/// Win+F: open on the screen `ws::switch::target` picks for `from` (spec 0038), or close if open.
+pub fn toggle(from: ws::switch::Source) {
     if SESSION.with_borrow(Option::is_some) {
         close(true);
     } else {
@@ -447,16 +447,16 @@ pub fn toggle(from: ws::Source) {
     }
 }
 
-fn open(from: ws::Source) {
+fn open(from: ws::switch::Source) {
     let Some((popup, edit)) = window() else { return warn!("finder: window not created") };
     ui::canvas::gdiplus();
-    let (mon, device) = ws::target(from);
+    let (mon, device) = ws::switch::target(from);
     let came_from = unsafe { GetForegroundWindow() };
     used(came_from);
     RECENT.with_borrow_mut(|r| r.retain(|&h, _| unsafe { IsWindow(Some(HWND(h as *mut _))) }.as_bool()));
     let (mut dpi, mut dy) = (96u32, 96u32);
     unsafe { let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dpi, &mut dy); }
-    let (screens, main) = ws::present();
+    let (screens, main) = ws::views::present();
     let s = Session::new(snapshot(), came_from, device.clone(), screens, main, dpi as f32 / 96.0);
     let (n, w, h, scale) = (s.rows.len(), s.px(WIDTH), s.px(s.height()), s.scale);
     unsafe {
@@ -567,8 +567,8 @@ fn act(how: Act) {
         return;
     };
     let done = match how {
-        Act::Go => ws::go_to(h),
-        Act::Bring => ws::bring(h, &screen),
+        Act::Go => ws::moves::go_to(h),
+        Act::Bring => ws::moves::bring(h, &screen),
         Act::Close => return close_window(h),
     };
     match done {
@@ -581,12 +581,12 @@ fn act(how: Act) {
             }
         }
         Err(Miss::Gone) => {
-            info!("finder: {} is gone", ws::who(h));
+            info!("finder: {} is gone", ws::views::who(h));
             drop_row(h, Some(Note::Gone));
         }
         Err(Miss::CantMove) => set_note(Note::CantMove),
         Err(Miss::Unplugged) => {
-            info!("finder: {} waits for its unplugged screen to fold", ws::who(h));
+            info!("finder: {} waits for its unplugged screen to fold", ws::views::who(h));
             set_note(Note::Unplugged);
         }
     }
@@ -595,7 +595,7 @@ fn act(how: Act) {
 /// Ctrl+W: ask it to close as its X button would, then watch for it to go.
 fn close_window(h: HWND) {
     if !unsafe { IsWindow(Some(h)) }.as_bool() {
-        info!("finder: {} is gone", ws::who(h));
+        info!("finder: {} is gone", ws::views::who(h));
         return drop_row(h, Some(Note::Gone));
     }
     match unsafe { PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0)) } {
@@ -611,10 +611,10 @@ fn close_window(h: HWND) {
             refresh();
         }
         Err(e) if e.code() == ERROR_ACCESS_DENIED.to_hresult() => {
-            warn!("finder: can't close {}, it runs as admin", ws::who(h));
+            warn!("finder: can't close {}, it runs as admin", ws::views::who(h));
             set_note(Note::CantClose);
         }
-        Err(e) => warn!("finder: can't close {}: {e}", ws::who(h)),
+        Err(e) => warn!("finder: can't close {}: {e}", ws::views::who(h)),
     }
 }
 
@@ -625,7 +625,7 @@ fn closing_tick() {
             .closing
             .iter()
             .filter(|&&h| unsafe { !IsWindow(Some(h)).as_bool() || !IsWindowVisible(h).as_bool() })
-            .map(|&h| (h, ws::who(h)))
+            .map(|&h| (h, ws::views::who(h)))
             .collect();
         s.closing.retain(|h| !gone.iter().any(|(g, _)| g == h));
         (gone, s.closing.is_empty())

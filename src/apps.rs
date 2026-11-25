@@ -66,7 +66,7 @@ pub fn sync() {
                 return error!("apps: show hook not installed, app rules do nothing");
             }
             // After the hook: a window that shows in between is then both seen and heard, never missed.
-            ws::seed_opened();
+            ws::rules::seed_opened();
             HOOK.set(Some([show, uncloak]));
             info!("apps: show hook in for {count} rule(s)");
         }
@@ -76,7 +76,7 @@ pub fn sync() {
             }
             HOOK.set(None);
             PENDING.take();
-            ws::forget_opened();
+            ws::rules::forget_opened();
             info!("apps: no rules, show hook out");
         }
         _ => {}
@@ -86,7 +86,7 @@ pub fn sync() {
 /// A top level window showed (`WM_OPENED`): the first time it ever shows, a window of an app with
 /// a rule goes where the rule says (AC-1 to AC-3). `shown` is the event's tick count.
 pub fn opened(h: HWND, shown: u32) {
-    if HOOK.get().is_none() || !unsafe { IsWindow(Some(h)) }.as_bool() || !ws::first_show(h) {
+    if HOOK.get().is_none() || !unsafe { IsWindow(Some(h)) }.as_bool() || !ws::rules::first_show(h) {
         return;
     }
     if let Try::Wait(_) = try_place(h, Some(shown)) {
@@ -110,7 +110,7 @@ pub fn pending_tick() -> bool {
         }
         match try_place(h, Some(shown)) {
             Try::Done => {}
-            Try::Wait(what) if since.elapsed() >= WAIT_FOR => info!("apps: a {} window left where it opened: {what} after 1 s", ws::who(h)),
+            Try::Wait(what) if since.elapsed() >= WAIT_FOR => info!("apps: a {} window left where it opened: {what} after 1 s", ws::views::who(h)),
             Try::Wait(_) => left.push((raw, since, shown)),
         }
     }
@@ -135,9 +135,9 @@ pub fn place_open() {
     if HOOK.get().is_none() {
         return;
     }
-    for h in ws::app_windows() {
+    for h in ws::views::app_windows() {
         // Opened from now on, so a show event still queued for it never places it twice.
-        ws::first_show(h);
+        ws::rules::first_show(h);
         let _ = try_place(h, None);
     }
 }
@@ -154,7 +154,7 @@ pub struct Seen {
 }
 
 /// Every app with a window open now, shown or hidden, once each by its front window: the
-/// page's Add menu, and the icon and name on its rule rows. `open` is `ws::View::open`, so no
+/// page's Add menu, and the icon and name on its rule rows. `open` is `ws::views::View::open`, so no
 /// ws lock is held while this asks the apps; des-k's own windows are never in it.
 pub fn seen(open: &[(isize, String, usize)]) -> Vec<Seen> {
     let mut out: Vec<Seen> = Vec::new();
@@ -195,7 +195,7 @@ fn try_place(h: HWND, shown: Option<u32>) -> Try {
     let Some((_, rule)) = set.apps.iter().find(|(k, _)| *k == key) else { return Try::Done };
     // Only the kind of window app_windows lists: never a dialog or popup on its own (AC-3).
     // Many apps show their window first and give it a title a moment later.
-    match ws::app_window(h) {
+    match ws::views::app_window(h) {
         Err("no title") => return Try::Wait("no title"),
         // A Store app's frame window shows cloaked by Windows, which uncloaks it about 300 ms
         // later, once the app has drawn (measured 2026-11-19). Its key is an app id, with a `!`.
@@ -208,7 +208,7 @@ fn try_place(h: HWND, shown: Option<u32>) -> Try {
     }
     // A Store app has no CoreWindow yet as it lands, so its name comes from its package.
     let name = finder::names::app_name(h).or_else(|| finder::names::store_name(&key)).unwrap_or_else(|| key.trim_end_matches(".exe").to_string());
-    ws::place_new(h, rule, name, shown);
+    ws::rules::place_new(h, rule, name, shown);
     Try::Done
 }
 

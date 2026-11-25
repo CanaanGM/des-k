@@ -25,7 +25,7 @@ use crate::settings::{self, Action, Combo, Motion, Owner, Settings, edit::Edit};
 use crate::setup::{self, GaveBack, Row as PadRow, State};
 use crate::ui::{self, Theme, canvas::{Bx, Canvas, buffered}, color::{mix, op}, dark_title, fonts::F};
 use crate::uia::{self, Node, Tree};
-use crate::ws::Source;
+use crate::ws::switch::Source;
 
 mod draw;
 pub(crate) mod rows;
@@ -326,9 +326,9 @@ fn under_mouse() -> (HMONITOR, RECT) {
     screen(Source::Pointer)
 }
 
-/// The screen `ws::target` picks for `from` (spec 0038): its monitor and work area.
+/// The screen `ws::switch::target` picks for `from` (spec 0038): its monitor and work area.
 fn screen(from: Source) -> (HMONITOR, RECT) {
-    let (mon, _) = crate::ws::target(from);
+    let (mon, _) = crate::ws::switch::target(from);
     let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
     unsafe { let _ = GetMonitorInfoW(mon, &mut mi); }
     (mon, mi.rcWork)
@@ -366,7 +366,7 @@ pub fn show() {
     }
 }
 
-/// Its key (WM_HINTS): opens it on the screen `ws::target` picks (spec 0038); closes it while
+/// Its key (WM_HINTS): opens it on the screen `ws::switch::target` picks (spec 0038); closes it while
 /// it is open on the screen under the mouse, and moves it here while it is open on another
 /// screen (AC-HNT-2).
 pub fn toggle(from: Source) {

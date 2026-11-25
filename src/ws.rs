@@ -31,24 +31,24 @@ use crate::indicator::{self, Card, Line as Says};
 use crate::restore::{Entry, Fp, Pick};
 use crate::{keys, settings};
 
-mod focus;
-mod moves;
-mod restore;
-mod rules;
-mod screens;
-mod store;
-mod switch;
-mod views;
+pub(crate) mod focus;
+pub(crate) mod moves;
+pub(crate) mod restore;
+pub(crate) mod rules;
+pub(crate) mod screens;
+pub(crate) mod store;
+pub(crate) mod switch;
+pub(crate) mod views;
 
-// Until their callers move, the moved items stay callable at ws:: (spec 0035 AC-4).
-pub(crate) use focus::*;
-pub(crate) use moves::*;
-pub(crate) use restore::*;
-pub(crate) use rules::*;
-pub(crate) use screens::*;
-pub(crate) use store::*;
-pub(crate) use switch::*;
-pub(crate) use views::*;
+// Each piece sees the others through these, the way their code saw one file before.
+use focus::*;
+use moves::*;
+use restore::*;
+use rules::*;
+use screens::*;
+use store::*;
+use switch::*;
+use views::*;
 
 // A rate limit against apps that keep grabbing focus; the stale check and the bounce
 // guard in follow() carry correctness (spec 0002).

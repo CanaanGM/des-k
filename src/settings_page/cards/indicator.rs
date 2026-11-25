@@ -44,5 +44,5 @@ impl Ctx<'_, '_> {
 /// The real indicator on the screen the page is on, with the current hold and fade.
 pub(in crate::settings_page) fn show() {
     let Some(h) = hwnd() else { return };
-    crate::ws::show_indicator(unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) });
+    crate::ws::switch::show_indicator(unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) });
 }

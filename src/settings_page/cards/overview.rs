@@ -11,7 +11,7 @@ impl Ctx<'_, '_> {
         let t = self.cx.c.t;
         let b = t.b;
         let (tw, th, gap) = (80.0, 46.0, 10.0);
-        let screens: Vec<crate::ws::ScreenInfo> = self.w.pics.screens.iter().take(2).cloned().collect();
+        let screens: Vec<crate::ws::views::ScreenInfo> = self.w.pics.screens.iter().take(2).cloned().collect();
         let rows = screens.len().max(1);
         let (w2, h2) = (4.0 * (tw + gap) + 30.0, rows as f32 * (th + 22.0) + 14.0 - if rows == 1 { 0.0 } else { 2.0 });
         let x0 = X0 + (self.cw - w2) / 2.0;

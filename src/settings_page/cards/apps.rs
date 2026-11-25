@@ -185,7 +185,7 @@ impl Ctx<'_, '_> {
 
 /// A rule's screen menu, each line with the id it writes: Any screen, the screens plugged in,
 /// remembered ones, then the rule's own id if des-k never saw that screen.
-pub(in crate::settings_page) fn app_screens(v: &crate::ws::View, rule: &settings::Rule) -> Vec<(Option<String>, Choice)> {
+pub(in crate::settings_page) fn app_screens(v: &crate::ws::views::View, rule: &settings::Rule) -> Vec<(Option<String>, Choice)> {
     let mut out = vec![(None, Choice::new("Any screen", "Where it opens"))];
     for p in &v.present {
         out.push((Some(p.id.clone()), Choice::new(&p.name, "")));
@@ -206,7 +206,7 @@ pub(in crate::settings_page) fn addable<'a>(w: &'a Win, s: &Settings) -> Vec<&'a
 
 /// A rule row's note, if one applies, and whether it is a warning: a rule past your count or
 /// for an unplugged screen still works; one for a screen des-k never saw is skipped (AC-7, AC-9).
-fn app_note(v: &crate::ws::View, s: &Settings, rule: &settings::Rule) -> Option<(String, bool)> {
+fn app_note(v: &crate::ws::views::View, s: &Settings, rule: &settings::Rule) -> Option<(String, bool)> {
     if rule.workspace >= s.workspaces {
         return Some((format!("Waits: you have {} workspaces", s.workspaces), false));
     }

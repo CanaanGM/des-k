@@ -450,7 +450,7 @@ pub(in crate::settings_page) fn show_there() {
     .flatten();
     match target {
         Some(None) => show(),
-        Some(Some(full)) => crate::ws::show_indicator(unsafe { MonitorFromRect(&full, MONITOR_DEFAULTTONEAREST) }),
+        Some(Some(full)) => crate::ws::switch::show_indicator(unsafe { MonitorFromRect(&full, MONITOR_DEFAULTTONEAREST) }),
         None => {}
     }
 }

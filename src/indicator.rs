@@ -520,7 +520,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             // Screens can take a while to light up after a wake (spec 0016 AC-18).
             WM_POWERBROADCAST if wp.0 as u32 == PBT_APMRESUMEAUTOMATIC => {
-                crate::ws::woke();
+                crate::ws::screens::woke();
                 LRESULT(1)
             }
             WM_DISPLAYCHANGE => {

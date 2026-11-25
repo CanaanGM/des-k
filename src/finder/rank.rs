@@ -4,7 +4,7 @@ use super::*;
 
 /// AC-4: windows used since start, most recent first; then unused ones on screen, front to
 /// back; then unused hidden ones by screen, workspace and saved order. `rows` come in
-/// `ws::windows()` order, which breaks the remaining ties.
+/// `ws::views::windows()` order, which breaks the remaining ties.
 pub(super) fn recency_rank(rows: &mut [Row]) {
     let mut order: Vec<usize> = (0..rows.len()).collect();
     order.sort_by(|&a, &b| {

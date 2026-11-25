@@ -35,21 +35,21 @@ fn fake_pics() -> Pics {
     let r = rect;
     Pics {
         screens: vec![
-            crate::ws::ScreenInfo { device: "DISPLAY1".into(), number: 1, name: "Built-in display".into(), rect: r(0, 600, 1440, 1500), scale: 200 },
-            crate::ws::ScreenInfo { device: "DISPLAY2".into(), number: 2, name: "DELL U2720Q".into(), rect: r(1440, 0, 4000, 1440), scale: 150 },
+            crate::ws::views::ScreenInfo { device: "DISPLAY1".into(), number: 1, name: "Built-in display".into(), rect: r(0, 600, 1440, 1500), scale: 200 },
+            crate::ws::views::ScreenInfo { device: "DISPLAY2".into(), number: 2, name: "DELL U2720Q".into(), rect: r(1440, 0, 4000, 1440), scale: 150 },
         ],
-        view: crate::ws::View {
+        view: crate::ws::views::View {
             active: vec![("DISPLAY1".into(), 0), ("DISPLAY2".into(), 1)],
             windows: [("DISPLAY1", 0), ("DISPLAY1", 0), ("DISPLAY1", 0), ("DISPLAY2", 0), ("DISPLAY2", 1), ("DISPLAY2", 1), ("DISPLAY2", 3)].iter().map(|(d, w)| (d.to_string(), *w, r(0, 0, 10, 10))).collect(),
             names: vec![("DISPLAY1".into(), "Built-in display".into()), ("DISPLAY2".into(), "DELL U2720Q".into())],
             present: vec![
-                crate::ws::Present { id: "internal".into(), device: "DISPLAY1".into(), name: "Built-in display".into(), windows_name: "Built-in display".into(), full: r(0, 600, 1440, 1500), work: r(0, 600, 1440, 1452) },
-                crate::ws::Present { id: "DEL-A0F5-1234".into(), device: "DISPLAY2".into(), name: "DELL U2720Q".into(), windows_name: "DELL U2720Q".into(), full: r(1440, 0, 4000, 1440), work: r(1440, 0, 4000, 1392) },
+                crate::ws::views::Present { id: "internal".into(), device: "DISPLAY1".into(), name: "Built-in display".into(), windows_name: "Built-in display".into(), full: r(0, 600, 1440, 1500), work: r(0, 600, 1440, 1452) },
+                crate::ws::views::Present { id: "DEL-A0F5-1234".into(), device: "DISPLAY2".into(), name: "DELL U2720Q".into(), windows_name: "DELL U2720Q".into(), full: r(1440, 0, 4000, 1440), work: r(1440, 0, 4000, 1392) },
             ],
             removals: vec![
                 vec![
-                    crate::ws::Moved { name: "Built-in display".into(), device: Some("DISPLAY1".into()), unplugged: false, windows: 0, from: vec![] },
-                    crate::ws::Moved { name: "DELL U2720Q".into(), device: Some("DISPLAY2".into()), unplugged: false, windows: 1, from: vec![3] },
+                    crate::ws::screens::Moved { name: "Built-in display".into(), device: Some("DISPLAY1".into()), unplugged: false, windows: 0, from: vec![] },
+                    crate::ws::screens::Moved { name: "DELL U2720Q".into(), device: Some("DISPLAY2".into()), unplugged: false, windows: 1, from: vec![3] },
                 ],
                 vec![],
             ],
@@ -257,7 +257,7 @@ ws3 = \"Research\"
         ("wallpaper-slides-gone", Some(Section::Workspaces), |w| {
             settings::store::use_for_test(SLIDES);
             slides(w);
-            w.pics.view.waiting = vec![crate::ws::Waiting { id: "LG-2".into(), name: "LG 27UL850".into(), windows_name: "LG 27UL850".into(), windows: vec![] }];
+            w.pics.view.waiting = vec![crate::ws::views::Waiting { id: "LG-2".into(), name: "LG 27UL850".into(), windows_name: "LG 27UL850".into(), windows: vec![] }];
             w.wall_screen = Some("LG-2".into());
             w.scroll = DOWN_TO_WALL;
         }),
@@ -328,7 +328,7 @@ ws2 = \"desk.png\"
         }),
         ("wallpaper-chooser", Some(Section::Workspaces), |w| {
             settings::store::use_for_test(WALL);
-            w.pics.view.waiting = vec![crate::ws::Waiting { id: "LG-2".into(), name: "LG 27UL850".into(), windows_name: "LG 27UL850".into(), windows: vec![] }];
+            w.pics.view.waiting = vec![crate::ws::views::Waiting { id: "LG-2".into(), name: "LG 27UL850".into(), windows_name: "LG 27UL850".into(), windows: vec![] }];
             w.scroll = DOWN_TO_WALL;
         }),
         ("wallpaper-one", Some(Section::Workspaces), |w| {
@@ -356,7 +356,7 @@ ws2 = \"desk.png\"
 \"olk.exe\" = { workspace = 1, screen = \"internal\" }
 ");
             fake_apps(w, false);
-            w.pics.view.waiting = vec![crate::ws::Waiting { id: "LG-2".into(), name: "LG 27UL850".into(), windows_name: "LG 27UL850".into(), windows: vec![] }];
+            w.pics.view.waiting = vec![crate::ws::views::Waiting { id: "LG-2".into(), name: "LG 27UL850".into(), windows_name: "LG 27UL850".into(), windows: vec![] }];
             w.hover = Some(Ctl::AppX(3));
         }),
         ("apps-add", Some(Section::Apps), |w| {
@@ -374,7 +374,7 @@ ws2 = \"desk.png\"
         ("apps-screen", Some(Section::Apps), |w| {
             settings::store::use_for_test(APPS);
             fake_apps(w, false);
-            w.pics.view.waiting = vec![crate::ws::Waiting { id: "LG-2".into(), name: "LG 27UL850".into(), windows_name: "LG 27UL850".into(), windows: vec![] }];
+            w.pics.view.waiting = vec![crate::ws::views::Waiting { id: "LG-2".into(), name: "LG 27UL850".into(), windows_name: "LG 27UL850".into(), windows: vec![] }];
         }),
         ("apps-empty", Some(Section::Apps), |w| fake_apps(w, false)),
         ("colors", Some(Section::Colors), |_| {}),
@@ -534,7 +534,7 @@ screen = \"Desk\"
             for p in w.pics.view.present.iter_mut() {
                 p.name = "Desk".into();
             }
-            w.pics.view.waiting = vec![crate::ws::Waiting { id: "LG-2".into(), name: "LG 27UL850".into(), windows_name: "LG 27UL850".into(), windows: vec![] }];
+            w.pics.view.waiting = vec![crate::ws::views::Waiting { id: "LG-2".into(), name: "LG 27UL850".into(), windows_name: "LG 27UL850".into(), windows: vec![] }];
             w.scroll = DOWN_TO_NAMES;
         }),
         ("names-readonly", Some(Section::Workspaces), |w| {

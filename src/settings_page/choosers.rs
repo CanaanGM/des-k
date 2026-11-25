@@ -17,7 +17,7 @@ pub(crate) struct ScreenChoice {
     pub(crate) present: Option<usize>, // its place in View::present
 }
 
-pub(crate) fn screen_choices(view: &crate::ws::View, s: &Settings) -> Vec<ScreenChoice> {
+pub(crate) fn screen_choices(view: &crate::ws::views::View, s: &Settings) -> Vec<ScreenChoice> {
     let own = |id: &str| if s.indicator_screens.contains_key(id) { "Own place" } else { "" };
     let mut out = vec![ScreenChoice { id: None, name: "All screens".into(), side: "", present: None }];
     for (i, p) in view.present.iter().enumerate() {

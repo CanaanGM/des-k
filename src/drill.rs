@@ -104,7 +104,7 @@ thread_local! {
     static STRESS: RefCell<Stress> = RefCell::default();
 }
 
-/// One `WM_APP` switch, timed by main from its match arm to `ws::switch` returning.
+/// One `WM_APP` switch, timed by main from its match arm to `ws::switch::switch` returning.
 pub fn switched(took: Duration) {
     STRESS.with_borrow_mut(|s| s.switched(took));
 }

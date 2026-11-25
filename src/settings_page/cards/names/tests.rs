@@ -46,10 +46,10 @@ fn a_screen_id_with_odd_letters_keeps_its_own_table() {
 #[test]
 fn the_names_chooser_tells_same_names_apart() {
     let r = RECT::default();
-    let p = |id: &str, name: &str, windows: &str| crate::ws::Present { id: id.into(), device: String::new(), name: name.into(), windows_name: windows.into(), full: r, work: r };
-    let view = crate::ws::View {
+    let p = |id: &str, name: &str, windows: &str| crate::ws::views::Present { id: id.into(), device: String::new(), name: name.into(), windows_name: windows.into(), full: r, work: r };
+    let view = crate::ws::views::View {
         present: vec![p("DEL-1", "Left", "DELL U2720Q"), p("LG-2", "Left", "LG 27UL850"), p("internal", "Built-in display", "Built-in display")],
-        waiting: vec![crate::ws::Waiting { id: "HP-3".into(), name: "HP E24".into(), windows_name: "HP E24".into(), windows: vec![] }],
+        waiting: vec![crate::ws::views::Waiting { id: "HP-3".into(), name: "HP E24".into(), windows_name: "HP E24".into(), windows: vec![] }],
         ..Default::default()
     };
     let shown: Vec<(String, String)> = name_choices(&view).into_iter().map(|c| (c.name, c.side)).collect();

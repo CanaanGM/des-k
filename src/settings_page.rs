@@ -240,8 +240,8 @@ type Hit = controls::Hit<Ctl, u8>;
 /// What the tiles, the preview and the touchpad draw, copied out of ws and Windows.
 #[derive(Clone, PartialEq, Default)]
 struct Pics {
-    screens: Vec<crate::ws::ScreenInfo>,
-    view: crate::ws::View,
+    screens: Vec<crate::ws::views::ScreenInfo>,
+    view: crate::ws::views::View,
     pad: Option<PadState>,
     back: Option<GaveBack>,
     here: Option<String>, // the device the page is on, for the indicator preview
@@ -255,8 +255,8 @@ struct Pics {
 /// The pictures' data now, or None while ws is busy (the next tick tries again).
 fn pictures(h: Option<HWND>) -> Option<Pics> {
     let n = settings::get().workspaces;
-    let view = crate::ws::view(&[n.saturating_sub(1).max(2), DEFAULTS.workspaces])?;
-    let screens = crate::ws::screen_info();
+    let view = crate::ws::views::view(&[n.saturating_sub(1).max(2), DEFAULTS.workspaces])?;
+    let screens = crate::ws::views::screen_info();
     let here = h.and_then(|h| {
         let mon = unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) };
         let mut mi = MONITORINFOEXW { monitorInfo: MONITORINFO { cbSize: size_of::<MONITORINFOEXW>() as u32, ..Default::default() }, ..Default::default() };
@@ -766,7 +766,7 @@ pub fn open_at(section: Option<Section>, card: Option<Card>) {
             ..Default::default()
         };
         RegisterClassW(&wc); // fails harmlessly when the page opens a second time
-        let (mon, _) = crate::ws::under_mouse();
+        let (mon, _) = crate::ws::switch::under_mouse();
         let (work, _) = work_area(mon);
         // Made on the screen it opens on, so it starts at that screen's dpi.
         let h = match CreateWindowExW(WINDOW_EX_STYLE(0), CLASS, w!("des-k settings"), STYLE, work.left, work.top, 100, 100, None, None, Some(inst.into()), None) {

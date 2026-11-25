@@ -151,15 +151,15 @@ pub(crate) fn wall_interval_edit(s: &Settings, k: usize, up: bool) -> Option<Edi
 
 /// The screen a preview takes its shape and Windows wallpaper from: the chosen one while it is
 /// plugged in, else the main display (the one at 0, 0), else the first.
-fn wall_rect(v: &crate::ws::View, screen: Option<&str>) -> Option<RECT> {
-    let main = |p: &&crate::ws::Present| p.full.left <= 0 && p.full.top <= 0 && p.full.right > 0 && p.full.bottom > 0;
+fn wall_rect(v: &crate::ws::views::View, screen: Option<&str>) -> Option<RECT> {
+    let main = |p: &&crate::ws::views::Present| p.full.left <= 0 && p.full.top <= 0 && p.full.right > 0 && p.full.bottom > 0;
     screen.and_then(|id| v.present.iter().find(|p| p.id == id)).or_else(|| v.present.iter().find(main)).or_else(|| v.present.first()).map(|p| p.full)
 }
 
 /// The screen whose slideshow a row's preview shows (spec 0028 AC-11): the chosen one while it
 /// is plugged in, the main display for All screens, and None for a screen not plugged in.
-fn wall_shown_id(v: &crate::ws::View, screen: Option<&str>) -> Option<String> {
-    let main = |p: &&crate::ws::Present| p.full.left <= 0 && p.full.top <= 0 && p.full.right > 0 && p.full.bottom > 0;
+fn wall_shown_id(v: &crate::ws::views::View, screen: Option<&str>) -> Option<String> {
+    let main = |p: &&crate::ws::views::Present| p.full.left <= 0 && p.full.top <= 0 && p.full.right > 0 && p.full.bottom > 0;
     match screen {
         Some(id) => v.present.iter().find(|p| p.id == id).map(|p| p.id.clone()),
         None => v.present.iter().find(main).or_else(|| v.present.first()).map(|p| p.id.clone()),
@@ -209,13 +209,13 @@ fn wall_reveal(top: usize, line: usize, n: usize, rows: usize) -> usize {
 /// The wallpapers folder's pictures, by name with case ignored (AC-13, AC-14), read as a
 /// row's menu opens. A missing folder lists none.
 pub(in crate::settings_page) fn wall_folder() -> Vec<String> {
-    wall_names(&crate::ws::data_dir().join("wallpapers"), true, settings::parse::is_picture_name)
+    wall_names(&crate::ws::store::data_dir().join("wallpapers"), true, settings::parse::is_picture_name)
 }
 
 /// The folder's slideshow folders and their picture counts (spec 0028 AC-11, AC-13), read only
 /// as a row's menu opens: subfolders whose names the file's reader takes as a folder.
 pub(in crate::settings_page) fn wall_dirs() -> Vec<(String, usize)> {
-    let dir = crate::ws::data_dir().join("wallpapers");
+    let dir = crate::ws::store::data_dir().join("wallpapers");
     wall_names(&dir, false, settings::parse::is_folder_name)
         .into_iter()
         .map(|f| {
@@ -227,7 +227,7 @@ pub(in crate::settings_page) fn wall_dirs() -> Vec<(String, usize)> {
 
 /// How many pictures folder `name` holds at its top level; 0 when it isn't there.
 pub(in crate::settings_page) fn wall_count(name: &str) -> usize {
-    wall_names(&crate::ws::data_dir().join("wallpapers").join(name), true, settings::parse::is_picture_name).len()
+    wall_names(&crate::ws::store::data_dir().join("wallpapers").join(name), true, settings::parse::is_picture_name).len()
 }
 
 /// The names of `dir`'s files (or subfolders) that pass `keep`, in slideshow order.
@@ -741,7 +741,7 @@ pub(in crate::settings_page) fn tick_wall(i: usize) {
 /// Open folder (AC-14): the wallpapers folder in explorer, running as you, made first if it is
 /// missing. `create_dir` fails rather than follows anything already at that name.
 fn open_wallpapers() {
-    let dir = crate::ws::data_dir().join("wallpapers");
+    let dir = crate::ws::store::data_dir().join("wallpapers");
     if !dir.is_dir()
         && let Err(e) = std::fs::create_dir(&dir)
     {

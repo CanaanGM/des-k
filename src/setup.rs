@@ -289,7 +289,7 @@ fn format(f: &File) -> String {
 }
 
 fn path() -> PathBuf {
-    crate::ws::data_dir().join("touchpad.txt")
+    crate::ws::store::data_dir().join("touchpad.txt")
 }
 
 /// None: no touchpad.txt yet, the first start.
@@ -313,8 +313,8 @@ fn load() -> Option<File> {
 
 /// A hard kill mid write must never lose your saved values.
 fn save(f: &File) -> bool {
-    let tmp = crate::ws::data_dir().join("touchpad.tmp");
-    match crate::ws::write_new(&tmp, &format(f)).and_then(|()| std::fs::rename(&tmp, path())) {
+    let tmp = crate::ws::store::data_dir().join("touchpad.tmp");
+    match crate::ws::store::write_new(&tmp, &format(f)).and_then(|()| std::fs::rename(&tmp, path())) {
         Ok(()) => true,
         Err(e) => {
             warn!("touchpad.txt: cannot write it: {e}");

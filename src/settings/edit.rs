@@ -35,7 +35,7 @@ pub(crate) fn write(edit: Edit) -> Result<(), String> {
     };
     let new = edit_text(&text, &edit)?;
     let tmp = path.with_extension("toml.tmp");
-    if let Err(e) = crate::ws::write_new(&tmp, &new).and_then(|()| std::fs::rename(&tmp, &path)) {
+    if let Err(e) = crate::ws::store::write_new(&tmp, &new).and_then(|()| std::fs::rename(&tmp, &path)) {
         let why = format!("cannot save {} ({e})", path.display());
         warn!("settings: {why}");
         return Err(why);

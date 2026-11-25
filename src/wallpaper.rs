@@ -234,7 +234,7 @@ fn read(screens: &[(RECT, (i32, i32))]) -> windows::core::Result<()> {
 /// settings page, whichever did not call. A failure only marks the file (AC-8): the backdrop decodes
 /// the same files and logs the one line.
 fn read_ws(screens: &[(RECT, (i32, i32), Vec<String>)], fit: Fit) {
-    let folder = crate::ws::data_dir().join("wallpapers");
+    let folder = crate::ws::store::data_dir().join("wallpapers");
     let fit = crate::backdrop::position(fit);
     let back = if screens.iter().any(|s| !s.2.is_empty()) { background().unwrap_or(0) } else { 0 };
     let mut wanted = Vec::new();

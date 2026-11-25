@@ -140,8 +140,8 @@ type Hit = controls::Hit<Ctl, u8>;
 /// What the screens picture and the touchpad step draw, copied out of ws and Windows.
 #[derive(Clone, PartialEq, Default)]
 struct Pics {
-    screens: Vec<crate::ws::ScreenInfo>,
-    view: crate::ws::View,
+    screens: Vec<crate::ws::views::ScreenInfo>,
+    view: crate::ws::views::View,
     pad: Option<PadState>,
     mouse: String, // the device under the mouse
 }
@@ -271,14 +271,14 @@ pub fn tick() {
 /// Takes a new copy of the pictures' data; true when it changed.
 fn update_pictures() -> bool {
     let n = settings::get().workspaces;
-    let Some(view) = crate::ws::view(&[n.saturating_sub(1).max(2)]) else { return false };
+    let Some(view) = crate::ws::views::view(&[n.saturating_sub(1).max(2)]) else { return false };
     let st = setup::state();
     // A give back that worked is over once Windows' gestures read off again; a failed one
     // stays until a later give back replaces it (AC-FR-5).
     if st.off && LAST.get().is_some_and(|b| !b.failed()) {
         LAST.set(None);
     }
-    let new = Pics { screens: crate::ws::screen_info(), view, pad: Some(st), mouse: crate::ws::under_mouse().1 };
+    let new = Pics { screens: crate::ws::views::screen_info(), view, pad: Some(st), mouse: crate::ws::switch::under_mouse().1 };
     set(|w| {
         let changed = w.pics != new;
         w.pics = new;
@@ -404,9 +404,9 @@ pub(crate) fn tried(t: Try) {
         return;
     }
     let switched = (t == Try::Switch).then(|| {
-        let (_, dev) = crate::ws::under_mouse();
-        let screens = crate::ws::screen_info();
-        let view = crate::ws::view(&[]);
+        let (_, dev) = crate::ws::switch::under_mouse();
+        let screens = crate::ws::views::screen_info();
+        let view = crate::ws::views::view(&[]);
         let to = view.as_ref().and_then(|v| v.active.iter().find(|(d, _)| *d == dev).map(|(_, a)| *a)).unwrap_or(0);
         let name = view.as_ref().and_then(|v| v.names.iter().find(|(d, _)| *d == dev).map(|(_, n)| n.clone())).or_else(|| screens.iter().find(|s| s.device == dev).map(|s| s.name.clone())).unwrap_or_default();
         (name, to, screens.len() < 2)
@@ -709,7 +709,7 @@ pub fn show() {
             ..Default::default()
         };
         RegisterClassW(&wc); // fails harmlessly when it opens a second time
-        let (mon, _) = crate::ws::under_mouse();
+        let (mon, _) = crate::ws::switch::under_mouse();
         let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
         let _ = GetMonitorInfoW(mon, &mut mi);
         let work = mi.rcWork;

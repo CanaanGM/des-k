@@ -18,7 +18,7 @@ fn stem(exe: &str) -> String {
 /// exe while des-k runs.
 pub(crate) fn program(hwnd: HWND) -> String {
     let (name, frame) = app(hwnd);
-    name.unwrap_or_else(|| if frame { ws::title(hwnd) } else { String::new() })
+    name.unwrap_or_else(|| if frame { ws::views::title(hwnd) } else { String::new() })
 }
 
 /// `program` without the title: for words des-k shows unasked, where a title could carry a

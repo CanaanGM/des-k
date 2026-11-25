@@ -233,7 +233,7 @@ fn run() {
     }
     // Explorer restarting destroys the WorkerW and every window in it: checked each second.
     let check = unsafe { SetTimer(None, 0, 1000, None) };
-    let mut b = Backdrop::new(crate::ws::data_dir().join("wallpapers"));
+    let mut b = Backdrop::new(crate::ws::store::data_dir().join("wallpapers"));
     b.take();
     while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
         match msg.message {

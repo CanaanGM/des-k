@@ -78,7 +78,7 @@ unsafe extern "system" fn on_foreground(_: HWINEVENTHOOK, _: u32, hwnd: HWND, ob
 unsafe extern "system" fn on_console_close(event: u32) -> BOOL {
     // Runs on a fresh thread: needs its own COM.
     unsafe { let _ = CoInitializeEx(None, COINIT_MULTITHREADED); }
-    ws::restore_all();
+    ws::restore::restore_all();
     // des-k starts again at sign in, so a sign out or shutdown must not give Windows its gestures back.
     if !matches!(event, CTRL_LOGOFF_EVENT | CTRL_SHUTDOWN_EVENT) {
         setup::write_back();
@@ -120,12 +120,12 @@ fn start_task() {
 /// freed copy can hand on (spec 0032).
 fn backdrop_check(seen: &mut Option<(u64, u64)>) {
     let s = settings::get();
-    let now = (ws::SHOWN.load(std::sync::atomic::Ordering::Relaxed), s.version());
+    let now = (ws::views::SHOWN.load(std::sync::atomic::Ordering::Relaxed), s.version());
     if *seen == Some(now) {
         return;
     }
     *seen = Some(now);
-    let wants = ws::shown().into_iter().map(|(rect, id, shown)| backdrop::Want {
+    let wants = ws::views::shown().into_iter().map(|(rect, id, shown)| backdrop::Want {
         rect,
         shown,
         files: (0..s.workspaces).map(|i| s.wallpaper_for(&id, i).and_then(backdrop::Source::of)).collect(),
@@ -160,7 +160,7 @@ fn main() -> windows::core::Result<()> {
                 // gestures back, as a quit would (the uninstaller relies on this).
                 log::open(true);
                 unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok()? };
-                ws::rescue();
+                ws::store::rescue();
                 setup::write_back();
                 log::flush();
             }
@@ -191,10 +191,10 @@ fn main() -> windows::core::Result<()> {
     if std::env::args().any(|a| a == "--pretend-unknown-windows") {
         cloak::pretend_unknown();
     }
-    // Before ws::load, so adopting a saved layout already knows whether hiding works (AC-3).
-    cloak::check_at_start(&ws::app_windows());
-    let restoring = ws::load();
-    apps::sync(); // after ws::load, so the windows it adopted count as already open (spec 0027 AC-3)
+    // Before ws::restore::load, so adopting a saved layout already knows whether hiding works (AC-3).
+    cloak::check_at_start(&ws::views::app_windows());
+    let restoring = ws::restore::load();
+    apps::sync(); // after ws::restore::load, so the windows it adopted count as already open (spec 0027 AC-3)
     // Always on: the finder's recency needs it even with follow_activation off (spec 0007).
     // Skipping our own process keeps des-k's own focus changes from triggering a follow.
     // Never unhooked: the hook dies with the process.
@@ -209,7 +209,7 @@ fn main() -> windows::core::Result<()> {
     // always ends here, after showing every window.
     std::panic::set_hook(Box::new(move |info| {
         log::panic(info);
-        ws::restore_after_panic();
+        ws::restore::restore_after_panic();
         setup::write_back();
         log::flush();
         std::process::exit(101);
@@ -242,13 +242,13 @@ fn main() -> windows::core::Result<()> {
     // While a window a rule moved to another screen is watched (spec 0027 AC-6), and while a
     // ruled app's window waits for its title or app id (AC-16).
     let (mut settle_timer, mut pending_timer) = (0, 0);
-    if restoring == ws::Restoring::NewSignIn {
+    if restoring == ws::restore::Restoring::NewSignIn {
         apps::place_open(); // restore leaves ruled apps to their rule (spec 0027 AC-11)
-        timer_on(&mut settle_timer, ws::settling(), 250);
+        timer_on(&mut settle_timer, ws::rules::settling(), 250);
     }
-    if restoring != ws::Restoring::No {
+    if restoring != ws::restore::Restoring::No {
         restore_timer = unsafe { SetTimer(None, 0, 500, None) };
-        if !ws::restore_tick() && restore_timer != 0 {
+        if !ws::restore::restore_tick() && restore_timer != 0 {
             unsafe { let _ = KillTimer(None, restore_timer); }
             restore_timer = 0;
         }
@@ -277,13 +277,13 @@ fn main() -> windows::core::Result<()> {
             WM_APP => {
                 #[cfg(feature = "drill")]
                 let started = std::time::Instant::now();
-                ws::switch(msg.wParam.0 as isize, ws::Source::Keys);
+                ws::switch::switch(msg.wParam.0 as isize, ws::switch::Source::Keys);
                 #[cfg(feature = "drill")]
                 drill::switched(started.elapsed());
                 welcome::tried(welcome::Try::Switch);
             }
             indicator::WM_DISPLAY_CHANGED => {
-                ws::check_screens(false);
+                ws::screens::check_screens(false);
                 settings_page::tick();
                 welcome::tick();
             }
@@ -291,27 +291,27 @@ fn main() -> windows::core::Result<()> {
                 let h = HWND(msg.wParam.0 as *mut _);
                 finder::used(h);
                 if settings::get().follow_activation {
-                    ws::follow(h);
+                    ws::switch::follow(h);
                 }
             }
-            keys::WM_SEND => ws::send(ws::To::Step(msg.wParam.0 as isize), msg.lParam.0 != 0),
-            keys::WM_JUMP => ws::jump(msg.wParam.0, ws::Source::Keys),
-            keys::WM_BACK => ws::back(ws::Source::Keys),
-            keys::WM_SEND_TO => ws::send(ws::To::Index(msg.wParam.0), msg.lParam.0 != 0),
-            keys::WM_PIN => ws::pin(),
+            keys::WM_SEND => ws::moves::send(ws::moves::To::Step(msg.wParam.0 as isize), msg.lParam.0 != 0),
+            keys::WM_JUMP => ws::switch::jump(msg.wParam.0, ws::switch::Source::Keys),
+            keys::WM_BACK => ws::switch::back(ws::switch::Source::Keys),
+            keys::WM_SEND_TO => ws::moves::send(ws::moves::To::Index(msg.wParam.0), msg.lParam.0 != 0),
+            keys::WM_PIN => ws::moves::pin(),
             apps::WM_OPENED => {
                 apps::opened(HWND(msg.wParam.0 as *mut _), msg.lParam.0 as u32);
-                timer_on(&mut settle_timer, ws::settling(), 250);
+                timer_on(&mut settle_timer, ws::rules::settling(), 250);
                 timer_on(&mut pending_timer, apps::waiting(), 15);
             }
             apps::WM_UNCLOAKED => {
                 let h = HWND(msg.wParam.0 as *mut _);
-                ws::recloak(h);
+                ws::rules::recloak(h);
                 apps::uncloaked(h);
-                timer_on(&mut settle_timer, ws::settling(), 250);
+                timer_on(&mut settle_timer, ws::rules::settling(), 250);
             }
             indicator::WM_ATTENTION => {
-                let p = ws::attention(HWND(msg.wParam.0 as *mut _));
+                let p = ws::focus::attention(HWND(msg.wParam.0 as *mut _));
                 overview::wants_changed();
                 // The mark is set either way; only the popup waits (spec 0022 AC-3, AC-7).
                 if let Some(p) = p
@@ -325,7 +325,7 @@ fn main() -> windows::core::Result<()> {
             }
             keys::WM_FINDER => {
                 overview::close(true);
-                finder::toggle(ws::Source::Keys);
+                finder::toggle(ws::switch::Source::Keys);
             }
             // To the window that is recording: the settings page, the first run or the hints window.
             keys::WM_RECORDED => match keys::recording_window() {
@@ -334,7 +334,7 @@ fn main() -> windows::core::Result<()> {
                 Some(h) if settings_page::owns(h) => settings_page::recording::recorded(msg.wParam.0 as u16, msg.lParam.0 as u8),
                 _ => {}
             },
-            keys::WM_HINTS => hints::toggle(ws::Source::Keys),
+            keys::WM_HINTS => hints::toggle(ws::switch::Source::Keys),
             keys::WM_OVERVIEW => {
                 finder::close(true);
                 overview::toggle();
@@ -349,13 +349,13 @@ fn main() -> windows::core::Result<()> {
             }
             // Indicator timers carry its window and go to DispatchMessageW below.
             WM_TIMER if msg.hwnd.is_invalid() && restore_timer != 0 && msg.wParam.0 == restore_timer => {
-                if !ws::restore_tick() {
+                if !ws::restore::restore_tick() {
                     unsafe { let _ = KillTimer(None, restore_timer); }
                     restore_timer = 0;
                 }
             }
             WM_TIMER if msg.hwnd.is_invalid() && settle_timer != 0 && msg.wParam.0 == settle_timer => {
-                if !ws::settle_tick() {
+                if !ws::rules::settle_tick() {
                     unsafe { let _ = KillTimer(None, settle_timer); }
                     settle_timer = 0;
                 }
@@ -365,7 +365,7 @@ fn main() -> windows::core::Result<()> {
                     unsafe { let _ = KillTimer(None, pending_timer); }
                     pending_timer = 0;
                 }
-                timer_on(&mut settle_timer, ws::settling(), 250);
+                timer_on(&mut settle_timer, ws::rules::settling(), 250);
             }
             WM_TIMER if msg.hwnd.is_invalid() && watch_timer != 0 && msg.wParam.0 == watch_timer => {
                 // The theme broadcast may never reach an admin des-k (spec 0017 AC-2).
@@ -373,10 +373,10 @@ fn main() -> windows::core::Result<()> {
                     ui::repaint_all();
                 }
                 settings::store::watch();
-                ws::check_screens(true);
-                ws::resync();
+                ws::screens::check_screens(true);
+                ws::restore::resync();
                 tray::warn_if_broken();
-                if ws::cant_save_due() {
+                if ws::store::cant_save_due() {
                     tray::cant_save();
                 }
                 settings_page::tick();
@@ -386,7 +386,7 @@ fn main() -> windows::core::Result<()> {
             // Posted by `des-k --quit` (to the indicator) and the tray's Quit. The finder and
             // the overview post WM_CLOSE to any window they close, des-k's own settings page
             // and welcome screen too: those go to their window, never end des-k.
-            WM_CLOSE if matches!(ws::class_name(msg.hwnd).as_str(), "des-k-indicator" | "des-k-tray") => break,
+            WM_CLOSE if matches!(ws::views::class_name(msg.hwnd).as_str(), "des-k-indicator" | "des-k-tray") => break,
             // Indicator, tray, tray menu, finder, overview, welcome screen, hints window and settings
             // page messages. TranslateMessage makes the finder's typed characters and IME input;
             // the finder and the overview take their own keys before that, and the hints
@@ -400,7 +400,7 @@ fn main() -> windows::core::Result<()> {
         }
         backdrop_check(&mut shown);
     }
-    ws::restore_all();
+    ws::restore::restore_all();
     setup::write_back(); // Quit and --quit
     tray::remove();
     #[cfg(feature = "drill")]

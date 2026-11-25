@@ -96,7 +96,7 @@ pub(super) fn act(ctl: Ctl) {
         Ctl::TileRemove => step_key("workspaces", false),
         Ctl::Forget(i) => {
             if let Some(id) = get(|w| w.pics.view.waiting.get(i).map(|x| x.id.clone())).flatten() {
-                crate::ws::forget(&id);
+                crate::ws::screens::forget(&id);
                 update_pictures(true);
             }
         }

@@ -190,7 +190,7 @@ pub fn at_start(first_run: bool) {
     if news.is_empty() {
         return;
     }
-    let (mon, _) = crate::ws::under_mouse();
+    let (mon, _) = crate::ws::switch::under_mouse();
     if crate::indicator::busy(mon) {
         info!("what's new: waiting until you're not busy (a full screen app or a presentation)");
         WAITING.set(news);
@@ -204,7 +204,7 @@ pub fn tick() {
     if WAITING.with_borrow(Vec::is_empty) {
         return;
     }
-    let (mon, _) = crate::ws::under_mouse();
+    let (mon, _) = crate::ws::switch::under_mouse();
     if crate::indicator::busy(mon) {
         return;
     }
@@ -675,7 +675,7 @@ fn show(news: Vec<(Version, &'static [Card])>, ours: Version, updated: bool) {
             ..Default::default()
         };
         RegisterClassW(&wc); // fails harmlessly when it opens a second time
-        let (mon, _) = crate::ws::under_mouse();
+        let (mon, _) = crate::ws::switch::under_mouse();
         let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
         let _ = GetMonitorInfoW(mon, &mut mi);
         let work = mi.rcWork;

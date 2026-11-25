@@ -30,7 +30,7 @@ use crate::settings::{self, Animation, Labels, Pick, Settings};
 use crate::ui::{self, Theme, canvas::{Bx, Canvas}, color::{alpha, mix, op}, fonts::F};
 use crate::uia::{self, Node, Tree};
 use crate::wallpaper::{self, Face};
-use crate::ws::{self, Miss};
+use crate::ws::{self, moves::Miss};
 
 mod anim;
 mod drag;
@@ -152,7 +152,7 @@ struct Session {
 /// A listed window and where it lives, as the refresh compares them.
 type Seen = (HWND, String, usize, bool);
 
-fn seen(places: &[ws::Place]) -> Vec<Seen> {
+fn seen(places: &[ws::views::Place]) -> Vec<Seen> {
     places.iter().map(|p| (p.hwnd, p.device.clone(), p.workspace, p.on_screen)).collect()
 }
 
@@ -311,10 +311,10 @@ fn open() {
     let fg = unsafe { GetForegroundWindow() };
     let root = unsafe { GetAncestor(fg, GA_ROOTOWNER) };
     let came_from = if root.is_invalid() { fg } else { root };
-    let (_, mouse) = ws::under_mouse();
-    let places = ws::windows();
+    let (_, mouse) = ws::switch::under_mouse();
+    let places = ws::views::windows();
     // Numbered like the finder's screens: left to right, then top down.
-    let mut order = ws::screens();
+    let mut order = ws::views::screens();
     order.sort_by_key(|(_, r)| (r.left, r.top));
     let style = settings::get().overview_animation;
     ui::canvas::gdiplus();
@@ -335,7 +335,7 @@ fn open() {
         sc.build(&places);
         screens.push(sc);
     }
-    take_wants(&mut screens, &ws::wanted());
+    take_wants(&mut screens, &ws::focus::wanted());
     let start = screens.iter().position(|s| s.device == mouse).unwrap_or(0);
     let Some(sc) = screens.get(start) else {
         return warn!("overview: no screen to open on");
@@ -470,7 +470,7 @@ pub fn key(msg: &MSG) -> bool {
     true
 }
 
-/// Each screen's marks from `ws::wanted` (spec 0022). Paint reads only these, never the layout,
+/// Each screen's marks from `ws::focus::wanted` (spec 0022). Paint reads only these, never the layout,
 /// so a new mark shows without moving a tile or a window.
 fn take_wants(screens: &mut [Screen], wanted: &[(String, usize, HWND)]) {
     for sc in screens {
@@ -483,7 +483,7 @@ pub fn wants_changed() {
     if !is_open() {
         return;
     }
-    let wanted = ws::wanted();
+    let wanted = ws::focus::wanted();
     let popups = SESSION.with_borrow_mut(|s| {
         let Some(s) = s.as_mut() else { return Vec::new() };
         take_wants(&mut s.screens, &wanted);
@@ -567,13 +567,13 @@ fn jump(i: usize) {
 fn show(device: &str, shown: usize, i: usize) {
     close(true);
     if i != shown {
-        ws::show_workspace(device, i);
+        ws::switch::show_workspace(device, i);
     }
 }
 
 /// Land on a window, wherever it lives, like the finder's Enter.
 fn go(hwnd: HWND) {
-    match ws::go_to(hwnd) {
+    match ws::moves::go_to(hwnd) {
         Ok(()) => {
             finder::used(hwnd); // our own focus change: the foreground hook skips it
             close(false);
@@ -588,8 +588,8 @@ fn go(hwnd: HWND) {
 /// Every screen laid out again from the current window list, after windows moved or went:
 /// one may sit in a tile on one screen and in the spread on another.
 fn rebuild() {
-    let mut places = ws::windows();
-    let wanted = ws::wanted();
+    let mut places = ws::views::windows();
+    let wanted = ws::focus::wanted();
     let (popups, old) = SESSION.with_borrow_mut(|s| {
         let Some(s) = s.as_mut() else { return (Vec::new(), None) };
         // Seen with the closing windows, so the refresh does not take them for a change.
@@ -630,7 +630,7 @@ fn slides_moved() {
         let st = settings::get();
         let mut any = false;
         for sc in &mut s.screens {
-            let id = ws::id(&sc.device);
+            let id = ws::views::id(&sc.device);
             for (i, t) in sc.tiles.iter_mut().enumerate() {
                 let file = tile_file(&st, &id, i);
                 any |= t.file != file;
@@ -658,7 +658,7 @@ fn refresh() {
         let s = s.as_mut()?;
         let mut popups = Vec::new();
         for sc in &mut s.screens {
-            let names = ws::names(&sc.device);
+            let names = ws::views::names(&sc.device);
             if sc.tiles.iter().zip(&names).any(|(t, n)| t.name != *n) {
                 sc.tiles.iter_mut().zip(names).for_each(|(t, n)| t.name = n);
                 popups.push(sc.popup);
@@ -667,7 +667,7 @@ fn refresh() {
         Some(popups)
     });
     invalidate(renamed.unwrap_or_default());
-    let now = seen(&ws::windows());
+    let now = seen(&ws::views::windows());
     let plan = SESSION.with_borrow_mut(|s| {
         let s = s.as_mut()?;
         let plan = refresh_plan(settings::get().overview_live, &s.seen, &now);
@@ -686,7 +686,7 @@ fn refresh() {
 /// X, middle click, Ctrl+W: ask the window to close as its own X button would, take it out of
 /// the layout at once, then watch for it to go. The overview stays open.
 fn close_window(popup: HWND, h: HWND) {
-    let app = ws::who(h);
+    let app = ws::views::who(h);
     if !unsafe { IsWindow(Some(h)) }.as_bool() {
         info!("overview: {app} is gone");
         return drop_gone(&[h]);

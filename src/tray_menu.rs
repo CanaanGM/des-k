@@ -23,7 +23,7 @@ use crate::settings::Combo;
 use crate::ui::{self, Theme, canvas::{Bx, Canvas}, color::{mix, op}, fonts::F};
 use crate::uia::{self, Node, Tree};
 use crate::update::{Fail, Version};
-use crate::ws::TrayScreen;
+use crate::ws::views::TrayScreen;
 
 const CLASS: PCWSTR = w!("des-k-tray-menu");
 const TIP_CLASS: PCWSTR = w!("des-k-tip");

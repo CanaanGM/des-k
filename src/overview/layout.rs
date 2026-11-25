@@ -126,22 +126,22 @@ impl Screen {
         files
     }
 
-    /// Lay out the strip and the spread from `places` (a `ws::windows()` list).
-    pub(super) fn build(&mut self, places: &[ws::Place]) {
+    /// Lay out the strip and the spread from `places` (a `ws::views::windows()` list).
+    pub(super) fn build(&mut self, places: &[ws::views::Place]) {
         let (w, h) = self.size();
-        self.shown = ws::active(&self.device);
+        self.shown = ws::views::active(&self.device);
         // The old thumbnails go before the new ones come.
         self.tiles.clear();
         self.slots.clear();
-        let mine: Vec<&ws::Place> = places.iter().filter(|p| p.device == self.device).collect();
-        let names = ws::names(&self.device);
-        let id = ws::id(&self.device);
+        let mine: Vec<&ws::views::Place> = places.iter().filter(|p| p.device == self.device).collect();
+        let names = ws::views::names(&self.device);
+        let id = ws::views::id(&self.device);
         let s = settings::get();
         for (i, rect) in strip(w, h, settings::get().workspaces, self.scale).into_iter().enumerate() {
-            // ws::windows() lists front first (on screen in z order, hidden top first), and
+            // ws::views::windows() lists front first (on screen in z order, hidden top first), and
             // DWM draws the thumbnail registered last on top, so register back to front. A
             // pinned window is in the shown workspace's tile only.
-            let here = |p: &&&ws::Place| if p.pinned { i == self.shown } else { p.workspace == i };
+            let here = |p: &&&ws::views::Place| if p.pinned { i == self.shown } else { p.workspace == i };
             let minis = mine.iter().rev().filter(here).filter_map(|p| self.mini(rect, p.hwnd)).collect();
             let file = tile_file(&s, &id, i);
             self.tiles.push(Tile { rect, minis, name: names.get(i).cloned().unwrap_or_default(), file, picture: None });
@@ -149,8 +149,8 @@ impl Screen {
         let labels = settings::get().overview_labels;
         self.labels = labels;
         let band = if labels == Labels::None { 0 } else { self.px(LABEL) };
-        let shown: Vec<&ws::Place> = mine.iter().filter(|p| p.on_screen).copied().collect();
-        let reals: Vec<RECT> = shown.iter().map(|p| ws::real_rect(p.hwnd)).collect();
+        let shown: Vec<&ws::views::Place> = mine.iter().filter(|p| p.on_screen).copied().collect();
+        let reals: Vec<RECT> = shown.iter().map(|p| ws::screens::real_rect(p.hwnd)).collect();
         let (rects, cell_w) = spread(self.spread_area(), &reals, self.px(SLOT_GAP), band);
         self.cell_w = cell_w;
         self.slots = shown
@@ -160,7 +160,7 @@ impl Screen {
                 let thumb = thumb(self.popup, p.hwnd, rect, rect);
                 let card = thumb.is_none();
                 let icon = if card || labels == Labels::Always { finder::names::icon(p.hwnd) } else { HICON::default() };
-                Slot { hwnd: p.hwnd, rect, title: ws::title(p.hwnd), icon, pinned: p.pinned, card, thumb }
+                Slot { hwnd: p.hwnd, rect, title: ws::views::title(p.hwnd), icon, pinned: p.pinned, card, thumb }
             })
             .collect();
         self.read_face();
@@ -169,7 +169,7 @@ impl Screen {
     /// A window inside `tile` at its real place on this screen, cut at the tile's edge so it
     /// never draws onto the next tile. None when none of it falls inside.
     fn mini(&self, tile: RECT, hwnd: HWND) -> Option<Slot> {
-        let full = place_in(ws::real_rect(hwnd), self.rect, tile);
+        let full = place_in(ws::screens::real_rect(hwnd), self.rect, tile);
         let rect = intersect(full, tile)?;
         let thumb = thumb(self.popup, hwnd, full, rect);
         let card = thumb.is_none();
@@ -492,10 +492,10 @@ fn source_rect(full: RECT, shown: RECT, src: SIZE) -> RECT {
 /// A live preview of `src` as if it filled `full`, drawn only inside `shown` (a mini cut at
 /// its tile's edge; the same rect in the spread). None when Windows draws nothing for it.
 pub(super) fn thumb(host: HWND, src: HWND, full: RECT, shown: RECT) -> Option<Thumb> {
-    let t = Thumb(unsafe { DwmRegisterThumbnail(host, src) }.inspect_err(|e| warn!("overview: no preview for {}: {e}", ws::who(src))).ok()?);
-    let size = unsafe { DwmQueryThumbnailSourceSize(t.0) }.inspect_err(|e| warn!("overview: no preview size for {}: {e}", ws::who(src))).ok()?;
+    let t = Thumb(unsafe { DwmRegisterThumbnail(host, src) }.inspect_err(|e| warn!("overview: no preview for {}: {e}", ws::views::who(src))).ok()?);
+    let size = unsafe { DwmQueryThumbnailSourceSize(t.0) }.inspect_err(|e| warn!("overview: no preview size for {}: {e}", ws::views::who(src))).ok()?;
     if size.cx <= 0 || size.cy <= 0 {
-        warn!("overview: Windows draws nothing for {}, showing a card", ws::who(src));
+        warn!("overview: Windows draws nothing for {}, showing a card", ws::views::who(src));
         return None;
     }
     let mut p = DWM_THUMBNAIL_PROPERTIES {
@@ -509,7 +509,7 @@ pub(super) fn thumb(host: HWND, src: HWND, full: RECT, shown: RECT) -> Option<Th
         p.dwFlags |= DWM_TNP_RECTSOURCE;
         p.rcSource = source_rect(full, shown, size);
     }
-    unsafe { DwmUpdateThumbnailProperties(t.0, &p) }.inspect_err(|e| warn!("overview: preview for {} not placed: {e}", ws::who(src))).ok()?;
+    unsafe { DwmUpdateThumbnailProperties(t.0, &p) }.inspect_err(|e| warn!("overview: preview for {} not placed: {e}", ws::views::who(src))).ok()?;
     Some(t)
 }
 

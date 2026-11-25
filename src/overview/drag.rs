@@ -59,7 +59,7 @@ pub(super) fn aim_rects(sc: &Screen, a: Aim) -> Vec<RECT> {
 
 /// The drag ghost for `src`: 240 dip wide at `scale`, the window's aspect, not shown yet.
 fn ghost(src: HWND, scale: f32) -> Option<Ghost> {
-    let real = ws::real_rect(src);
+    let real = ws::screens::real_rect(src);
     let real = ((real.right - real.left).max(1), (real.bottom - real.top).max(1));
     let (w, h) = ghost_size(real, (GHOST_W * scale).round() as i32);
     let hwnd = ui::popup(GHOST_CLASS, Some(ghost_wndproc), WS_EX_TOPMOST | WS_EX_NOACTIVATE, false)?;
@@ -161,7 +161,7 @@ pub(super) fn drag_move() -> bool {
             return true;
         }
         let Some(g) = ghost(hwnd, scale) else {
-            warn!("overview: drag preview for {} not created", ws::who(hwnd));
+            warn!("overview: drag preview for {} not created", ws::views::who(hwnd));
             return true;
         };
         // The X would sit on a window that is now moving.
@@ -265,10 +265,10 @@ fn drop_at(d: Drag) {
     if (device.as_str(), to) == (from.0.as_str(), from.1) {
         return;
     }
-    match ws::place(hwnd, &device, to) {
+    match ws::moves::place(hwnd, &device, to) {
         Ok(()) => {
             // Hidden now: Esc must not hand focus to a window you can't see.
-            if to != ws::active(&device) {
+            if to != ws::views::active(&device) {
                 SESSION.with_borrow_mut(|s| {
                     if let Some(s) = s.as_mut().filter(|s| s.came_from == hwnd) {
                         s.came_from = HWND::default();

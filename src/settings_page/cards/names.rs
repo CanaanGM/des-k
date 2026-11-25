@@ -16,7 +16,7 @@ pub(crate) struct NameChoice {
     pub(crate) side: String,
 }
 
-pub(crate) fn name_choices(view: &crate::ws::View) -> Vec<NameChoice> {
+pub(crate) fn name_choices(view: &crate::ws::views::View) -> Vec<NameChoice> {
     let mut out = vec![NameChoice { id: None, name: "All screens".into(), windows: String::new(), side: String::new() }];
     for p in &view.present {
         out.push(NameChoice { id: Some(p.id.clone()), name: p.name.clone(), windows: p.windows_name.clone(), side: String::new() });

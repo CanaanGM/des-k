@@ -7,9 +7,9 @@ use crate::settings_page::tests::loaded;
 #[test]
 fn the_chooser_lists_every_known_screen() {
     let r = RECT { left: 0, top: 0, right: 10, bottom: 10 };
-    let view = crate::ws::View {
-        present: vec![crate::ws::Present { id: "DEL-1".into(), device: "DISPLAY2".into(), name: "DELL U2720Q".into(), windows_name: "DELL U2720Q".into(), full: r, work: r }],
-        waiting: vec![crate::ws::Waiting { id: "LG-2".into(), name: "LG 27UL850".into(), windows_name: "LG 27UL850".into(), windows: vec![] }],
+    let view = crate::ws::views::View {
+        present: vec![crate::ws::views::Present { id: "DEL-1".into(), device: "DISPLAY2".into(), name: "DELL U2720Q".into(), windows_name: "DELL U2720Q".into(), full: r, work: r }],
+        waiting: vec![crate::ws::views::Waiting { id: "LG-2".into(), name: "LG 27UL850".into(), windows_name: "LG 27UL850".into(), windows: vec![] }],
         ..Default::default()
     };
     let s = loaded("[indicator.screens.\"DEL-1\"]\nspot = \"top\"\n[indicator.screens.\"ACR-9\"]\nspot = \"left\"\n");
