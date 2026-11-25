@@ -9,7 +9,6 @@ const LIMIT: usize = 1000;
 /// waits. Take a file's line out once it is split: the list ends empty.
 const NOT_SPLIT_YET: &[(&str, usize)] = &[
     ("ws.rs", 3807),
-    ("welcome.rs", 3106),
     ("overview.rs", 2852),
     ("finder.rs", 1705),
     ("ui.rs", 1552),
