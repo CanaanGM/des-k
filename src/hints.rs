@@ -976,7 +976,7 @@ fn close(h: HWND) {
 /// Starts recording a key for the window; the hook swallows every key until it stops.
 fn start_rec() {
     let Some(h) = hwnd() else { return };
-    crate::settings_page::cancel_recording(); // one recording at a time
+    crate::settings_page::recording::cancel_recording(); // one recording at a time
     crate::welcome::cancel_recording();
     let _ = set(|w| {
         w.rec = Rec::Recording(None);
@@ -1077,10 +1077,10 @@ fn on_command(h: HWND, id: i32) {
         ID_SET => start_rec(),
         ID_REMOVE => save(Edit::Combos("shortcuts.hints", vec![])),
         ID_NOTE if matches!(get(|w| w.view.pad), Some(Pad::Off | Pad::OffWin)) => save(Edit::Value("touchpad.enabled", true.into())),
-        ID_NOTE => crate::settings_page::open(Some(crate::settings_page::Section::Touchpad)),
+        ID_NOTE => crate::settings_page::open(Some(crate::settings_page::rows::Section::Touchpad)),
         ID_MOVE => move_here(),
         ID_CANCEL => stop_rec(),
-        ID_SETTINGS => crate::settings_page::open(Some(crate::settings_page::Section::Shortcuts)),
+        ID_SETTINGS => crate::settings_page::open(Some(crate::settings_page::rows::Section::Shortcuts)),
         // Esc: backs out of the clash prompt first, like a dialog; else closes.
         _ if id == IDCANCEL.0 => match get(|w| w.rec.clone()) {
             Some(Rec::Idle) | None => close(h),

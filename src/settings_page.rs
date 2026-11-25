@@ -34,10 +34,10 @@ mod cards;
 mod choosers;
 mod edit_box;
 mod input;
-mod menu;
+pub(crate) mod menu;
 mod picker;
-mod recording;
-mod rows;
+pub(crate) mod recording;
+pub(crate) mod rows;
 mod widgets;
 
 use cards::attention::WORDS;
@@ -48,15 +48,11 @@ use cards::wallpaper::{wall_count, wall_previews};
 use cards::{NoteSpec, changed};
 use edit_box::{make_box, place_box};
 use input::wndproc;
+use menu::Menu;
 use picker::draw::{Fit, pick_fit};
 use picker::{ColorPick, Ease, Geo, How, must_close, pick_close, windows_words};
-use recording::Rec;
-use rows::{SECTIONS, home, title};
-
-// Until the callers name the new paths, in the commit after this move (spec 0035 AC-4).
-pub(crate) use menu::{Does, FAMILIES, Menu, gesture_edit, menu_lines, once_label, twice_label};
-pub(crate) use recording::{Plan, Prompt, cancel_recording, plan_combo, plan_digits, plan_give, recorded};
-pub(crate) use rows::{Card, Kind, MOVE, Row, SEND, Section, Short, Why, WinKey, drawn_order, entry, file_value, find_row, has_win, is_digits, keys_of, name_of, shortcut, spelled, stepped, took, unused, value};
+use recording::{Prompt, Rec};
+use rows::{Card, SECTIONS, Section, file_value, find_row, home, title};
 
 const CLASS: PCWSTR = w!("des-k-settings");
 // Clips its one child, the text box the popup words and the name boxes share (specs 0022, 0023),

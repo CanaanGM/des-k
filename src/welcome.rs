@@ -25,7 +25,7 @@ use windows::Win32::{
 use windows::core::{PCWSTR, w};
 
 use crate::settings::{self, ALT, Action, CTRL, Combo, Motion, Owner, SHIFT, Settings, WIN, edit::Edit};
-use crate::settings_page::{self as sp, Does, Kind, Menu, Plan, Prompt, WinKey};
+use crate::settings_page::{self as sp, menu::{Does, Menu}, recording::{Plan, Prompt}, rows::{Kind, WinKey}};
 use crate::setup::{self, GaveBack, Row as PadRow, State as PadState, Wrote};
 use crate::ui::{self, Bx, Canvas, F, Fonts, Theme, buffered, dark_title, mix, op, theme};
 use crate::uia::{self, Node, Tree};
@@ -271,16 +271,16 @@ fn steps(w: &Win) -> Vec<Step> {
 
 /// An action's keys as words: "Win Ctrl →".
 fn words(caps: &[String]) -> String {
-    sp::spelled(caps)
+    sp::rows::spelled(caps)
 }
 
 /// The key a row's field shows: Windows' own first. A ← → pair shows as one key when both
 /// sides hold the same modifiers.
 fn row_caps(s: &Settings, keys: &[&'static str]) -> Option<Vec<String>> {
     let first = |k: &str| {
-        let sh = sp::shortcut(k)?;
-        let i = *sp::drawn_order(s, sh).first()?;
-        sp::keys_of(s, k).get(i).cloned()
+        let sh = sp::rows::shortcut(k)?;
+        let i = *sp::rows::drawn_order(s, sh).first()?;
+        sp::rows::keys_of(s, k).get(i).cloned()
     };
     match keys {
         [k] => first(k),
@@ -306,11 +306,11 @@ enum Held {
 }
 
 fn held(s: &Settings, keys: &[&'static str]) -> Held {
-    let shs: Vec<&sp::Short> = keys.iter().filter_map(|k| sp::shortcut(k)).collect();
-    if !shs.is_empty() && shs.iter().all(|sh| sp::has_win(s, sh)) {
+    let shs: Vec<&sp::rows::Short> = keys.iter().filter_map(|k| sp::rows::shortcut(k)).collect();
+    if !shs.is_empty() && shs.iter().all(|sh| sp::rows::has_win(s, sh)) {
         return Held::Desk;
     }
-    if let Some(o) = shs.iter().find_map(|sh| sp::took(s, sh)) {
+    if let Some(o) = shs.iter().find_map(|sh| sp::rows::took(s, sh)) {
         return Held::Took(o);
     }
     if row_caps(s, keys).is_none() {
@@ -318,10 +318,10 @@ fn held(s: &Settings, keys: &[&'static str]) -> Held {
     }
     // Your key is another action's Windows key: say which.
     let from = keys.first().and_then(|k| {
-        let mine = sp::shortcut(k)?;
-        sp::MOVE.iter().chain(sp::SEND).filter(|o| o.key != mine.key).find_map(|o| match o.win?.0 {
-            WinKey::Digits(m) if s.set(sp::name_of(mine.key)) == Some(m) => Some(o.title),
-            WinKey::Combo(c) if s.list(sp::name_of(mine.key)).first() == Some(&c) => Some(o.title),
+        let mine = sp::rows::shortcut(k)?;
+        sp::rows::MOVE.iter().chain(sp::rows::SEND).filter(|o| o.key != mine.key).find_map(|o| match o.win?.0 {
+            WinKey::Digits(m) if s.set(sp::rows::name_of(mine.key)) == Some(m) => Some(o.title),
+            WinKey::Combo(c) if s.list(sp::rows::name_of(mine.key)).first() == Some(&c) => Some(o.title),
             _ => None,
         })
     });
@@ -355,10 +355,10 @@ fn plan_pair(p: &'static str, n: &'static str, mods: u8, replace: bool, title: &
     let mut clash: Option<&'static str> = None;
     let mut same = true;
     for (key, vk) in [(p, VK_LEFT.0), (n, VK_RIGHT.0)] {
-        let name = sp::name_of(key);
+        let name = sp::rows::name_of(key);
         let combo = Combo { mods, vk };
         let mut mine = s.list(name).to_vec();
-        let at = if replace { sp::shortcut(key).and_then(|sh| sp::drawn_order(&s, sh).first().copied()) } else { None };
+        let at = if replace { sp::rows::shortcut(key).and_then(|sh| sp::rows::drawn_order(&s, sh).first().copied()) } else { None };
         match at {
             Some(i) if i < mine.len() => mine[i] = combo,
             _ => mine.push(combo),
@@ -371,10 +371,10 @@ fn plan_pair(p: &'static str, n: &'static str, mods: u8, replace: bool, title: &
         same &= mine == s.list(name);
         edits.push(Edit::Combos(key, mine));
         if let Some(Owner::List(other)) = s.combo_owner(name, combo)
-            && other != sp::name_of(p)
-            && other != sp::name_of(n)
+            && other != sp::rows::name_of(p)
+            && other != sp::rows::name_of(n)
         {
-            let (other_key, other_title) = sp::entry(other);
+            let (other_key, other_title) = sp::rows::entry(other);
             let rest: Vec<Combo> = s.list(other).iter().filter(|c| **c != combo).copied().collect();
             edits.push(Edit::Combos(other_key, rest));
             clash.get_or_insert(other_title);
@@ -404,7 +404,7 @@ fn plan_pair(p: &'static str, n: &'static str, mods: u8, replace: bool, title: &
 fn plan_side(i: usize, desk: bool) -> Plan {
     let t = &TAKES[i];
     match t.keys {
-        [k] => sp::plan_give(k, desk),
+        [k] => sp::recording::plan_give(k, desk),
         [p, n] if desk => {
             let s = settings::get();
             if held(&s, t.keys) == Held::Desk || matches!(held(&s, t.keys), Held::Took(_)) {
@@ -412,7 +412,7 @@ fn plan_side(i: usize, desk: bool) -> Plan {
             }
             plan_pair(p, n, WIN | CTRL, false, t.title)
         }
-        [p, n] => match (sp::plan_give(p, false), sp::plan_give(n, false)) {
+        [p, n] => match (sp::recording::plan_give(p, false), sp::recording::plan_give(n, false)) {
             (Plan::Commit(a, t), Plan::Commit(b, _)) => Plan::Commit(Edit::Pair(Box::new(a), Box::new(b)), t),
             (Plan::Commit(a, t), _) | (_, Plan::Commit(a, t)) => Plan::Commit(a, t),
             _ => Plan::Nothing,
@@ -431,8 +431,8 @@ fn rec_for(f: Field) -> Option<Rec> {
     };
     Some(match keys {
         [p, n] => Rec::Pair(p, n),
-        [k] if sp::is_digits(k) => Rec::Digits(k),
-        [k] => Rec::List(k, sp::shortcut(k).and_then(|sh| sp::drawn_order(&s, sh).first().copied())),
+        [k] if sp::rows::is_digits(k) => Rec::Digits(k),
+        [k] => Rec::List(k, sp::rows::shortcut(k).and_then(|sh| sp::rows::drawn_order(&s, sh).first().copied())),
         _ => return None,
     })
 }
@@ -1238,7 +1238,7 @@ impl Ctx<'_, '_> {
             } else {
                 String::new()
             };
-            let caps = sp::shortcut(key).and_then(|sh| sp::drawn_order(s, sh).first().and_then(|&k| sp::keys_of(s, key).get(k).cloned()));
+            let caps = sp::rows::shortcut(key).and_then(|sh| sp::rows::drawn_order(s, sh).first().and_then(|&k| sp::rows::keys_of(s, key).get(k).cloned()));
             let kw = caps.as_ref().map_or_else(|| self.c.width("No key", F::Small), |c| self.caps_w(c));
             let lx = X0 + 16.0 + 20.0 + 12.0;
             let lw = self.cw - 32.0 - 32.0 - kw - 12.0;
@@ -1484,7 +1484,7 @@ impl Ctx<'_, '_> {
     }
 
     fn toggle_row(&mut self, y: f32, key: &'static str, title: &str, cap: &str) -> f32 {
-        let on = sp::value(self.s, key) != 0;
+        let on = sp::rows::value(self.s, key) != 0;
         let sw = self.switch_w(on);
         let caps: Vec<P> = if cap.is_empty() { vec![] } else { vec![P::T(cap.into())] };
         self.row(y, title, &caps, (sw, 20.0), |c, x, y| c.switch(key, x, y, on, title, cap), None, false)
@@ -1492,17 +1492,17 @@ impl Ctx<'_, '_> {
 
     /// A More row: a switch, a number or a choice, greyed with every reason when not in use.
     fn setting(&mut self, y: f32, key: &'static str, title: &str, cap: &str) -> f32 {
-        let Some(r) = sp::find_row(key) else { return 0.0 };
-        let v = sp::value(self.s, key);
-        let why = sp::unused(self.s, key);
+        let Some(r) = sp::rows::find_row(key) else { return 0.0 };
+        let v = sp::rows::value(self.s, key);
+        let why = sp::rows::unused(self.s, key);
         let na = !why.is_empty() && matches!(r.kind, Kind::Step { .. });
         let mut caps: Vec<P> = if cap.is_empty() { vec![] } else { vec![P::T(cap.into())] };
         if na {
             let reasons: Vec<&str> = why.iter().map(|w| match w {
-                sp::Why::AnimationNone => "Overview animation is None",
-                sp::Why::Skip => "Skip animations is on",
-                sp::Why::IndicatorOff => "the indicator is off",
-                sp::Why::Dots => "the dots show no names",
+                sp::rows::Why::AnimationNone => "Overview animation is None",
+                sp::rows::Why::Skip => "Skip animations is on",
+                sp::rows::Why::IndicatorOff => "the indicator is off",
+                sp::rows::Why::Dots => "the dots show no names",
             }).collect();
             caps.push(P::Why(format!(" Not in use: {}.", reasons.join(", and "))));
         }
@@ -1646,8 +1646,8 @@ impl Ctx<'_, '_> {
         let ctl = Ctl::Picker(row);
         let open = self.w.menu.is_some_and(|m| m.row == row);
         let waiting = self.w.rec == Some(Rec::Gesture(row, 1)) || self.w.rec == Some(Rec::Gesture(row, 2));
-        let text = sp::once_label(once.unwrap_or(Action::Nothing));
-        let sub = if twice.is_some() { format!("Twice: {}", sp::twice_label(twice)) } else { String::new() };
+        let text = sp::menu::once_label(once.unwrap_or(Action::Nothing));
+        let sub = if twice.is_some() { format!("Twice: {}", sp::menu::twice_label(twice)) } else { String::new() };
         let h = if sub.is_empty() { 32.0 } else { 40.0 };
         if waiting {
             // Key combo…: the field records, held keys and a ghost.
@@ -1718,11 +1718,11 @@ impl Ctx<'_, '_> {
         let Some(m) = self.w.menu else { return };
         let t = self.c.t;
         let b = t.b;
-        let lines = sp::menu_lines(&m, self.s);
+        let lines = sp::menu::menu_lines(&m, self.s);
         let (fingers, motion) = settings::GESTURE_ROWS[m.row];
         let dir = if motion == Motion::Tap { "tap".to_string() } else { format!("swipe {}", motion.word()) };
         let head = match m.family {
-            Some(f) => sp::FAMILIES[f].0.to_string(),
+            Some(f) => sp::menu::FAMILIES[f].0.to_string(),
             None if m.times == 2 => format!("{fingers} fingers, {dir}, done twice"),
             None => format!("{fingers} fingers, {dir}"),
         };
@@ -1947,7 +1947,7 @@ impl Ctx<'_, '_> {
 /// "Taken over from Windows: …", from live settings.
 fn taken_line(s: &Settings) -> String {
     let mut keys: Vec<String> = vec![];
-    let has = |k: &str| sp::shortcut(k).is_some_and(|sh| sp::has_win(s, sh));
+    let has = |k: &str| sp::rows::shortcut(k).is_some_and(|sh| sp::rows::has_win(s, sh));
     for (k, w) in [("shortcuts.overview", "Win Tab"), ("shortcuts.finder", "Win F")] {
         if has(k) {
             keys.push(w.into());
@@ -1981,7 +1981,7 @@ fn taken_line(s: &Settings) -> String {
 }
 
 /// A choice row's words, as the first run shows them.
-fn words_of(r: &sp::Row) -> Vec<&'static str> {
+fn words_of(r: &sp::rows::Row) -> Vec<&'static str> {
     match r.kind {
         Kind::Choice(list) => list.iter().map(|(_, l)| *l).collect(),
         Kind::Pair(on, off) => vec![on, off],
@@ -2180,8 +2180,8 @@ fn reveal() {
 
 /// Writes one value; a failure shows what stays and why until the next good save.
 fn save(key: &'static str, v: i64) {
-    let Some(row) = sp::find_row(key) else { return };
-    commit(Edit::Value(key, sp::file_value(row, v)), row.title);
+    let Some(row) = sp::rows::find_row(key) else { return };
+    commit(Edit::Value(key, sp::rows::file_value(row, v)), row.title);
 }
 
 fn commit(edit: Edit, title: &str) {
@@ -2223,7 +2223,7 @@ fn start_rec(rec: Rec) {
     });
     // One recording at a time.
     crate::hints::cancel_recording();
-    crate::settings_page::cancel_recording();
+    crate::settings_page::recording::cancel_recording();
     if let Some(h) = hwnd() {
         crate::keys::record(h, true);
     }
@@ -2280,7 +2280,7 @@ pub fn recorded(vk: u16, mods: u8) {
                 return refuse(if mods == SHIFT { "Shift alone can't be used" } else { "A digit needs Win, Ctrl or Alt" }, "Hold Win, Ctrl or Alt with the digit. Still recording.");
             }
             stop_rec();
-            run(sp::plan_digits(key, mods));
+            run(sp::recording::plan_digits(key, mods));
         }
         Rec::Pair(p, n) => {
             if vk != VK_LEFT.0 && vk != VK_RIGHT.0 {
@@ -2302,9 +2302,9 @@ pub fn recorded(vk: u16, mods: u8) {
             stop_rec();
             let combo = Combo { mods, vk };
             match rec {
-                Rec::List(key, replace) => run(sp::plan_combo(key, replace, combo)),
+                Rec::List(key, replace) => run(sp::recording::plan_combo(key, replace, combo)),
                 Rec::Gesture(row, times) => {
-                    if let Some(e) = sp::gesture_edit(row, times, Some(Action::Combo(combo))) {
+                    if let Some(e) = sp::menu::gesture_edit(row, times, Some(Action::Combo(combo))) {
                         commit(e, "Gestures");
                     }
                 }
@@ -2395,13 +2395,13 @@ fn next_step(back: bool) -> Option<Step> {
 
 fn step_key(key: &'static str, up: bool) {
     let s = settings::get();
-    let Some(sp::Row { kind: Kind::Step { lo, hi, by, .. }, .. }) = sp::find_row(key) else { return };
+    let Some(sp::rows::Row { kind: Kind::Step { lo, hi, by, .. }, .. }) = sp::rows::find_row(key) else { return };
     // Greyed: kept but not in use, so − and + do nothing.
-    if !sp::unused(&s, key).is_empty() {
+    if !sp::rows::unused(&s, key).is_empty() {
         return;
     }
-    let v = sp::value(&s, key);
-    let n = sp::stepped(v, *lo, *hi, *by, up);
+    let v = sp::rows::value(&s, key);
+    let n = sp::rows::stepped(v, *lo, *hi, *by, up);
     if n != v {
         save(key, n);
     }
@@ -2410,7 +2410,7 @@ fn step_key(key: &'static str, up: bool) {
 fn open_menu(row: usize, times: u8, family: Option<usize>) {
     let Some(at) = get(|w| w.hits.iter().find(|h| h.ctl == Ctl::Picker(row)).map(|h| h.at)).flatten() else { return };
     let m = Menu { row, times, family, at, focus: 0 };
-    let focus = sp::menu_lines(&m, &settings::get()).iter().position(|l| l.on).unwrap_or(0);
+    let focus = sp::menu::menu_lines(&m, &settings::get()).iter().position(|l| l.on).unwrap_or(0);
     let _ = set(|w| w.menu = Some(Menu { focus, ..m }));
     layout();
 }
@@ -2422,12 +2422,12 @@ fn close_menu() {
 
 fn choose(i: usize) {
     let Some(m) = get(|w| w.menu).flatten() else { return };
-    let lines = sp::menu_lines(&m, &settings::get());
+    let lines = sp::menu::menu_lines(&m, &settings::get());
     let Some(l) = lines.get(i) else { return };
     match l.does {
         Does::Set(a) => {
             close_menu();
-            if let Some(e) = sp::gesture_edit(m.row, m.times, a) {
+            if let Some(e) = sp::menu::gesture_edit(m.row, m.times, a) {
                 commit(e, "Gestures");
             }
         }
@@ -2485,10 +2485,10 @@ fn act(ctl: Ctl) {
             });
             layout();
         }
-        Ctl::Toggle(k) => save(k, 1 - sp::value(&s, k)),
+        Ctl::Toggle(k) => save(k, 1 - sp::rows::value(&s, k)),
         Ctl::Minus(k) => step_key(k, false),
         Ctl::Plus(k) => step_key(k, true),
-        Ctl::Choice(k, i) => match sp::find_row(k).map(|r| r.kind) {
+        Ctl::Choice(k, i) => match sp::rows::find_row(k).map(|r| r.kind) {
             Some(Kind::Pair(..)) => save(k, (i == 0) as i64),
             _ => save(k, i as i64),
         },
@@ -2528,11 +2528,11 @@ fn change(focus: Ctl, right: bool) {
     let s = settings::get();
     match focus {
         Ctl::Pick(k) => {
-            let Some(r) = sp::find_row(k) else { return };
+            let Some(r) = sp::rows::find_row(k) else { return };
             let n = words_of(r).len();
-            let i = sp::value(&s, k) as usize;
+            let i = sp::rows::value(&s, k) as usize;
             let i = match r.kind {
-                Kind::Pair(..) => 1 - sp::value(&s, k) as usize,
+                Kind::Pair(..) => 1 - sp::rows::value(&s, k) as usize,
                 _ => i,
             };
             let to = if right { (i + 1).min(n - 1) } else { i.saturating_sub(1) };
@@ -2549,7 +2549,7 @@ fn change(focus: Ctl, right: bool) {
 /// The open menu's keys: Up and Down move, Enter or Space picks, Esc closes or goes back.
 fn menu_key(vk: VIRTUAL_KEY) {
     let Some(m) = get(|w| w.menu).flatten() else { return };
-    let n = sp::menu_lines(&m, &settings::get()).len();
+    let n = sp::menu::menu_lines(&m, &settings::get()).len();
     match vk {
         VK_ESCAPE if m.family.is_some() || m.times == 2 => open_menu(m.row, 1, None),
         VK_ESCAPE => close_menu(),

@@ -22,7 +22,7 @@ use windows::Win32::{
 use windows::core::{PCWSTR, w};
 
 use crate::settings::{self, Settings, edit::Edit};
-use crate::settings_page::{self as sp, Section};
+use crate::settings_page::{self as sp, rows::Section};
 use crate::ui::{self, Bx, Canvas, F, Fonts, Theme, buffered, dark_title, mix, op, theme};
 use crate::update::{self, Version};
 
@@ -68,7 +68,7 @@ pub(crate) struct Card {
     title: &'static str,
     text: Text,
     button: &'static str,
-    to: (Section, Option<sp::Card>),
+    to: (Section, Option<sp::rows::Card>),
 }
 
 /// 0.9.0's cards, biggest first (AC-3).
@@ -78,7 +78,7 @@ const V0_9_0: [Card; 5] = [
         title: "A picture for each workspace",
         text: Text::Plain("Give each workspace its own picture, or a slideshow from a folder. Your Windows wallpaper is never changed."),
         button: "Pick pictures",
-        to: (Section::Workspaces, Some(sp::Card::Wallpaper)),
+        to: (Section::Workspaces, Some(sp::rows::Card::Wallpaper)),
     },
     Card {
         pic: Pic::Lands,
@@ -92,9 +92,9 @@ const V0_9_0: [Card; 5] = [
         title: "Name your workspaces",
         text: Text::Plain("Call a workspace Mail or Code, and rename a screen. The names show on the indicator, the overview and the finder."),
         button: "Name them",
-        to: (Section::Workspaces, Some(sp::Card::Names)),
+        to: (Section::Workspaces, Some(sp::rows::Card::Names)),
     },
-    Card { pic: Pic::Back, title: "Go back", text: Text::Back, button: "Change the key", to: (Section::Shortcuts, Some(sp::Card::Back)) },
+    Card { pic: Pic::Back, title: "Go back", text: Text::Back, button: "Change the key", to: (Section::Shortcuts, Some(sp::rows::Card::Back)) },
     Card { pic: Pic::Note, title: "A hidden window that wants you", text: Text::Attention, button: "Change the words", to: (Section::Attention, None) },
 ];
 
