@@ -127,9 +127,17 @@ Your settings and log stay in `%LOCALAPPDATA%\des-k`; delete that folder too if 
   `SHA256SUMS.txt`, update Defender, then restore des-k from Windows Security → Protection history.
 - **To see why**: tray → **Open log**. `des-k.old.log` beside it holds the run before.
 
-des-k hides windows through an undocumented part of Windows. It works on Windows 11 25H2, but a
-big Windows update could break it. If that happens, the tray shows a warning and switching hides
-nothing until des-k is updated.
+## Windows builds it was tried on
+
+des-k hides windows through an undocumented part of Windows, so it matters which Windows it ran
+on. This list names each Windows build des-k was tried on, and each release adds its own.
+
+| Windows 11 | Build | Releases tried on it |
+|---|---|---|
+| 25H2 | 26200 | 0.1.0 to 0.9.0 |
+
+Another Windows 11 build may work too. A big Windows update could change that undocumented part.
+If it does, the tray shows a warning and switching hides nothing until des-k is updated.
 
 ## License
 
