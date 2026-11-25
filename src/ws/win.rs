@@ -1,8 +1,15 @@
 // Every Windows call ws makes, each behind a safe function that passes it straight through and
 // says why it is sound (spec 0035 AC-10). The rest of ws decides; only this file calls Windows.
 use super::*;
+use windows::Win32::Devices::Display::{
+    DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME, DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SOURCE_DEVICE_NAME,
+    DISPLAYCONFIG_TARGET_DEVICE_NAME, DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes, QUERY_DISPLAY_CONFIG_FLAGS, QueryDisplayConfig,
+};
+use windows::Win32::Foundation::WIN32_ERROR;
 use windows::Win32::Graphics::Dwm::{DWMWINDOWATTRIBUTE, DwmGetWindowAttribute};
+use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, MONITOR_FROM_FLAGS, MonitorFromPoint, MonitorFromRect, MonitorFromWindow};
 use windows::Win32::System::SystemInformation::GetTickCount;
+use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MONITOR_DPI_TYPE};
 
 // Windows: user32 checks every HWND it is given, so a closed or made up handle only makes the
 // call fail. That holds for each window call below, whatever handle a caller passes.
@@ -114,6 +121,97 @@ pub(super) fn enum_windows() -> Vec<HWND> {
     // SAFETY: push has the WNDENUMPROC shape, and EnumWindows calls it only before it returns.
     unsafe { let _ = EnumWindows(Some(push), LPARAM(&mut all as *mut _ as isize)); }
     all
+}
+
+// Screens: user32 checks every HMONITOR it is given too, so a screen that just left only makes
+// the call fail.
+
+pub(super) fn monitor_from_window(h: HWND, flags: MONITOR_FROM_FLAGS) -> HMONITOR {
+    // SAFETY: plain values only; any handle is checked (above).
+    unsafe { MonitorFromWindow(h, flags) }
+}
+
+pub(super) fn monitor_from_point(pt: POINT, flags: MONITOR_FROM_FLAGS) -> HMONITOR {
+    // SAFETY: plain values only.
+    unsafe { MonitorFromPoint(pt, flags) }
+}
+
+pub(super) fn monitor_from_rect(r: &RECT, flags: MONITOR_FROM_FLAGS) -> HMONITOR {
+    // SAFETY: r is a live RECT that Windows only reads.
+    unsafe { MonitorFromRect(r, flags) }
+}
+
+pub(super) fn get_monitor_info(m: HMONITOR, mi: &mut MONITORINFO) -> BOOL {
+    // cbSize tells Windows how much to write, and a larger form would overrun this MONITORINFO.
+    mi.cbSize = size_of::<MONITORINFO>() as u32;
+    // SAFETY: mi is a live MONITORINFO and cbSize names exactly its size; any HMONITOR is checked (above).
+    unsafe { GetMonitorInfoW(m, mi) }
+}
+
+pub(super) fn get_monitor_info_ex(m: HMONITOR, mi: &mut MONITORINFOEXW) -> BOOL {
+    // SAFETY: mi is a live MONITORINFOEXW, the largest form, so either size cbSize names fits
+    // inside it; any HMONITOR is checked (above).
+    unsafe { GetMonitorInfoW(m, mi as *mut MONITORINFOEXW as *mut MONITORINFO) }
+}
+
+/// Every present screen with its full rectangle, in the order Windows lists them.
+pub(super) fn enum_display_monitors() -> Vec<(HMONITOR, RECT)> {
+    unsafe extern "system" fn push(m: HMONITOR, _: HDC, r: *mut RECT, out: LPARAM) -> BOOL {
+        // SAFETY: out is the Vec below, which outlives the EnumDisplayMonitors call that calls
+        // this, and r is Windows' own RECT for this screen, live for this call.
+        unsafe { (*(out.0 as *mut Vec<(HMONITOR, RECT)>)).push((m, *r)) };
+        BOOL(1)
+    }
+    let mut all = Vec::new();
+    // SAFETY: push has the MONITORENUMPROC shape, and EnumDisplayMonitors calls it only before it returns.
+    unsafe { let _ = EnumDisplayMonitors(None, None, Some(push), LPARAM(&mut all as *mut _ as isize)); }
+    all
+}
+
+pub(super) fn get_cursor_pos(pt: &mut POINT) -> windows::core::Result<()> {
+    // SAFETY: pt is a live POINT that Windows fills.
+    unsafe { GetCursorPos(pt) }
+}
+
+pub(super) fn get_dpi_for_monitor(m: HMONITOR, kind: MONITOR_DPI_TYPE, dx: &mut u32, dy: &mut u32) -> windows::core::Result<()> {
+    // SAFETY: dx and dy are live u32s that Windows fills; any HMONITOR is checked (above).
+    unsafe { GetDpiForMonitor(m, kind, dx, dy) }
+}
+
+pub(super) fn get_display_config_buffer_sizes(flags: QUERY_DISPLAY_CONFIG_FLAGS, np: &mut u32, nm: &mut u32) -> WIN32_ERROR {
+    // SAFETY: np and nm are live u32s that Windows fills.
+    unsafe { GetDisplayConfigBufferSizes(flags, np, nm) }
+}
+
+/// Fills paths and modes; np and nm come back as how many Windows wrote.
+pub(super) fn query_display_config(
+    flags: QUERY_DISPLAY_CONFIG_FLAGS,
+    np: &mut u32,
+    paths: &mut [DISPLAYCONFIG_PATH_INFO],
+    nm: &mut u32,
+    modes: &mut [DISPLAYCONFIG_MODE_INFO],
+) -> WIN32_ERROR {
+    // Windows writes as many entries as each count says: never more than its slice holds.
+    *np = (*np).min(paths.len() as u32);
+    *nm = (*nm).min(modes.len() as u32);
+    // SAFETY: each count is at most its slice's length (above), and the counts are live u32s.
+    unsafe { QueryDisplayConfig(flags, np, paths.as_mut_ptr(), nm, modes.as_mut_ptr(), None) }
+}
+
+pub(super) fn display_config_get_source_name(name: &mut DISPLAYCONFIG_SOURCE_DEVICE_NAME) -> i32 {
+    // Windows writes what the header's type asks for, up to the size it gives: make both this struct's.
+    name.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+    name.header.size = size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32;
+    // SAFETY: the header heads a whole live DISPLAYCONFIG_SOURCE_DEVICE_NAME and names it (above).
+    unsafe { DisplayConfigGetDeviceInfo(&mut name.header) }
+}
+
+pub(super) fn display_config_get_target_name(name: &mut DISPLAYCONFIG_TARGET_DEVICE_NAME) -> i32 {
+    // Windows writes what the header's type asks for, up to the size it gives: make both this struct's.
+    name.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+    name.header.size = size_of::<DISPLAYCONFIG_TARGET_DEVICE_NAME>() as u32;
+    // SAFETY: the header heads a whole live DISPLAYCONFIG_TARGET_DEVICE_NAME and names it (above).
+    unsafe { DisplayConfigGetDeviceInfo(&mut name.header) }
 }
 
 pub(super) fn get_tick_count() -> u32 {

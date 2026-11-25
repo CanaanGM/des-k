@@ -73,7 +73,7 @@ pub(crate) fn who(hwnd: HWND) -> String {
 }
 
 pub(super) fn app_windows_on(mon: HMONITOR) -> Vec<HWND> {
-    app_windows().into_iter().filter(|&h| unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) } == mon).collect()
+    app_windows().into_iter().filter(|&h| win::monitor_from_window(h, MONITOR_DEFAULTTONEAREST) == mon).collect()
 }
 
 /// Visible, uncloaked app windows on every screen (Alt+Tab-like filter from spikes/listwin), top of z-order first.
@@ -128,7 +128,7 @@ pub(super) fn windows_in(s: &mut State) -> Vec<Place> {
     let mut out: Vec<Place> = app_windows()
         .into_iter()
         .map(|h| {
-            let device = device_name(unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) });
+            let device = device_name(win::monitor_from_window(h, MONITOR_DEFAULTTONEAREST));
             let id = id_of(s, &device);
             let workspace = mon_mut(s, &id).active;
             let pinned = s.pinned.contains(&(h.0 as isize));
@@ -196,13 +196,7 @@ pub fn tray_screens() -> Vec<TrayScreen> {
 
 /// Every present screen's device and full rectangle.
 pub fn screens() -> Vec<(String, RECT)> {
-    unsafe extern "system" fn push(m: HMONITOR, _: HDC, r: *mut RECT, out: LPARAM) -> BOOL {
-        unsafe { (*(out.0 as *mut Vec<(String, RECT)>)).push((device_name(m), *r)) };
-        BOOL(1)
-    }
-    let mut all = Vec::new();
-    unsafe { let _ = EnumDisplayMonitors(None, None, Some(push), LPARAM(&mut all as *mut _ as isize)); }
-    all
+    win::enum_display_monitors().into_iter().map(|(m, r)| (device_name(m), r)).collect()
 }
 
 /// The workspace `device` shows (0 based), for the overview (spec 0010).
@@ -236,7 +230,7 @@ pub struct ScreenInfo {
 /// Every present screen in screen_order, with its own name: the monitor's, "Built-in
 /// display" for a laptop panel, or the device name when Windows gives none.
 pub fn screen_info() -> Vec<ScreenInfo> {
-    use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+    use windows::Win32::UI::HiDpi::MDT_EFFECTIVE_DPI;
     let names = display_names();
     // By id, read without the ws lock: the settings page asks from inside a switch too.
     let ids: HashMap<String, String> = screen_ids().into_iter().map(|p| (p.device, p.id)).collect();
@@ -248,7 +242,7 @@ pub fn screen_info() -> Vec<ScreenInfo> {
         .map(|(i, (device, rect))| {
             let (mut dx, mut dy) = (96, 96);
             if let Some(mon) = monitor_named(&device) {
-                unsafe { let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy); }
+                let _ = win::get_dpi_for_monitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
             }
             let rename = ids.get(&device).and_then(|id| set.screen_rename(id));
             let name = rename.or(names.get(&device).map(String::as_str).filter(|n| !n.is_empty())).unwrap_or(&device).to_string();

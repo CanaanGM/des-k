@@ -54,7 +54,7 @@ pub(super) fn words(n: usize) -> String {
 pub(crate) fn device_name(m: HMONITOR) -> String {
     let mut mi = MONITORINFOEXW::default();
     mi.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
-    unsafe { let _ = GetMonitorInfoW(m, &mut mi as *mut _ as *mut MONITORINFO); }
+    let _ = win::get_monitor_info_ex(m, &mut mi);
     let n = mi.szDevice.iter().position(|&c| c == 0).unwrap_or(0);
     String::from_utf16_lossy(&mi.szDevice[..n]).replace(r"\\.\", "")
 }
@@ -62,16 +62,11 @@ pub(crate) fn device_name(m: HMONITOR) -> String {
 /// Every present screen, sorted left to right then top down (spec 0016 AC-1). A monitor's id
 /// is read once per device path: the EDID read is a registry look up per screen.
 pub(super) fn screen_ids() -> Vec<Screen> {
-    unsafe extern "system" fn push(m: HMONITOR, _: HDC, _: *mut RECT, out: LPARAM) -> BOOL {
-        unsafe { (*(out.0 as *mut Vec<HMONITOR>)).push(m) };
-        BOOL(1)
-    }
     // By device path, then the last id each device name had: an EDID read that fails for a
     // moment must not make a known screen look new.
     type Ids = HashMap<String, String>;
     static KNOWN: LazyLock<Mutex<(Ids, Ids)>> = LazyLock::new(Default::default);
-    let mut all = Vec::new();
-    unsafe { let _ = EnumDisplayMonitors(None, None, Some(push), LPARAM(&mut all as *mut _ as isize)); }
+    let all: Vec<HMONITOR> = win::enum_display_monitors().into_iter().map(|(m, _)| m).collect();
     let targets = targets();
     let mut known = KNOWN.lock().unwrap_or_else(|e| e.into_inner());
     let mut out: Vec<Screen> = all
@@ -79,7 +74,7 @@ pub(super) fn screen_ids() -> Vec<Screen> {
         .map(|m| {
             let device = device_name(m);
             let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
-            unsafe { let _ = GetMonitorInfoW(m, &mut mi); }
+            let _ = win::get_monitor_info(m, &mut mi);
             let t = targets.iter().find(|t| t.device == device);
             let read = match t {
                 Some(t) if t.internal => Some("internal".to_string()),
@@ -132,13 +127,7 @@ pub(super) fn log_screens(list: &[Screen]) {
 }
 
 pub(super) fn monitor_named(name: &str) -> Option<HMONITOR> {
-    unsafe extern "system" fn push(m: HMONITOR, _: HDC, _: *mut RECT, out: LPARAM) -> BOOL {
-        unsafe { (*(out.0 as *mut Vec<HMONITOR>)).push(m) };
-        BOOL(1)
-    }
-    let mut all = Vec::new();
-    unsafe { let _ = EnumDisplayMonitors(None, None, Some(push), LPARAM(&mut all as *mut _ as isize)); }
-    all.into_iter().find(|&m| device_name(m) == name)
+    win::enum_display_monitors().into_iter().map(|(m, _)| m).find(|&m| device_name(m) == name)
 }
 
 /// What lowering the count to `count` would move: one line per screen with something to
@@ -247,44 +236,42 @@ pub(super) fn targets() -> Vec<Target> {
     use windows::Win32::Devices::Display::*;
     let mut out = Vec::new();
     let (mut np, mut nm) = (0u32, 0u32);
-    unsafe {
-        if GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut np, &mut nm).is_err() {
-            return out;
+    if win::get_display_config_buffer_sizes(QDC_ONLY_ACTIVE_PATHS, &mut np, &mut nm).is_err() {
+        return out;
+    }
+    let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); np as usize];
+    let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); nm as usize];
+    if win::query_display_config(QDC_ONLY_ACTIVE_PATHS, &mut np, &mut paths, &mut nm, &mut modes).is_err() {
+        return out;
+    }
+    let text = |w: &[u16]| String::from_utf16_lossy(&w[..w.iter().position(|&c| c == 0).unwrap_or(w.len())]);
+    for p in &paths[..np as usize] {
+        let mut src = DISPLAYCONFIG_SOURCE_DEVICE_NAME { header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+            r#type: DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+            size: size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32,
+            adapterId: p.sourceInfo.adapterId,
+            id: p.sourceInfo.id,
+        }, ..Default::default() };
+        if win::display_config_get_source_name(&mut src) != 0 {
+            continue;
         }
-        let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); np as usize];
-        let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); nm as usize];
-        if QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &mut np, paths.as_mut_ptr(), &mut nm, modes.as_mut_ptr(), None).is_err() {
-            return out;
-        }
-        let text = |w: &[u16]| String::from_utf16_lossy(&w[..w.iter().position(|&c| c == 0).unwrap_or(w.len())]);
-        for p in &paths[..np as usize] {
-            let mut src = DISPLAYCONFIG_SOURCE_DEVICE_NAME { header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
-                r#type: DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
-                size: size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32,
-                adapterId: p.sourceInfo.adapterId,
-                id: p.sourceInfo.id,
-            }, ..Default::default() };
-            if DisplayConfigGetDeviceInfo(&mut src.header) != 0 {
-                continue;
-            }
-            let device = text(&src.viewGdiDeviceName).replace(r"\\.\", "");
-            let tech = p.targetInfo.outputTechnology;
-            let internal = [DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INTERNAL, DISPLAYCONFIG_OUTPUT_TECHNOLOGY_DISPLAYPORT_EMBEDDED, DISPLAYCONFIG_OUTPUT_TECHNOLOGY_UDI_EMBEDDED].contains(&tech);
-            let mut tgt = DISPLAYCONFIG_TARGET_DEVICE_NAME { header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
-                r#type: DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
-                size: size_of::<DISPLAYCONFIG_TARGET_DEVICE_NAME>() as u32,
-                adapterId: p.targetInfo.adapterId,
-                id: p.targetInfo.id,
-            }, ..Default::default() };
-            let (friendly, path) = if DisplayConfigGetDeviceInfo(&mut tgt.header) == 0 {
-                (text(&tgt.monitorFriendlyDeviceName), text(&tgt.monitorDevicePath))
-            } else {
-                (String::new(), String::new())
-            };
-            // A cloned screen shows one source on two targets: the first one names it.
-            if !out.iter().any(|t: &Target| t.device == device) {
-                out.push(Target { device, internal, friendly, path });
-            }
+        let device = text(&src.viewGdiDeviceName).replace(r"\\.\", "");
+        let tech = p.targetInfo.outputTechnology;
+        let internal = [DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INTERNAL, DISPLAYCONFIG_OUTPUT_TECHNOLOGY_DISPLAYPORT_EMBEDDED, DISPLAYCONFIG_OUTPUT_TECHNOLOGY_UDI_EMBEDDED].contains(&tech);
+        let mut tgt = DISPLAYCONFIG_TARGET_DEVICE_NAME { header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+            r#type: DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME,
+            size: size_of::<DISPLAYCONFIG_TARGET_DEVICE_NAME>() as u32,
+            adapterId: p.targetInfo.adapterId,
+            id: p.targetInfo.id,
+        }, ..Default::default() };
+        let (friendly, path) = if win::display_config_get_target_name(&mut tgt) == 0 {
+            (text(&tgt.monitorFriendlyDeviceName), text(&tgt.monitorDevicePath))
+        } else {
+            (String::new(), String::new())
+        };
+        // A cloned screen shows one source on two targets: the first one names it.
+        if !out.iter().any(|t: &Target| t.device == device) {
+            out.push(Target { device, internal, friendly, path });
         }
     }
     out
@@ -333,7 +320,7 @@ pub(super) fn normal_rect(hwnd: HWND) -> RECT {
 
 /// rcNormalPosition is in workspace coordinates: `sign` 1 makes it screen coordinates, -1 the reverse.
 pub(super) fn shift(r: RECT, sign: i32) -> RECT {
-    let primary = work_area(unsafe { MonitorFromPoint(POINT::default(), MONITOR_DEFAULTTOPRIMARY) });
+    let primary = work_area(win::monitor_from_point(POINT::default(), MONITOR_DEFAULTTOPRIMARY));
     RECT { left: r.left + sign * primary.left, top: r.top + sign * primary.top, right: r.right + sign * primary.left, bottom: r.bottom + sign * primary.top }
 }
 
@@ -520,7 +507,7 @@ pub(super) fn screen_now(s: &State, raw: isize) -> Option<String> {
         return Some(id);
     }
     let h = HWND(raw as *mut _);
-    let m = unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONULL) };
+    let m = win::monitor_from_window(h, MONITOR_DEFAULTTONULL);
     if m.is_invalid() {
         return None;
     }
@@ -830,7 +817,7 @@ pub(super) fn remap(from: RECT, to: RECT, r: RECT) -> RECT {
 pub(super) fn refresh_spots(s: &mut State, now: &HashSet<String>) {
     let mut found: Vec<(isize, String)> = Vec::new();
     for h in app_windows() {
-        let m = unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONULL) };
+        let m = win::monitor_from_window(h, MONITOR_DEFAULTTONULL);
         if m.is_invalid() {
             continue;
         }

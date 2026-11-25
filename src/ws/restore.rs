@@ -391,7 +391,7 @@ pub fn restore_tick() -> bool {
                 _ if ws >= count => use_up(r, &format!("workspace {} no longer exists", ws + 1)),
                 _ if m.active == ws => use_up(r, &format!("{dev} already shows workspace {}", ws + 1)),
                 // Apps often open on the main screen and move a moment later.
-                _ if device_name(unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) }) != p.device => {}
+                _ if device_name(win::monitor_from_window(h, MONITOR_DEFAULTTONEAREST)) != p.device => {}
                 _ => {
                     r.pending.retain(|&p| p != i);
                     plan.push(Hide { h, key, i, app: fp.app.clone(), to: (dev.clone(), ws), then: After::Home { was_fg: unsafe { GetForegroundWindow() } == h } });
@@ -438,7 +438,7 @@ pub fn restore_tick() -> bool {
                 r.hidden += 1;
                 info!("restore: {} -> {dev} workspace {}/{count}", p.app, ws + 1);
                 if was_fg {
-                    let mon = unsafe { MonitorFromWindow(p.h, MONITOR_DEFAULTTONEAREST) };
+                    let mon = win::monitor_from_window(p.h, MONITOR_DEFAULTTONEAREST);
                     let next = app_windows_on(mon).first().copied().unwrap_or(win::get_shell_window());
                     unsafe {
                         let _ = SetForegroundWindow(next);

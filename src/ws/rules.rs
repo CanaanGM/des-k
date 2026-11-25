@@ -58,7 +58,7 @@ pub(super) fn place_in(s: &mut State, h: HWND, rule: &settings::Rule, name: Stri
         info!("apps: {app} opened where Windows put it: its rule's workspace {} waits, you have {count}", k + 1);
         return None;
     }
-    let from_mon = unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) };
+    let from_mon = win::monitor_from_window(h, MONITOR_DEFAULTTONEAREST);
     let from = id_of(s, &device_name(from_mon));
     let target = rule.screen.clone().unwrap_or_else(|| from.clone());
     // Where it lands now: the rule's screen, or the main display while that one is unplugged (AC-7).
@@ -196,7 +196,7 @@ pub fn recloak(h: HWND) {
     }
     let fg = unsafe { GetForegroundWindow() };
     if fg == h || win::get_ancestor(fg, GA_ROOTOWNER) == h {
-        let mon = mon_of(s, &from).unwrap_or_else(|| unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) });
+        let mon = mon_of(s, &from).unwrap_or_else(|| win::monitor_from_window(h, MONITOR_DEFAULTTONEAREST));
         focus_off(&app, mon);
     }
     info!("apps: Windows showed {app} again, hidden again ({}/{RECLOAKS})", recloaks + 1);
@@ -243,7 +243,7 @@ pub fn settle_tick() -> bool {
             s.settle.remove(&raw);
             continue;
         }
-        let on = unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONULL) };
+        let on = win::monitor_from_window(h, MONITOR_DEFAULTTONULL);
         if on.is_invalid() || id_of(s, &device_name(on)) == target {
             continue;
         }

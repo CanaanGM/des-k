@@ -28,8 +28,8 @@ pub fn show_indicator(mon: HMONITOR) {
 
 pub(crate) fn under_mouse() -> (HMONITOR, String) {
     let mut pt = POINT::default();
-    unsafe { let _ = GetCursorPos(&mut pt); }
-    let mon = unsafe { MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST) };
+    let _ = win::get_cursor_pos(&mut pt);
+    let mon = win::monitor_from_point(pt, MONITOR_DEFAULTTONEAREST);
     (mon, device_name(mon))
 }
 
@@ -58,7 +58,7 @@ pub(super) fn focused_screen() -> Option<HMONITOR> {
     if is_desktop(fg, win::get_shell_window(), &class) || matches!(class.as_str(), "Shell_TrayWnd" | "Shell_SecondaryTrayWnd") {
         return None;
     }
-    let mon = unsafe { MonitorFromWindow(fg, MONITOR_DEFAULTTONULL) };
+    let mon = win::monitor_from_window(fg, MONITOR_DEFAULTTONULL);
     (!mon.is_invalid()).then_some(mon)
 }
 
@@ -183,7 +183,7 @@ pub fn follow(hwnd: HWND) {
         Follow::RuleHid { from } => {
             let app = who(hwnd);
             info!("follow: a rule hid {app} and it has not been shown yet, ignored");
-            let mon = mon_of(&s, &from).unwrap_or_else(|| unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) });
+            let mon = mon_of(&s, &from).unwrap_or_else(|| win::monitor_from_window(h, MONITOR_DEFAULTTONEAREST));
             focus_off(&app, mon);
         }
         Follow::NotOurs => {}

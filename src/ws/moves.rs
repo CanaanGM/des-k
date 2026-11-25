@@ -10,7 +10,7 @@ pub fn pin() {
     if !app_windows().contains(&h) {
         return info!("pin: nothing to pin ({}, {})", who(h), class_name(h));
     }
-    let mon = unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) };
+    let mon = win::monitor_from_window(h, MONITOR_DEFAULTTONEAREST);
     let count = settings::get().workspaces;
     let mut s = state();
     let name = id_of(&mut s, &device_name(mon));
@@ -65,7 +65,7 @@ pub fn send(to: To, follow: bool) {
             if !app_windows().contains(&h) {
                 return info!("send: nothing to send ({}, {})", who(h), class_name(h));
             }
-            let mon = unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) };
+            let mon = win::monitor_from_window(h, MONITOR_DEFAULTTONEAREST);
             let name = id_of(&mut s, &device_name(mon));
             let from = mon_mut(&mut s, &name).active;
             (h, mon, name, from)
@@ -173,7 +173,7 @@ pub enum Miss {
 
 pub(super) fn work_area(mon: HMONITOR) -> RECT {
     let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
-    unsafe { let _ = GetMonitorInfoW(mon, &mut mi); }
+    let _ = win::get_monitor_info(mon, &mut mi);
     mi.rcWork
 }
 
@@ -196,7 +196,7 @@ pub fn go_to(hwnd: HWND) -> Result<(), Miss> {
             (name, ws)
         }
         None => {
-            let name = id_of(&mut s, &device_name(unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) }));
+            let name = id_of(&mut s, &device_name(win::monitor_from_window(hwnd, MONITOR_DEFAULTTONEAREST)));
             let ws = s.monitors.get(&name).map_or(0, |m| m.active);
             (name, ws)
         }
@@ -231,7 +231,7 @@ pub(super) fn show_on(hwnd: HWND, device: &str, activate: bool, who: &str) -> Re
     let from = match &hidden {
         // A screen only just unplugged keeps its old device name: no monitor has it now.
         Some((id, _)) => s.monitors[id].device.clone().unwrap_or_else(|| id.clone()),
-        None => device_name(unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) }),
+        None => device_name(win::monitor_from_window(hwnd, MONITOR_DEFAULTTONEAREST)),
     };
     let land = |h: HWND| if activate { focus(h) } else { raise(h) };
     if hidden.is_none() && from == device {
@@ -303,7 +303,7 @@ pub fn place(hwnd: HWND, device: &str, ws: usize) -> Result<(), Miss> {
     }
     let from = match &hidden {
         Some((id, _)) => s.monitors[id].device.clone().unwrap_or_else(|| id.clone()),
-        None => device_name(unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) }),
+        None => device_name(win::monitor_from_window(hwnd, MONITOR_DEFAULTTONEAREST)),
     };
     let shell = Shell::new().map_err(|e| {
         warn!("overview: shell unavailable: {e}");
@@ -385,8 +385,8 @@ pub(super) fn put(hwnd: HWND, to: Spot) -> windows::core::Result<()> {
     };
     win::set_window_placement(hwnd, &wp)?;
     if to.state == 'x' {
-        let new = unsafe { MonitorFromRect(&to.rect, MONITOR_DEFAULTTONEAREST) };
-        if unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) } != new {
+        let new = win::monitor_from_rect(&to.rect, MONITOR_DEFAULTTONEAREST);
+        if win::monitor_from_window(hwnd, MONITOR_DEFAULTTONEAREST) != new {
             // Some windows stay maximized where they were: restore onto the new screen, then maximize there.
             wp.showCmd = SW_SHOWNOACTIVATE.0 as u32;
             win::set_window_placement(hwnd, &wp)?;
