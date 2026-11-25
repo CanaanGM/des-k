@@ -353,3 +353,6 @@ pub fn hidden_count() -> Option<usize> {
     let s = STATE.try_lock().ok()?;
     Some(s.monitors.values().flat_map(|m| &m.hidden).map(Vec::len).sum())
 }
+
+#[cfg(test)]
+mod tests;

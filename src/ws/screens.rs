@@ -864,3 +864,6 @@ pub(super) fn next_spot(old: Option<(String, Spot)>, id: String, now: &HashSet<S
         _ => (id, read()),
     }
 }
+
+#[cfg(test)]
+mod tests;

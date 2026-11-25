@@ -466,3 +466,6 @@ pub fn show_workspace(device: &str, ws: usize) {
     let id = id_of(&mut s, device);
     switch_to(&mut s, mon, &id, ws, None, None, None);
 }
+
+#[cfg(test)]
+mod tests;

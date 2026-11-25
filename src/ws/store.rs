@@ -333,3 +333,6 @@ pub(super) fn rescued(text: &str, mut show: impl FnMut(isize, u32) -> Option<boo
     }
     (out, shown, left)
 }
+
+#[cfg(test)]
+mod tests;

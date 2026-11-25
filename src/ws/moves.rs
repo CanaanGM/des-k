@@ -430,3 +430,6 @@ pub(super) fn map_rect(from: RECT, to: RECT, r: RECT) -> RECT {
     let (left, top) = (x(r.left).clamp(to.left, to.right - w), y(r.top).clamp(to.top, to.bottom - h));
     RECT { left, top, right: left + w, bottom: top + h }
 }
+
+#[cfg(test)]
+mod tests;
