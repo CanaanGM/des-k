@@ -7,9 +7,7 @@ const LIMIT: usize = 1000;
 
 /// Files not split yet, each capped at its size when this test landed, so none can grow while it
 /// waits. Take a file's line out once it is split: the list ends empty.
-const NOT_SPLIT_YET: &[(&str, usize)] = &[
-    ("ws.rs", 3807),
-];
+const NOT_SPLIT_YET: &[(&str, usize)] = &[];
 
 fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(dir).unwrap() {

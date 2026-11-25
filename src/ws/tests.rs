@@ -338,9 +338,9 @@ fn an_old_full_path_reads_back_as_its_file_name() {
     let Line::W { fp: Some(saved), .. } = &lines[0] else { panic!("{:?}", lines[0]) };
     assert_eq!(saved.app, "code.exe");
     assert!(matches!(&lines[1], Line::A { fp: Some(f), .. } if f.app == "notepad.exe"));
-    let entry = restore::Entry { dev: "DEL-1".into(), ws: Some(2), pin: false, away: false, spot: None, fp: saved.clone() };
+    let entry = crate::restore::Entry { dev: "DEL-1".into(), ws: Some(2), pin: false, away: false, spot: None, fp: saved.clone() };
     let live = Fp { app: "code.exe".into(), class: "Chrome_WidgetWin_1".into(), title: "notes.md".into() };
-    assert_eq!(restore::pick(&[entry], &[0], &live, 1), restore::Pick::Take(0));
+    assert_eq!(crate::restore::pick(&[entry], &[0], &live, 1), crate::restore::Pick::Take(0));
 }
 
 // Nothing reads a title with Restore off, so none is kept (spec 0033 AC-4). The line still has
