@@ -10,7 +10,6 @@ const LIMIT: usize = 1000;
 const NOT_SPLIT_YET: &[(&str, usize)] = &[
     ("settings_page.rs", 9982),
     ("ws.rs", 3807),
-    ("settings.rs", 3449),
     ("welcome.rs", 3106),
     ("overview.rs", 2852),
     ("finder.rs", 1705),
