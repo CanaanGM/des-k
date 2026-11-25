@@ -8,7 +8,6 @@ const LIMIT: usize = 1000;
 /// Files not split yet, each capped at its size when this test landed, so none can grow while it
 /// waits. Take a file's line out once it is split: the list ends empty.
 const NOT_SPLIT_YET: &[(&str, usize)] = &[
-    ("settings_page.rs", 9982),
     ("ws.rs", 3807),
     ("welcome.rs", 3106),
     ("overview.rs", 2852),
