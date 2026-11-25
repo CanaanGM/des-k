@@ -42,6 +42,7 @@ pub(super) struct View {
     pub(super) around: Vec<KeyRow>,
     pub(super) windows: Vec<KeyRow>,
     pub(super) copilot: bool,
+    pub(super) rule: &'static str, // which screen keys act on (spec 0038 AC-11)
     pub(super) cards: Vec<(u8, Vec<Gact>)>, // fingers, then left, right, up, down, tap
     pub(super) pad: Pad,
     pub(super) key: Vec<Combo>,
@@ -143,7 +144,15 @@ pub(super) fn read(s: &Settings, st: &State, back: Option<GaveBack>) -> View {
             (f, acts)
         })
         .collect();
-    View { around, windows, copilot: s.copilot_as_right_ctrl, cards, pad: pad(st, back), key: s.hints.clone() }
+    View { around, windows, copilot: s.copilot_as_right_ctrl, rule: rule_line(s.act_on), cards, pad: pad(st, back), key: s.hints.clone() }
+}
+
+/// The line saying which screen keys act on (spec 0038 AC-11).
+pub(super) fn rule_line(act_on: settings::ActOn) -> &'static str {
+    match act_on {
+        settings::ActOn::Mouse => "Keys act on the screen under the mouse.",
+        settings::ActOn::Focus => "Keys act on the focused window's screen; swipes on the screen under the pointer.",
+    }
 }
 
 pub(super) fn read_now() -> View {

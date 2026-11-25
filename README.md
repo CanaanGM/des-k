@@ -44,7 +44,9 @@ the setup, checks it against the release's `SHA256SUMS.txt` and runs it. Your wo
 
 ## Shortcuts
 
-Everything works on **the screen under your mouse**.
+Everything works on **the screen under your mouse**. To have the keys act on the focused window's
+screen instead, set Settings → Workspaces → **Keys act on**; swipes still use the screen under
+the pointer.
 
 | Keys | What it does |
 |---|---|
@@ -129,6 +131,9 @@ Your settings and log stay in `%LOCALAPPDATA%\des-k`; delete that folder too if 
 ## If something goes wrong
 
 - **A window seems lost**: press `Win+F` and search for it, or open the overview.
+- **Shortcuts do nothing while a remote control app has focus** (TeamViewer, AnyDesk, Remote
+  Desktop): the app takes the keys before des-k hears them, and may send them to the other PC.
+  Click another window first, and they work again.
 - **des-k stopped** (no tray icon) and windows are still hidden: run
   `& "$env:ProgramFiles\des-k\des-k.exe" --quit`. It shows every window des-k hid. Then start
   **des-k** from the Start menu.

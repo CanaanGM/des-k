@@ -31,3 +31,14 @@ fn a_pair_shows_as_one_key_only_when_it_is_one() {
     let odd = Settings { next: vec![Combo { mods: WIN | ALT, vk: VK_RIGHT.0 }], ..Settings::default() };
     assert_eq!(row_caps(&odd, TAKES[0].keys).map(|c| words(&c)), Some("Win Ctrl ←".into()));
 }
+
+// Spec 0038 AC-11: step 1 tells you how to aim the keys, so its words must match the rule in
+// force, or the first thing you try hits the other screen.
+#[test]
+fn step_1_says_how_to_aim_the_switch_keys() {
+    let focus = Settings { act_on: settings::ActOn::Focus, ..Settings::default() };
+    let (switch, overview) = (TRIES[0].2, TRIES[1].2);
+    assert_eq!(try_how(0, switch, &Settings::default()), "Move your mouse to a screen, then press the keys.");
+    assert_eq!(try_how(0, switch, &focus), "Click a window on a screen, then press the keys.");
+    assert_eq!(try_how(1, overview, &focus), overview, "only the switch row changes");
+}

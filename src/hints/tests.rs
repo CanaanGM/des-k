@@ -55,6 +55,8 @@ fn render() {
     let cant = rows([PadRow::Nothing, PadRow::CantRead, PadRow::Nothing, PadRow::Nothing]);
     let back = Some(GaveBack { wrote: [Wrote::All; 4], cleared: true });
     let my = mine();
+    // Every line under the keyboard cards: the rule, the remote app line and the Copilot line (spec 0038).
+    let all = Settings { copilot_as_right_ctrl: true, act_on: crate::settings::ActOn::Focus, ..Settings::default() };
     let states: Vec<Shot> = vec![
         ("defaults", &d, st(), None, Rec::Idle, H),
         ("key-set", &keyed, st(), None, Rec::Idle, H),
@@ -68,6 +70,7 @@ fn render() {
         ("reading-off-windows", &d, State { enabled: false, off: false, ..st() }, None, Rec::Idle, H),
         ("no-touchpad", &d, State { pad: false, ..st() }, None, Rec::Idle, H),
         ("short", &d, st(), None, Rec::Idle, 528.0),
+        ("tall", &all, st(), None, Rec::Idle, 860.0),
     ];
     let aquatic = ui::high_contrast([0x202020, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);
     let desert = ui::high_contrast([0xFFFAEF, 0x3D3D3D, 0x903909, 0xFFF5E3, 0x6D6D6D]);

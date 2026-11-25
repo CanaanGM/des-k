@@ -36,6 +36,8 @@ impl Ctx<'_, '_> {
         self.sep(y + h);
         h += self.setting("follow_activation", y + h);
         self.sep(y + h);
+        h += self.setting("act_on", y + h);
+        self.sep(y + h);
         h + self.setting("jump_back", y + h)
     }
 

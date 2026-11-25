@@ -2,7 +2,7 @@
 // steps but the touchpad's, what sits above the step, and the footer.
 use super::*;
 use super::pad::{PadView, pad_view};
-use super::steps::{Field, Held, MORE_KEYS, Rec, Step, TAKES, TRIES, field_of, field_of_key, held, rec_note, row_caps, steps, take_caption, title_of, words};
+use super::steps::{Field, Held, MORE_KEYS, Rec, Step, TAKES, TRIES, field_of, field_of_key, held, rec_note, row_caps, steps, take_caption, title_of, try_how, words};
 
 // ---- Drawing ----
 
@@ -361,7 +361,7 @@ impl Ctx<'_, '_> {
             }
             let done = tried[i];
             let cap = if now == Some(i) {
-                how.to_string()
+                try_how(i, how, s).to_string()
             } else if done && i == 0 {
                 self.switched()
             } else {
@@ -568,6 +568,11 @@ impl Ctx<'_, '_> {
             ] {
                 c.sep(y + h);
                 h += c.toggle_row(y + h, key, title, cap);
+                // Right under Follow a window, as on the settings page (spec 0038 AC-10).
+                if key == "follow_activation" {
+                    c.sep(y + h);
+                    h += c.setting(y + h, "act_on", "Keys act on", sp::rows::ACT_ON_CAP);
+                }
             }
             c.sep(y + h);
             h += c.more(y + h, "Animations, indicator style and timing, restore time, overview");

@@ -438,19 +438,19 @@ pub fn is_open() -> bool {
     SESSION.with_borrow(Option::is_some)
 }
 
-/// Win+F: open on the screen under the mouse, or close if open.
-pub fn toggle() {
+/// Win+F: open on the screen `ws::target` picks for `from` (spec 0038), or close if open.
+pub fn toggle(from: ws::Source) {
     if SESSION.with_borrow(Option::is_some) {
         close(true);
     } else {
-        open();
+        open(from);
     }
 }
 
-fn open() {
+fn open(from: ws::Source) {
     let Some((popup, edit)) = window() else { return warn!("finder: window not created") };
     ui::canvas::gdiplus();
-    let (mon, device) = ws::under_mouse();
+    let (mon, device) = ws::target(from);
     let came_from = unsafe { GetForegroundWindow() };
     used(came_from);
     RECENT.with_borrow_mut(|r| r.retain(|&h, _| unsafe { IsWindow(Some(HWND(h as *mut _))) }.as_bool()));

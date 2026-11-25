@@ -196,6 +196,8 @@ pub(super) fn middle(c: &Canvas, places: &mut Vec<Place>, v: &View, top: f32) ->
     c.text(SIDE, top, 20.0, "Keyboard", F::Bold, b.tx);
     let mut y = key_card(c, SIDE, top + 28.0, "Move around", &v.around) + 12.0;
     y = key_card(c, SIDE, y, "Move windows", &v.windows);
+    y += 10.0 + c.para(SIDE, y + 10.0, LEFT_W, 16.0, &[(v.rule, F::Small, b.tx2)]);
+    y += 6.0 + c.para(SIDE, y + 6.0, LEFT_W, 16.0, &[(REMOTE, F::Small, b.tx2)]);
     if v.copilot {
         c.text(SIDE, y + 10.0, 16.0, COPILOT, F::Small, b.tx2);
         y += 26.0;

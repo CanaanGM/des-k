@@ -190,6 +190,32 @@ fn follow_activation_can_be_turned_off() {
     assert!(warn.is_empty(), "{warn:?}");
 }
 
+// Spec 0038 AC-4: the mouse stays the default, so nobody who never opens the file sees keys
+// change screens; a typo falls back to it too, with one line saying so.
+#[test]
+fn act_on_reads_mouse_or_focus_and_falls_back_to_mouse() {
+    assert_eq!(parse("").0.act_on, ActOn::Mouse);
+    assert_eq!(parse("act_on = \"focus\"\n").0.act_on, ActOn::Focus);
+    let (s, warn) = parse("act_on = \"mouse\"\n");
+    assert_eq!((s.act_on, warn.len()), (ActOn::Mouse, 0), "{warn:?}");
+    for bad in ["act_on = \"window\"\n", "act_on = true\n"] {
+        let (s, warn) = parse(&format!("{bad}workspaces = 6\n"));
+        assert_eq!((s.act_on, s.workspaces), (ActOn::Mouse, 6), "only act_on resets");
+        assert_eq!(warn.len(), 1, "{warn:?}");
+    }
+}
+
+// Spec 0038 AC-1, AC-3: a key you never chose must not be taken, so a new or broken value
+// leaves the Copilot key to Windows; an upgrader's file says true and keeps it.
+#[test]
+fn the_copilot_key_is_left_to_windows_unless_the_file_says_true() {
+    assert!(!Settings::default().copilot_as_right_ctrl);
+    assert!(!parse("").0.copilot_as_right_ctrl, "a missing key reads false");
+    let (s, warn) = parse("copilot_as_right_ctrl = \"yes\"\n");
+    assert_eq!((s.copilot_as_right_ctrl, warn.len()), (false, 1), "{warn:?}");
+    assert!(parse("copilot_as_right_ctrl = true\n").0.copilot_as_right_ctrl, "an upgrader keeps theirs");
+}
+
 // One combo in both lists would make a key do two things; neither list can be trusted.
 #[test]
 fn a_clash_resets_both_lists() {

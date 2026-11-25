@@ -58,6 +58,16 @@ pub enum Style {
 
 pub const STYLES: &[(&str, Style)] = &[("card", Style::Card), ("dots", Style::Dots)];
 
+/// Which screen a keyboard shortcut acts on (spec 0038): the one under the mouse, or the
+/// focused window's. Swipes always use the pointer's.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ActOn {
+    Mouse,
+    Focus,
+}
+
+pub const ACT_ON: &[(&str, ActOn)] = &[("mouse", ActOn::Mouse), ("focus", ActOn::Focus)];
+
 /// How des-k places a workspace's picture on a screen (spec 0026 AC-5).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Fit {
@@ -242,6 +252,7 @@ pub struct Settings {
     pub workspaces: usize,
     pub copilot_as_right_ctrl: bool,
     pub follow_activation: bool,
+    pub act_on: ActOn,
     pub jump_back: bool, // a jump to the shown workspace goes back to the last one (spec 0024)
     pub fastest: bool, // every des-k fade and move instant (spec 0017)
     // Read at start only (spec 0017 AC-9). None: the file lacks the key, as an upgrader's does.
@@ -366,8 +377,9 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             workspaces: 4,
-            copilot_as_right_ctrl: true,
+            copilot_as_right_ctrl: false, // a new install asks first (spec 0038 AC-1)
             follow_activation: true,
+            act_on: ActOn::Mouse,
             jump_back: true,
             fastest: false,
             first_run_seen: Some(false),
@@ -426,8 +438,9 @@ impl Default for Settings {
 const DEFAULT_FILE: &str = r##"# des-k settings. A saved change applies within two seconds; [restore] acts at the next start.
 
 workspaces = 4              # 2 to 9, every screen
-copilot_as_right_ctrl = true
+copilot_as_right_ctrl = false # true: the Copilot key is Right Ctrl, so Win Ctrl keys work with it
 follow_activation = true    # switch to a hidden window's workspace when it comes to the front
+act_on = "mouse"            # which screen keys act on: "mouse" (under it) or "focus" (the focused window's)
 jump_back = true            # Win+N on the workspace you're on goes back to the last one
 fastest = false             # true: every des-k fade and move is instant
 first_run_seen = false      # false: the first run opens at the next start

@@ -253,6 +253,7 @@ impl Settings {
             ("workspaces", self.workspaces.to_string()),
             ("copilot_as_right_ctrl", self.copilot_as_right_ctrl.to_string()),
             ("follow_activation", self.follow_activation.to_string()),
+            ("act_on", word(ACT_ON.iter().find(|(_, v)| *v == self.act_on).map(|(w, _)| *w))),
             ("jump_back", self.jump_back.to_string()),
             ("fastest", self.fastest.to_string()),
             ("first_run_seen", self.first_run_seen.map_or(String::new(), |b| b.to_string())),

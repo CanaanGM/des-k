@@ -28,12 +28,12 @@ pub fn run(gesture: usize) {
     match action {
         Action::Switch(dir) => {
             close();
-            ws::switch(dir);
+            ws::switch(dir, ws::Source::Pointer);
             crate::welcome::tried(crate::welcome::Try::Switch);
         }
         Action::Back => {
             close();
-            ws::back();
+            ws::back(ws::Source::Pointer);
         }
         Action::Send(dir, follow) => {
             close();
@@ -41,7 +41,7 @@ pub fn run(gesture: usize) {
         }
         Action::Jump(i) => {
             close();
-            ws::jump(i);
+            ws::jump(i, ws::Source::Pointer);
         }
         Action::SendTo(i, follow) => {
             close();
@@ -49,7 +49,7 @@ pub fn run(gesture: usize) {
         }
         Action::Finder => {
             overview::close(true);
-            finder::toggle();
+            finder::toggle(ws::Source::Pointer);
         }
         Action::Overview if overview::is_open() => {}
         Action::Overview => {

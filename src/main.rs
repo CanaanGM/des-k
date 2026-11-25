@@ -277,7 +277,7 @@ fn main() -> windows::core::Result<()> {
             WM_APP => {
                 #[cfg(feature = "drill")]
                 let started = std::time::Instant::now();
-                ws::switch(msg.wParam.0 as isize);
+                ws::switch(msg.wParam.0 as isize, ws::Source::Keys);
                 #[cfg(feature = "drill")]
                 drill::switched(started.elapsed());
                 welcome::tried(welcome::Try::Switch);
@@ -295,8 +295,8 @@ fn main() -> windows::core::Result<()> {
                 }
             }
             keys::WM_SEND => ws::send(ws::To::Step(msg.wParam.0 as isize), msg.lParam.0 != 0),
-            keys::WM_JUMP => ws::jump(msg.wParam.0),
-            keys::WM_BACK => ws::back(),
+            keys::WM_JUMP => ws::jump(msg.wParam.0, ws::Source::Keys),
+            keys::WM_BACK => ws::back(ws::Source::Keys),
             keys::WM_SEND_TO => ws::send(ws::To::Index(msg.wParam.0), msg.lParam.0 != 0),
             keys::WM_PIN => ws::pin(),
             apps::WM_OPENED => {
@@ -325,7 +325,7 @@ fn main() -> windows::core::Result<()> {
             }
             keys::WM_FINDER => {
                 overview::close(true);
-                finder::toggle();
+                finder::toggle(ws::Source::Keys);
             }
             // To the window that is recording: the settings page, the first run or the hints window.
             keys::WM_RECORDED => match keys::recording_window() {
@@ -334,7 +334,7 @@ fn main() -> windows::core::Result<()> {
                 Some(h) if settings_page::owns(h) => settings_page::recording::recorded(msg.wParam.0 as u16, msg.lParam.0 as u8),
                 _ => {}
             },
-            keys::WM_HINTS => hints::toggle(),
+            keys::WM_HINTS => hints::toggle(ws::Source::Keys),
             keys::WM_OVERVIEW => {
                 finder::close(true);
                 overview::toggle();

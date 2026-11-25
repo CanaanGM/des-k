@@ -81,6 +81,9 @@ pub enum Line {
     Opened { app: String, to: usize },
     /// state.txt could not be saved, so a switch or send hid nothing (spec 0034 AC-2).
     NotSaved,
+    /// Follow switched here because `app`'s window came forward; empty when it has no name
+    /// (spec 0038 AC-12). The Card style only.
+    Followed { app: String },
 }
 
 impl Line {
@@ -105,6 +108,19 @@ thread_local! {
     static ALPHA: Cell<u8> = const { Cell::new(0) };
     static STEP: Cell<u8> = const { Cell::new(255) }; // alpha lost per fade tick
     static SHELLHOOK: Cell<u32> = const { Cell::new(0) }; // 0 until registered
+}
+
+/// Follow's line (spec 0038 AC-12): the app's name cut at 40 characters, or "A window" without one.
+fn came_forward(app: &str) -> String {
+    let app = app.trim();
+    if app.is_empty() {
+        return "A window came forward".into();
+    }
+    let mut name: String = app.chars().take(40).collect();
+    if app.chars().count() > 40 {
+        name.push('…');
+    }
+    format!("{name} came forward")
 }
 
 fn windows(n: usize) -> String {
@@ -175,6 +191,7 @@ fn words(card: &Card, line: &Line, named: bool) -> Words {
             sub_chip: None,
         },
         Line::NotSaved => Words { icon: '\u{E7BA}', ink: Ink::Warn, title: "Layout can't be saved".into(), chip: None, sub: "Nothing hidden".into(), sub_chip: None },
+        Line::Followed { app } => w('\u{E8AB}', came_forward(app), String::new()),
     }
 }
 
@@ -574,6 +591,7 @@ pub fn show(mon: HMONITOR, card: Card) {
     }
     let Some(h) = window() else { return };
     let style = st.indicator_style;
+    let card = styled(card, style);
     let theme = ui::system_theme();
     let (mut dx, mut dy) = (96u32, 96u32);
     unsafe { let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy); }
@@ -619,6 +637,14 @@ pub fn show(mon: HMONITOR, card: Card) {
         SetTimer(Some(h), FADE_TIMER, hold, None);
     }
     crate::uia::notify(h, &text, "des-k indicator", false);
+}
+
+/// `card` as `style` shows it: the dots show a follow as any switch, with no line (spec 0038 AC-13).
+fn styled(mut card: Card, style: Style) -> Card {
+    if style == Style::Dots {
+        card.lines.retain(|l| !matches!(l, Line::Followed { .. }));
+    }
+    card
 }
 
 /// The card's top left on `work` for a card `w` by `h` px (spec 0020 AC-7, AC-8). Pure, so the
@@ -723,6 +749,23 @@ mod tests {
         // A rule never switches a screen (spec 0027 AC-5): the note names where it opened, and that you stay.
         let opened = words(&c, &Line::Opened { app: "Notepad".into(), to: 2 }, true);
         assert_eq!((opened.title.as_str(), opened.chip, opened.sub.as_str()), ("Notepad opened on ", Some(2), "You stay on 2"));
+    }
+
+    // Spec 0038 AC-12: a switch you didn't press says whose window caused it, never a blank, and
+    // a long name can't push the card past its width.
+    #[test]
+    fn a_follow_names_the_app_that_came_forward() {
+        let said = |app: &str| words(&card(1, true), &Line::Followed { app: app.into() }, true).title;
+        assert_eq!(said("Slack"), "Slack came forward");
+        assert_eq!(said(""), "A window came forward");
+        assert_eq!(said("  "), "A window came forward");
+        let long = "Microsoft Teams (work or school) Preview Edition";
+        assert_eq!(said(long), "Microsoft Teams (work or school) Preview… came forward");
+        assert_eq!(said(&long[..40]), format!("{} came forward", &long[..40]), "40 fit whole");
+        // AC-13: the dots have no room for words; they show the switch alone.
+        let followed = card(1, true).with(Line::Followed { app: "Slack".into() });
+        assert_eq!(styled(followed.clone(), Style::Dots).lines, []);
+        assert_eq!(styled(followed.clone(), Style::Card), followed);
     }
 
     #[test]
@@ -841,6 +884,8 @@ mod tests {
                 wants(Card::new(1, 6, dell()), &[4]).with(Line::Wants { text: "Microsoft Teams (work or school) wants you back on that call right now".into(), ws: 4 }),
             ),
             ("marked-switch", wants(Card::new(1, 4, dell()), &[2])),
+            // Spec 0038 AC-12: a follow's switch says why.
+            ("followed", Card::new(2, 4, dell()).with(Line::Followed { app: "Slack".into() })),
             ("marked-one-screen", wants(Card::new(0, 4, None), &[2, 3])),
             ("marked-sent", wants(Card::new(1, 4, dell()), &[2]).with(sent(false))),
             ("marked-nine", wants(Card::new(6, 9, dell()), &[0, 4, 8])),
@@ -892,6 +937,7 @@ mod tests {
             for style in [Style::Card, Style::Dots] {
                 let sname = if style == Style::Card { "card" } else { "dots" };
                 for (name, card) in &states {
+                    let card = &styled(card.clone(), style);
                     let (w, h) = unsafe {
                         let dc = GetDC(None);
                         let size = draw(&Canvas::new(dc, false, s, t, &fonts), 0.0, 0.0, style, card, true);

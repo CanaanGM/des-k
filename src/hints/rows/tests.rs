@@ -26,6 +26,15 @@ fn the_rows_follow_the_settings() {
     assert_eq!(v.key, [c(WIN | CTRL, b'H' as u16)]);
 }
 
+// Spec 0038 AC-11: the hints window states the rule in force, and in the focus mode also that
+// swipes still use the pointer, since keys and swipes then pick different screens.
+#[test]
+fn the_rule_line_follows_act_on() {
+    assert_eq!(read(&Settings::default(), &st(), None).rule, "Keys act on the screen under the mouse.");
+    let focus = Settings { act_on: crate::settings::ActOn::Focus, ..Settings::default() };
+    assert_eq!(read(&focus, &st(), None).rule, "Keys act on the focused window's screen; swipes on the screen under the pointer.");
+}
+
 // AC-HNT-3: a gesture shows its action, a twice action under it, Nothing, or the keys it types.
 #[test]
 fn the_gestures_say_what_each_one_does() {

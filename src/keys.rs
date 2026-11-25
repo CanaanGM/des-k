@@ -104,11 +104,17 @@ thread_local! {
     // The watch window raw input goes to, and whether raw input is on now.
     static WATCH: Cell<Option<HWND>> = const { Cell::new(None) };
     static RAW_ON: Cell<bool> = const { Cell::new(false) };
+    // The probe (spec 0038 AC-15): when the hook let a Win key down through (its event time),
+    // and whether a key since found Windows' key state without it: 0 no, 1 yes, 2 logged.
+    static WIN_HEARD: Cell<Option<u32>> = const { Cell::new(None) };
+    static PROBE: Cell<u8> = const { Cell::new(0) };
 }
 
 const WATCH_CLASS: PCWSTR = w!("des-k-keys");
 const WATCH_TIMER: usize = 1;
 const WATCH_MS: u32 = 5000;
+/// A Win down older than this proves nothing to the probe: its up may have gone unheard (Win L).
+const PROBE_MS: u32 = 5000;
 
 fn mod_of(vk: u16) -> u8 {
     match VIRTUAL_KEY(vk) {
@@ -391,11 +397,36 @@ unsafe extern "system" fn hook(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     if code == HC_ACTION as i32 {
         let k = unsafe { &*(lp.0 as *const KBDLLHOOKSTRUCT) };
         let up = matches!(wp.0 as u32, WM_KEYUP | WM_SYSKEYUP);
-        if k.dwExtraInfo != MAGIC && handle(k.vkCode as u16, up) {
-            return LRESULT(1);
+        if k.dwExtraInfo != MAGIC {
+            let swallow = handle(k.vkCode as u16, up);
+            probe(k.vkCode as u16, up, swallow, k.time);
+            if swallow {
+                return LRESULT(1);
+            }
         }
     }
     unsafe { CallNextHookEx(None, code, wp, lp) }
+}
+
+/// The probe (spec 0038 AC-15): remembers a Win down the hook let through, and on another key's
+/// down checks Windows' key state has it too. Not at the Win down itself: Windows updates its key
+/// state only after the hooks. Only flags it; the watch's timer writes the line, once per run.
+fn probe(vk: u16, up: bool, swallowed: bool, time: u32) {
+    if PROBE.get() != 0 {
+        return;
+    }
+    if vk == VK_LWIN.0 || vk == VK_RWIN.0 {
+        // A Win des-k swallowed (the Copilot key's) never reaches Windows' key state.
+        WIN_HEARD.set((!up && !swallowed).then_some(time));
+    } else if !up && win_unheard(WIN_HEARD.get(), time, || held(VK_LWIN) || held(VK_RWIN)) {
+        PROBE.set(1);
+    }
+}
+
+/// Whether a Win down heard at `win_at`, less than `PROBE_MS` before `now`, is missing from
+/// Windows' key state (`win_held`): another app's hook took it after des-k's let it through.
+fn win_unheard(win_at: Option<u32>, now: u32, win_held: impl FnOnce() -> bool) -> bool {
+    win_at.is_some_and(|t| now.wrapping_sub(t) < PROBE_MS) && !win_held()
 }
 
 /// Whether the hook looks removed: since the last check raw input saw a few key events and
@@ -412,6 +443,10 @@ unsafe extern "system" fn watch(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRES
     match m {
         WM_INPUT => RAW_KEYS.set(RAW_KEYS.get().wrapping_add(1)),
         WM_TIMER if wp.0 == WATCH_TIMER => {
+            if PROBE.get() == 1 {
+                PROBE.set(2);
+                info!("keys: the hook heard Win held, Windows' key state did not (another app's keyboard hook?)");
+            }
             if hook_gone(HOOK_CALLS.take(), RAW_KEYS.take()) {
                 if let Some(old) = HOOK.take() {
                     unsafe { let _ = UnhookWindowsHookEx(old); }
@@ -576,6 +611,18 @@ mod tests {
         assert!(!hook_gone(0, 0), "nobody typed");
         assert!(!hook_gone(0, 2), "a key or two can fall between two checks");
         assert!(!hook_gone(1, 40), "the hook heard some");
+    }
+
+    // Spec 0038 AC-15: the probe decides between fixing dead keys under remote control apps and
+    // explaining them, so it must flag only a Win that des-k heard and Windows lost, never an old
+    // Win whose up the hook missed (Win L), and never a Win Windows has.
+    #[test]
+    fn the_probe_flags_only_a_recent_win_windows_lost() {
+        assert!(win_unheard(Some(1_000), 1_200, || false));
+        assert!(!win_unheard(Some(1_000), 1_200, || true), "Windows has it too");
+        assert!(!win_unheard(None, 1_200, || false), "no Win heard");
+        assert!(!win_unheard(Some(1_000), 1_000 + PROBE_MS, || false), "too old to trust");
+        assert!(win_unheard(Some(u32::MAX - 100), 100, || false), "the tick count wrapped");
     }
 
     // A set turned off ("" in the file) gives its digits back to Windows (Win+1 opens a taskbar app).

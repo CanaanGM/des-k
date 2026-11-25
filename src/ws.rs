@@ -241,6 +241,9 @@ struct State {
     // Windows a rule hid, by hwnd, only while they stay in a hidden list: follow ignores them and
     // a shell uncloak is undone (spec 0027 AC-5, AC-17). Memory only.
     ruled: HashMap<isize, Ruled>,
+    // The screen id des-k last acted on (spec 0038 AC-7): a key pressed with nothing focused acts
+    // there. Memory only; read only through `target`, which checks the screen is present.
+    last_acted: Option<String>,
 }
 
 /// Whether `load` started a restore, and why (spec 0003): after a new sign in, windows open
@@ -1155,14 +1158,53 @@ pub(crate) fn under_mouse() -> (HMONITOR, String) {
     (mon, device_name(mon))
 }
 
+/// Where an action came from (spec 0038): a shortcut, or the touchpad, whose hand is on the pointer.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Source {
+    Keys,
+    Pointer,
+}
+
+/// The screen an action acts on (spec 0038 AC-5 to AC-8). Swipes, and keys with `act_on = "mouse"`,
+/// take the mouse's; keys with `"focus"` take the focused window's, else the screen des-k last
+/// acted on, else the mouse's. Lazy, so the mouse mode reads nothing more than it always did.
+fn pick<T>(from: Source, act_on: settings::ActOn, focus: impl FnOnce() -> Option<T>, last: impl FnOnce() -> Option<T>, mouse: impl FnOnce() -> T) -> T {
+    if from == Source::Pointer || act_on == settings::ActOn::Mouse {
+        return mouse();
+    }
+    focus().or_else(last).unwrap_or_else(mouse)
+}
+
+/// The focused window's screen, or None when nothing counts as focused: nothing in front, the
+/// desktop, a taskbar, or a window on no screen (AC-7).
+fn focused_screen() -> Option<HMONITOR> {
+    let fg = unsafe { GetForegroundWindow() };
+    let class = class_name(fg);
+    if is_desktop(fg, unsafe { GetShellWindow() }, &class) || matches!(class.as_str(), "Shell_TrayWnd" | "Shell_SecondaryTrayWnd") {
+        return None;
+    }
+    let mon = unsafe { MonitorFromWindow(fg, MONITOR_DEFAULTTONULL) };
+    (!mon.is_invalid()).then_some(mon)
+}
+
+/// The screen an action from `from` acts on, as `under_mouse` gives it: its monitor and device name.
+pub(crate) fn target(from: Source) -> (HMONITOR, String) {
+    let on = |mon: HMONITOR| (mon, device_name(mon));
+    let last = || {
+        let s = state();
+        s.last_acted.as_deref().and_then(|id| mon_of(&s, id))
+    };
+    pick(from, settings::get().act_on, || focused_screen().map(on), || last().map(on), under_mouse)
+}
+
 /// The workspace a step of `dir` (-1 / +1) from `active` lands on, wrapping both ways.
 fn step_target(active: usize, dir: isize, count: usize) -> usize {
     (active as isize + dir).rem_euclid(count as isize) as usize
 }
 
-/// Switch the workspace of the monitor under the mouse by `dir` (-1 / +1), wrapping like a send.
-pub fn switch(dir: isize) {
-    let (mon, dev) = under_mouse();
+/// Switch the workspace of the screen `target` picks by `dir` (-1 / +1), wrapping like a send.
+pub fn switch(dir: isize, from: Source) {
+    let (mon, dev) = target(from);
     let count = settings::get().workspaces;
     let mut s = state();
     let name = id_of(&mut s, &dev);
@@ -1172,7 +1214,7 @@ pub fn switch(dir: isize) {
         indicator::show(mon, card(&s, &name, active, count)); // nowhere to go: still show where we are
         return;
     }
-    switch_to(&mut s, mon, &name, target, None, None);
+    switch_to(&mut s, mon, &name, target, None, None, None);
 }
 
 /// What a jump to one workspace does.
@@ -1201,11 +1243,11 @@ fn jump_target(m: &Monitor, index: usize, count: usize, jump_back: bool) -> Jump
     }
 }
 
-/// Show workspace `index` (0 based) on the monitor under the mouse. Past the count, or
+/// Show workspace `index` (0 based) on the screen `target` picks. Past the count, or
 /// already shown: only the indicator, so you see where you are (spec 0005). Already shown with
 /// `jump_back` on, it goes back to the last workspace when there is one (spec 0024 AC-8).
-pub fn jump(index: usize) {
-    let (mon, dev) = under_mouse();
+pub fn jump(index: usize, from: Source) {
+    let (mon, dev) = target(from);
     let count = settings::get().workspaces;
     let mut s = state();
     let name = id_of(&mut s, &dev);
@@ -1218,20 +1260,20 @@ pub fn jump(index: usize) {
         }
         Jump::Stay => indicator::show(mon, card(&s, &name, active, count)),
         Jump::Back(target) => {
-            if switch_to(&mut s, mon, &name, target, None, None) == Switch::Switched {
+            if switch_to(&mut s, mon, &name, target, None, None, None) == Switch::Switched {
                 info!("jump: {name} already on workspace {}, back to {}/{count}", index + 1, target + 1);
             }
         }
         Jump::Go(target) => {
-            switch_to(&mut s, mon, &name, target, None, None);
+            switch_to(&mut s, mon, &name, target, None, None, None);
         }
     }
 }
 
-/// Show the workspace the screen under the mouse showed before its last switch; pressed again,
+/// Show the workspace the screen `target` picks showed before its last switch; pressed again,
 /// it comes back (spec 0024). Nothing to go back to: only the indicator, as jump does.
-pub fn back() {
-    let (mon, dev) = under_mouse();
+pub fn back(from: Source) {
+    let (mon, dev) = target(from);
     let count = settings::get().workspaces;
     let mut s = state();
     let name = id_of(&mut s, &dev);
@@ -1241,7 +1283,7 @@ pub fn back() {
         info!("back: {name} has no last workspace");
         return indicator::show(mon, card(&s, &name, active, count));
     };
-    if switch_to(&mut s, mon, &name, target, None, None) == Switch::Switched {
+    if switch_to(&mut s, mon, &name, target, None, None, None) == Switch::Switched {
         info!("back: {name} -> workspace {}/{count}", target + 1);
     }
 }
@@ -1278,7 +1320,9 @@ pub fn follow(hwnd: HWND) {
         Follow::Go => {
             let Some(mon) = mon else { return }; // Go comes only with its screen found
             let app = who(hwnd);
-            if switch_to(&mut s, mon, &name, ws, Some(hwnd), None) == Switch::Switched {
+            // Says why the screen moved; the name stays off the log line (spec 0038 AC-12, AC-13).
+            let note = Says::Followed { app: crate::finder::names::app_name(hwnd).unwrap_or_default() };
+            if switch_to(&mut s, mon, &name, ws, Some(hwnd), None, Some(note)) == Switch::Switched {
                 s.monitors.get_mut(&name).expect("switch_to keeps the monitor").last_follow = Some(Instant::now());
                 info!("follow: {name} -> workspace {}/{} for {app}", ws + 1, settings::get().workspaces);
             }
@@ -1396,8 +1440,10 @@ fn failed_hide(mut cloak: impl FnMut() -> u32, undo: impl FnOnce()) -> bool {
 /// Show workspace `target` (already valid) on one monitor. `focus` is the window to leave
 /// in front; `None` focuses the first shown window, but only if we hid the focused one or the
 /// desktop has focus.
-/// `keep` is a visible window that comes along instead of being hidden (a follow send).
-fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize, focus: Option<HWND>, keep: Option<HWND>) -> Switch {
+/// `keep` is a visible window that comes along instead of being hidden (a follow send), and
+/// `note` a line for the card (spec 0038 AC-12).
+fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize, focus: Option<HWND>, keep: Option<HWND>, note: Option<Says>) -> Switch {
+    s.last_acted = Some(name.to_string());
     let count = settings::get().workspaces;
     let active = mon_mut(s, name).active;
     if target == active {
@@ -1487,7 +1533,11 @@ fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize, focus: Opt
     } else {
         info!("{name}: workspace {}/{count} ({} shown)", target + 1, shown.len());
     }
-    indicator::show(mon, card(s, name, target, count));
+    let card = card(s, name, target, count);
+    indicator::show(mon, match note {
+        Some(line) => card.with(line),
+        None => card,
+    });
     s.sent = None;
     save(s);
     Switch::Switched
@@ -1543,6 +1593,7 @@ pub fn pin() {
     let count = settings::get().workspaces;
     let mut s = state();
     let name = id_of(&mut s, &device_name(mon));
+    s.last_acted = Some(name.clone());
     let raw = h.0 as isize;
     let pinned = !s.pinned.remove(&raw);
     if pinned {
@@ -1599,6 +1650,7 @@ pub fn send(to: To, follow: bool) {
             (h, mon, name, from)
         }
     };
+    s.last_acted = Some(name.clone());
     let target = match to {
         To::Step(dir) => (from as isize + dir).rem_euclid(count as isize) as usize,
         To::Index(i) if i < count => i,
@@ -1631,7 +1683,7 @@ pub fn send(to: To, follow: bool) {
     if follow {
         let marked = s.pinned.contains(&raw) || s.away.contains_key(&raw);
         // Already in front, so it stays on top of the workspace it lands on.
-        if switch_to(&mut s, mon, &name, target, Some(h), Some(h)) == Switch::Switched {
+        if switch_to(&mut s, mon, &name, target, Some(h), Some(h), None) == Switch::Switched {
             sent(&mut s);
             info!("{}", line("follow"));
             if marked {
@@ -2097,7 +2149,7 @@ pub fn show_workspace(device: &str, ws: usize) {
     let Some(mon) = monitor_named(device) else { return warn!("overview: {device} not found") };
     let mut s = state();
     let id = id_of(&mut s, device);
-    switch_to(&mut s, mon, &id, ws, None, None);
+    switch_to(&mut s, mon, &id, ws, None, None, None);
 }
 
 /// Where a window really sits, in screen coordinates; a minimized one where it restores to.
@@ -2298,7 +2350,7 @@ pub fn go_to(hwnd: HWND) -> Result<(), Miss> {
             // Its screen left: check_screens folds it onto the main display if the screen stays gone.
             let Some(mon) = mon_of(&s, &name) else { return Err(Miss::Unplugged) };
             // Refused: it stays hidden, and focus must not go to it.
-            if switch_to(&mut s, mon, &name, ws, Some(hwnd), None) == Switch::Refused {
+            if switch_to(&mut s, mon, &name, ws, Some(hwnd), None, None) == Switch::Refused {
                 return Err(Miss::CantMove);
             }
             (name, ws)

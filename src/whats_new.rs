@@ -99,9 +99,18 @@ const V0_9_0: [Card; 5] = [
     Card { pic: Pic::Note, title: "A hidden window that wants you", text: Text::Attention, button: "Change the words", to: (Section::Attention, None) },
 ];
 
+/// 0.11.0's card (spec 0038 AC-18). Nothing about the Copilot key: an upgrader keeps theirs.
+const V0_11_0: [Card; 1] = [Card {
+    pic: Pic::Screens,
+    title: "Keys can follow your focus",
+    text: Text::Plain("Shortcuts can act on the focused window's screen instead of the one under the mouse. And when a window comes forward on another workspace, the indicator names its app."),
+    button: "Choose",
+    to: (Section::Workspaces, None),
+}];
+
 /// Every release with news, oldest first. A release without an entry opens nothing; add one
 /// before each release that has news (spec 0029 Follow-up).
-const NEWS: &[(Version, &[Card])] = &[(Version(0, 9, 0), &V0_9_0)];
+const NEWS: &[(Version, &[Card])] = &[(Version(0, 9, 0), &V0_9_0), (Version(0, 11, 0), &V0_11_0)];
 
 /// The releases to show, newest first: those newer than `seen` and not newer than the running
 /// des-k. A missing `seen` is older than every release; one newer than ours (a downgrade) shows
@@ -883,6 +892,9 @@ mod tests {
             }),
             ("two-releases", &plain, |w| w.news.insert(0, (Version(0, 10, 0), &NEXT as &[Card]))),
             ("sidebar", &plain, |w| w.updated = false),
+            ("0.11.0", &plain, |w| {
+                (w.news, w.ours) = (due(Some(V(0, 10, 0)), V(0, 11, 0)), V(0, 11, 0));
+            }),
         ];
         for (sname, s, setup) in &states {
             let mut win = Win {

@@ -377,6 +377,23 @@ fn a_step_wraps_both_ways() {
     assert_eq!(step_target(2, -1, 4), 1);
 }
 
+// Spec 0038 AC-5 to AC-8: which screen an action hits must be predictable. Swipes and the
+// mouse mode never look past the mouse (so the mouse mode is today's des-k); the focus mode
+// takes the focused window's screen, and with nothing focused the screen des-k last acted on,
+// so a run of presses through empty workspaces stays on one screen.
+#[test]
+fn the_screen_rule_follows_the_source_and_the_setting() {
+    use settings::ActOn::{Focus, Mouse};
+    let never = || -> Option<&str> { panic!("the mouse mode and swipes read only the mouse") };
+    let rule = |from, act_on, focus: Option<&'static str>, last: Option<&'static str>| pick(from, act_on, || focus, || last, || "mouse");
+    assert_eq!(pick(Source::Keys, Mouse, never, never, || "mouse"), "mouse");
+    assert_eq!(pick(Source::Pointer, Focus, never, never, || "mouse"), "mouse");
+    assert_eq!(pick(Source::Pointer, Mouse, never, never, || "mouse"), "mouse");
+    assert_eq!(rule(Source::Keys, Focus, Some("B"), Some("C")), "B", "focus beats the last screen");
+    assert_eq!(rule(Source::Keys, Focus, None, Some("C")), "C", "nothing focused: the last screen");
+    assert_eq!(rule(Source::Keys, Focus, None, None), "mouse", "no last screen present: the mouse");
+}
+
 // With one workspace a step lands where it started, so switch only shows the indicator and
 // hides nothing.
 #[test]

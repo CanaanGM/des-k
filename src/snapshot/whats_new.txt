@@ -2,7 +2,9 @@ ee04ba7b51804aa1 updated light
 4214a9c8276bb70f no-key-tab light
 ad51bccaddfd32d4 two-releases light
 ee04ba7b51804aa1 sidebar light
+89f60be184bdc893 0.11.0 light
 ee04ba7b51804aa1 updated hc
 4214a9c8276bb70f no-key-tab hc
 ad51bccaddfd32d4 two-releases hc
 ee04ba7b51804aa1 sidebar hc
+89f60be184bdc893 0.11.0 hc

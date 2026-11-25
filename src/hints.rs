@@ -25,6 +25,7 @@ use crate::settings::{self, Action, Combo, Motion, Owner, Settings, edit::Edit};
 use crate::setup::{self, GaveBack, Row as PadRow, State};
 use crate::ui::{self, Theme, canvas::{Bx, Canvas, buffered}, color::{mix, op}, dark_title, fonts::F};
 use crate::uia::{self, Node, Tree};
+use crate::ws::Source;
 
 mod draw;
 pub(crate) mod rows;
@@ -62,6 +63,9 @@ const RING: f32 = 4.0; // a button's window reaches this far past its pill, for 
 const MIN_H: f32 = 320.0; // the least client height, on the shortest screen
 
 const COPILOT: &str = "The Copilot key works as Right Ctrl, so Win Ctrl keys work with it.";
+// Spec 0038 AC-17: with one of these focused des-k's hook never hears the keys (tried 2026-11-25).
+const REMOTE: &str =
+    "A remote control app (TeamViewer, AnyDesk, Remote Desktop) can keep these keys from working while it has focus. Click another window first, and they work again.";
 
 /// The recorder in the footer (AC-HNT-4): nothing is saved until you choose.
 #[derive(Clone, PartialEq, Debug)]
@@ -121,6 +125,8 @@ impl Win {
         for r in self.view.around.iter().chain(&self.view.windows) {
             kids.push(text(format!("{}: {}", r.title, keys(&r.keys)), (SIDE, MID_TOP, LEFT_W, self.fit.shown)));
         }
+        kids.push(text(self.view.rule.into(), mid));
+        kids.push(text(REMOTE.into(), mid));
         if self.view.copilot {
             kids.push(text(COPILOT.into(), mid));
         }
@@ -317,7 +323,12 @@ fn reveal_focus() {
 
 /// The screen under the mouse: its monitor and work area.
 fn under_mouse() -> (HMONITOR, RECT) {
-    let (mon, _) = crate::ws::under_mouse();
+    screen(Source::Pointer)
+}
+
+/// The screen `ws::target` picks for `from` (spec 0038): its monitor and work area.
+fn screen(from: Source) -> (HMONITOR, RECT) {
+    let (mon, _) = crate::ws::target(from);
     let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
     unsafe { let _ = GetMonitorInfoW(mon, &mut mi); }
     (mon, mi.rcWork)
@@ -351,14 +362,15 @@ fn bring(h: HWND) {
 pub fn show() {
     match hwnd() {
         Some(h) => bring(h),
-        None => open(),
+        None => open(Source::Pointer),
     }
 }
 
-/// Its key (WM_HINTS): opens it; closes it while it is open on the screen under the mouse,
-/// and moves it here while it is open on another screen (AC-HNT-2).
-pub fn toggle() {
-    let Some(h) = hwnd() else { return open() };
+/// Its key (WM_HINTS): opens it on the screen `ws::target` picks (spec 0038); closes it while
+/// it is open on the screen under the mouse, and moves it here while it is open on another
+/// screen (AC-HNT-2).
+pub fn toggle(from: Source) {
+    let Some(h) = hwnd() else { return open(from) };
     let (mon, _) = under_mouse();
     if unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) } == mon {
         close(h);
@@ -367,13 +379,13 @@ pub fn toggle() {
     }
 }
 
-fn open() {
+fn open(from: Source) {
     ui::canvas::gdiplus();
     unsafe {
         let Ok(inst) = GetModuleHandleW(None) else { return };
         let wc = WNDCLASSW { lpfnWndProc: Some(wndproc), hInstance: inst.into(), lpszClassName: CLASS, hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(), ..Default::default() };
         RegisterClassW(&wc); // fails harmlessly when the window opens a second time
-        let (_, work) = under_mouse();
+        let (_, work) = screen(from);
         // Owned by the tray's hidden window: never in the taskbar or Alt+Tab (AC-HNT-7).
         let owner = crate::tray::window();
         // Made on the screen it opens on, so it starts at that screen's dpi.

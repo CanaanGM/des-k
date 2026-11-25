@@ -40,7 +40,7 @@ fn every_setting_is_logged_by_name() {
     let mut unique = names.clone();
     unique.sort();
     unique.dedup();
-    assert_eq!((names.len(), unique.len()), (70, 70));
+    assert_eq!((names.len(), unique.len()), (71, 71));
 }
 
 // Spec 0027 AC-15: the change log names rules by key, workspace and screen id only.

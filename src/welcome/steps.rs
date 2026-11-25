@@ -38,6 +38,14 @@ pub(super) const TRIES: [(&str, &str, &str); 3] = [
     ("Find a window", "shortcuts.finder", "Type part of a window's name, then Enter goes to it."),
 ];
 
+/// Step 1's row `i` says what to do, `how`; the switch row says which screen keys act on (spec 0038 AC-11).
+pub(super) fn try_how<'a>(i: usize, how: &'a str, s: &Settings) -> &'a str {
+    match (i, s.act_on) {
+        (0, settings::ActOn::Focus) => "Click a window on a screen, then press the keys.",
+        _ => how,
+    }
+}
+
 /// A row of step 2: the des-k action that takes a Windows key, the [shortcuts] keys behind it
 /// (two for a ← → pair, none for the Copilot key), Windows' key, and what Windows does with it.
 pub(super) struct Take {

@@ -78,7 +78,7 @@ impl Section {
 /// Which section a problem belongs to, by its key; None: no one setting (the Notes section).
 pub(super) fn home(key: &str) -> Option<Section> {
     Some(match key.split('.').next().unwrap_or("") {
-        "workspaces" | "follow_activation" | "jump_back" | "names" | "wallpaper" => Section::Workspaces,
+        "workspaces" | "follow_activation" | "act_on" | "jump_back" | "names" | "wallpaper" => Section::Workspaces,
         "apps" => Section::Apps,
         "shortcuts" | "copilot_as_right_ctrl" => Section::Shortcuts,
         "indicator" => Section::Indicator,
@@ -116,6 +116,9 @@ pub(crate) struct Row {
 const LABEL_WORDS: &[(&str, &str)] = &[("hover", "On hover"), ("always", "Always"), ("none", "Never")];
 const ANIMATION_WORDS: &[(&str, &str)] = &[("off", "None"), ("fade", "Fade")];
 const STYLE_WORDS: &[(&str, &str)] = &[("card", "Card"), ("dots", "Dots")];
+const ACT_ON_WORDS: &[(&str, &str)] = &[("mouse", "Screen under the mouse"), ("focus", "Focused window's screen")];
+/// The Keys act on row's caption, here and in the first run (spec 0038 AC-10).
+pub(crate) const ACT_ON_CAP: &str = "Which screen switch, jump, back, the finder and the hints window act on. Swipes always act on the screen under the pointer.";
 const FIT_WORDS: &[(&str, &str)] = &[("fill", "Fill"), ("fit", "Fit"), ("stretch", "Stretch"), ("center", "Center")];
 const TRANSITION_WORDS: &[(&str, &str)] = &[("instant", "Instant"), ("fade", "Fade")];
 /// A slideshow's minutes per picture (spec 0028 AC-11): up to 45 min, then hours up to 24.
@@ -134,6 +137,7 @@ const fn step(lo: i64, hi: i64, by: i64, unit: &'static str) -> Kind {
 /// Every plain setting.
 pub(crate) const ROWS: &[Row] = &[
     row("follow_activation", "Follow a window", "When a hidden window comes to the front (an app reuses it, a dialog pops up), go to its workspace.", Kind::Toggle),
+    row("act_on", "Keys act on", ACT_ON_CAP, Kind::Choice(ACT_ON_WORDS)),
     row("jump_back", "Same number goes back", "Pressing the number of the workspace you're on takes you back to the one before.", Kind::Toggle),
     row("copilot_as_right_ctrl", "Copilot key as Right Ctrl", "", Kind::Pair("des-k", "Windows")),
     row("indicator.enabled", "Workspace indicator", "", Kind::Toggle),
@@ -178,6 +182,7 @@ pub(crate) fn value(s: &Settings, key: &str) -> i64 {
     match key {
         "workspaces" => s.workspaces as i64,
         "follow_activation" => s.follow_activation as i64,
+        "act_on" => index(word(settings::ACT_ON, s.act_on), ACT_ON_WORDS),
         "jump_back" => s.jump_back as i64,
         "copilot_as_right_ctrl" => s.copilot_as_right_ctrl as i64,
         "fastest" => s.fastest as i64,
