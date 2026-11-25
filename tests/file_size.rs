@@ -11,7 +11,6 @@ const NOT_SPLIT_YET: &[(&str, usize)] = &[
     ("ws.rs", 3807),
     ("overview.rs", 2852),
     ("finder.rs", 1705),
-    ("ui.rs", 1552),
     ("backdrop.rs", 1433),
 ];
 
