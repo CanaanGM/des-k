@@ -641,3 +641,55 @@ fn a_fold_uses_the_spot_stored_for_the_screen_that_left() {
     assert_eq!(fold_spot(Some(&stored), "DEL-2", || spot(20, 'z')), spot(20, 'z'));
     assert_eq!(fold_spot(None, "DEL-1", || spot(30, 'n')), spot(30, 'n'));
 }
+
+fn away(ws: usize, pinned: bool) -> Away {
+    Away { home: "DEL-1".into(), ws, spot: spot(100, 'n'), pinned, pid: 7 }
+}
+
+// Pinned means in view on every workspace, so a pinned window comes home in view even when its
+// workspace is hidden there; anything else goes home in view only on the workspace shown.
+#[test]
+fn a_return_brings_into_view_only_pinned_windows_and_the_shown_workspace() {
+    assert_eq!(goes_in_view(&away(2, true), 4, 0, false), (2, true));
+    assert_eq!(goes_in_view(&away(2, false), 4, 2, false), (2, true));
+    assert_eq!(goes_in_view(&away(2, false), 4, 0, false), (2, false));
+}
+
+// You may have lowered the count while the screen was away: its windows go to the last
+// workspace, never to one that no longer exists.
+#[test]
+fn a_return_caps_the_workspace_at_the_last_one() {
+    assert_eq!(goes_in_view(&away(5, false), 3, 0, false), (2, false));
+    assert_eq!(goes_in_view(&away(5, false), 3, 2, false), (2, true));
+}
+
+// On a Windows layout des-k does not know nothing can be hidden, so every window goes home in
+// view rather than being left on the wrong screen (spec 0030 AC-6).
+#[test]
+fn a_return_on_an_unknown_layout_brings_everything_into_view() {
+    assert_eq!(goes_in_view(&away(3, false), 4, 0, true), (3, true));
+}
+
+// A screen that comes back as it was gets each window back at its exact spot; one whose work
+// area changed (a new resolution, the taskbar moved) gets the same relative place and size.
+#[test]
+fn a_return_keeps_the_exact_spot_unless_the_area_changed() {
+    let area = rect(0, 0, 1000, 1000);
+    assert_eq!(home_spot(&away(0, false), area, area), spot(100, 'n'));
+    let bigger = rect(0, 0, 2000, 2000);
+    assert_eq!(home_spot(&away(0, false), area, bigger), Spot { rect: rect(200, 0, 400, 200), state: 'n' });
+}
+
+// Each way home keeps a window from flashing or being lost: one already in place is not touched,
+// one in view is moved, a hidden one moves before it shows, a hidden one that stays hidden is
+// moved and listed again, and one in view that goes home hidden is hidden before it moves.
+// Where a window is now is read only for one in view that stays in view.
+#[test]
+fn each_way_home_follows_from_where_it_is_and_where_it_goes() {
+    let unread = || panic!("read where it is although it moves anyway");
+    assert_eq!(way_home(true, false, || true), Way::InPlace);
+    assert_eq!(way_home(true, false, || false), Way::Move);
+    assert_eq!(way_home(true, true, unread), Way::MoveShow);
+    assert_eq!(way_home(false, true, unread), Way::MoveRelist);
+    assert_eq!(way_home(false, false, unread), Way::HideMove);
+}

@@ -3410,6 +3410,7 @@ fn give_back(s: &mut State, id: &str, last: bool, notes: &mut Vec<Note>) -> bool
         (m.area, m.active)
     };
     let fg = unsafe { GetForegroundWindow() };
+    let unknown = crate::cloak::unknown();
     // Each window's way home, worked out before any moves: a hung one counts as a try.
     // (hwnd, record, home workspace, goes home in view, the list it is in now)
     let mine: Vec<_> = s
@@ -3417,9 +3418,7 @@ fn give_back(s: &mut State, id: &str, last: bool, notes: &mut Vec<Note>) -> bool
         .iter()
         .filter(|&(&raw, a)| a.home == id && !hung(HWND(raw as *mut _)))
         .map(|(&raw, a)| {
-            let ws = a.ws.min(count - 1);
-            // Nothing can be hidden on a layout des-k does not know: it goes home in view (spec 0030 AC-6).
-            let in_view = a.pinned || ws == active || crate::cloak::unknown();
+            let (ws, in_view) = goes_in_view(a, count, active, unknown);
             (raw, a.clone(), ws, in_view, hidden_on(s, raw))
         })
         .collect();
@@ -3433,19 +3432,19 @@ fn give_back(s: &mut State, id: &str, last: bool, notes: &mut Vec<Note>) -> bool
     let (mut moved, mut changed, mut fg_hidden) = (0, !list.is_empty(), false);
     for (raw, a, ws, in_view, hidden) in mine {
         let h = HWND(raw as *mut _);
-        let to = Spot { rect: if saved == p.area { a.spot.rect } else { remap(saved, p.area, a.spot.rect) }, state: a.spot.state };
-        let done = match (in_view, hidden) {
-            // Already home and in place (a short drop Windows undid): nothing to move.
-            (true, None) if screen_now(s, raw).as_deref() == Some(id) && spot_of(h) == to => Some(false),
-            (true, None) => put(h, to).inspect_err(|e| warn!("return: could not move {}: {e}", who(h))).ok().map(|()| true),
-            (true, Some((sid, w))) => {
+        let to = home_spot(&a, saved, p.area);
+        let way = way_home(in_view, hidden.is_some(), || screen_now(s, raw).as_deref() == Some(id) && spot_of(h) == to);
+        let done = match (way, hidden) {
+            (Way::InPlace, _) => Some(false),
+            (Way::Move, _) => put(h, to).inspect_err(|e| warn!("return: could not move {}: {e}", who(h))).ok().map(|()| true),
+            (Way::MoveShow, Some((sid, w))) => {
                 let ok = put(h, to).inspect_err(|e| warn!("return: could not move {}: {e}", who(h))).is_ok() && uncloak(&shell, raw) == Some(true);
                 if ok {
                     s.monitors.get_mut(&sid).expect("listed").hidden[w].retain(|&x| x != raw);
                 }
                 ok.then_some(true)
             }
-            (false, Some((sid, w))) => {
+            (Way::MoveRelist, Some((sid, w))) => {
                 // Still cloaked: moved, then listed with its home workspace.
                 let ok = put(h, to).inspect_err(|e| warn!("return: could not move {}: {e}", who(h))).is_ok();
                 if ok {
@@ -3454,15 +3453,17 @@ fn give_back(s: &mut State, id: &str, last: bool, notes: &mut Vec<Note>) -> bool
                 }
                 ok.then_some(true)
             }
-            (false, None) => {
+            // way_home gives these two only for a window hidden now; never reached.
+            (Way::MoveShow | Way::MoveRelist, None) => None,
+            (Way::HideMove, _) => {
                 // Hidden first, then moved, so it never flashes on its way home. Already listed
                 // on its home workspace above; off again if it ends up in view where it was.
                 if let Err(e) = shell.hide(h, true) {
-                    if cloaked(h) != 0 {
+                    let undo = || {
                         let _ = shell.hide(h, false);
-                    }
+                    };
                     // One that may still be cloaked stays listed (AGENTS.md); its record stays too.
-                    if cloaked(h) == 0 {
+                    if failed_hide(|| cloaked(h), undo) {
                         unlist(s, raw);
                     }
                     warn!("return: could not hide {}: {e}", who(h));
@@ -3521,6 +3522,47 @@ fn give_back(s: &mut State, id: &str, last: bool, notes: &mut Vec<Note>) -> bool
         }
     }
     changed
+}
+
+/// An away window's home workspace (capped at the last one) and whether it goes home in view:
+/// when it was pinned, when that workspace is the one its screen shows (`active`), or on a layout
+/// des-k does not know, where nothing can be hidden (spec 0030 AC-6).
+fn goes_in_view(a: &Away, count: usize, active: usize, unknown: bool) -> (usize, bool) {
+    let ws = a.ws.min(count - 1);
+    (ws, a.pinned || ws == active || unknown)
+}
+
+/// Where an away window goes on its screen: its saved spot as is while the work area is the one
+/// saved, else remapped into the area it has now.
+fn home_spot(a: &Away, saved: RECT, now: RECT) -> Spot {
+    Spot { rect: if saved == now { a.spot.rect } else { remap(saved, now, a.spot.rect) }, state: a.spot.state }
+}
+
+/// How an away window gets home.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Way {
+    /// Already home and in place (a short drop Windows undid): nothing to move.
+    InPlace,
+    /// In view and goes home in view: moved.
+    Move,
+    /// Hidden and goes home in view: moved, then shown.
+    MoveShow,
+    /// Hidden and goes home hidden: moved, then listed with its home workspace.
+    MoveRelist,
+    /// In view and goes home hidden: hidden first, then moved, so it never flashes.
+    HideMove,
+}
+
+/// `in_view` says it goes home in view, `hidden` that it is hidden now. `in_place` reads where it
+/// is, and is called only for a window in view that stays in view.
+fn way_home(in_view: bool, hidden: bool, in_place: impl FnOnce() -> bool) -> Way {
+    match (in_view, hidden) {
+        (true, false) if in_place() => Way::InPlace,
+        (true, false) => Way::Move,
+        (true, true) => Way::MoveShow,
+        (false, true) => Way::MoveRelist,
+        (false, false) => Way::HideMove,
+    }
 }
 
 /// map_rect, from an area nobody knew (an old line) into `to` as it is.
