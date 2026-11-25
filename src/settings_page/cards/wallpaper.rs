@@ -465,7 +465,7 @@ impl Ctx<'_, '_> {
             Some(r) if !file.is_empty() => {
                 if let Some(p) = crate::wallpaper::cached_ws(r, file, size) {
                     self.cx.c.picture_rr(bx, 3.0, &p);
-                    let a = crate::backdrop::dim_alpha(self.s.wallpaper_dim);
+                    let a = crate::backdrop::paint::dim_alpha(self.s.wallpaper_dim);
                     if a > 0 {
                         self.cx.c.fill_rr(bx, 3.0, ui::color::alpha(0, a as f32 / 255.0));
                     }

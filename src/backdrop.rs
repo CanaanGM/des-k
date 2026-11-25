@@ -35,11 +35,10 @@ use crate::settings::{Fit, Pick, parse::name_order};
 use crate::ui::canvas::Picture;
 use crate::wallpaper::Problem;
 
-mod paint;
+pub(crate) mod paint;
 mod slides;
 mod window;
 
-pub(crate) use paint::dim_alpha;
 use paint::{DIM, wndproc};
 use slides::{Show, ShowKey};
 use window::{Dib, Screen};

@@ -2070,7 +2070,7 @@ fn draw(c: &Canvas, sc: &Screen, m: &Marks) {
             // Dimmed as on the screen; your Windows wallpaper never is (spec 0026 AC-18).
             (Some(p), _) => {
                 c.picture_rr(r, 4.0, p);
-                let dim = crate::backdrop::dim_alpha(settings::get().wallpaper_dim) as u32;
+                let dim = crate::backdrop::paint::dim_alpha(settings::get().wallpaper_dim) as u32;
                 if dim > 0 {
                     c.fill_rr(r, 4.0, dim << 24);
                 }
