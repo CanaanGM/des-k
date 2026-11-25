@@ -315,7 +315,7 @@ fn main() -> windows::core::Result<()> {
                     && !indicator::busy(p.mon)
                 {
                     // Never the title: it often carries the message itself (spec 0022 AC-9).
-                    let text = settings::attention_line(&finder::app_name(p.hwnd).unwrap_or_default());
+                    let text = settings::attention_line(&finder::names::app_name(p.hwnd).unwrap_or_default());
                     indicator::show(p.mon, p.card.with(indicator::Line::Wants { text, ws: p.ws }));
                 }
             }

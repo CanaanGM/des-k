@@ -286,7 +286,7 @@ impl Screen {
             .map(|(p, rect)| {
                 let thumb = thumb(self.popup, p.hwnd, rect, rect);
                 let card = thumb.is_none();
-                let icon = if card || labels == Labels::Always { finder::icon(p.hwnd) } else { HICON::default() };
+                let icon = if card || labels == Labels::Always { finder::names::icon(p.hwnd) } else { HICON::default() };
                 Slot { hwnd: p.hwnd, rect, title: ws::title(p.hwnd), icon, pinned: p.pinned, card, thumb }
             })
             .collect();
@@ -300,7 +300,7 @@ impl Screen {
         let rect = intersect(full, tile)?;
         let thumb = thumb(self.popup, hwnd, full, rect);
         let card = thumb.is_none();
-        let icon = if card { finder::icon(hwnd) } else { HICON::default() };
+        let icon = if card { finder::names::icon(hwnd) } else { HICON::default() };
         Some(Slot { hwnd, rect, title: String::new(), icon, pinned: false, card, thumb })
     }
 
@@ -402,7 +402,7 @@ impl Screen {
             .collect();
         let band = RECT { left: 0, top: 0, right: self.size().0, bottom: self.band_h() };
         let mut kids = vec![Node { role: UIA_ListControlTypeId, name: "Workspaces".into(), rect: band, selected: None, kids: tiles, ..Node::default() }];
-        let windows = self.slots.iter().map(|s| item(window_words(s, &finder::program(s.hwnd), chosen == Some(s.hwnd)), s.rect, chosen == Some(s.hwnd))).collect();
+        let windows = self.slots.iter().map(|s| item(window_words(s, &finder::names::program(s.hwnd), chosen == Some(s.hwnd)), s.rect, chosen == Some(s.hwnd))).collect();
         kids.push(Node { role: UIA_ListControlTypeId, name: "Windows".into(), rect: self.spread_area(), selected: None, kids: windows, ..Node::default() });
         if self.slots.is_empty() {
             kids.push(text("No windows".into(), self.spread_area()));
@@ -2234,7 +2234,7 @@ fn speech(s: &Session) -> Option<(String, bool)> {
     if before.as_ref() == Some(&now) {
         return None;
     }
-    let win = s.selected.1.and_then(|h| sc.slots.iter().find(|x| x.hwnd == h)).map_or_else(|| "No windows".to_string(), |x| window_words(x, &finder::program(x.hwnd), true));
+    let win = s.selected.1.and_then(|h| sc.slots.iter().find(|x| x.hwnd == h)).map_or_else(|| "No windows".to_string(), |x| window_words(x, &finder::names::program(x.hwnd), true));
     Some(match before {
         None => (format!("Overview. {}. {win}", sc.summary()), true),
         Some(b) if b.2 != words && !matches!(bar, Some(Bar::Keys) | None) => (words, false),

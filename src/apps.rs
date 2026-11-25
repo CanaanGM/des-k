@@ -166,8 +166,8 @@ pub fn seen(open: &[(isize, String, usize)]) -> Vec<Seen> {
         if out.iter().any(|s| s.key == key) {
             continue;
         }
-        let name = finder::app_name(h).or_else(|| finder::store_name(&key)).unwrap_or_else(|| key.trim_end_matches(".exe").to_string());
-        out.push(Seen { key, name, icon: finder::icon(h), device: device.clone(), ws: *ws });
+        let name = finder::names::app_name(h).or_else(|| finder::names::store_name(&key)).unwrap_or_else(|| key.trim_end_matches(".exe").to_string());
+        out.push(Seen { key, name, icon: finder::names::icon(h), device: device.clone(), ws: *ws });
     }
     out
 }
@@ -207,7 +207,7 @@ fn try_place(h: HWND, shown: Option<u32>) -> Try {
         Ok(()) => {}
     }
     // A Store app has no CoreWindow yet as it lands, so its name comes from its package.
-    let name = finder::app_name(h).or_else(|| finder::store_name(&key)).unwrap_or_else(|| key.trim_end_matches(".exe").to_string());
+    let name = finder::names::app_name(h).or_else(|| finder::names::store_name(&key)).unwrap_or_else(|| key.trim_end_matches(".exe").to_string());
     ws::place_new(h, rule, name, shown);
     Try::Done
 }

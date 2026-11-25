@@ -39,11 +39,11 @@ use crate::uia::{self, Node, Tree};
 use crate::ws::{self, Miss};
 
 mod draw;
-mod names;
+pub(crate) mod names;
 mod rank;
 
-pub(crate) use names::{app_name, icon, program, store_name};
 use draw::paint;
+use names::{icon, program};
 use rank::{first_pick, rank, recency_rank};
 
 const CLASS: PCWSTR = w!("des-k-finder");
