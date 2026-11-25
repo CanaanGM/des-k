@@ -419,3 +419,119 @@ fn a_jump_elsewhere_goes_there() {
     assert_eq!(jump_target(&m, 3, 4, true), Jump::Go(3));
     assert_eq!(jump_target(&m, 0, 4, false), Jump::Go(0));
 }
+
+const WIN: isize = 100;
+const OWNER: isize = 200;
+
+/// A state where window 100 (owner 200) is hidden on workspace 3 of screen DEL-1, which shows 1.
+fn hidden_window() -> State {
+    let mut s = State::default();
+    s.monitors.insert("DEL-1".into(), with_hidden(0, &[&[], &[], &[WIN], &[]]));
+    s
+}
+
+fn verdict(s: &State, cloak: u32, found: bool, now: Instant) -> Follow {
+    follow_verdict(s, [WIN, OWNER], "DEL-1", 2, cloak, found, now)
+}
+
+fn ruled(from: &str) -> Ruled {
+    Ruled { at: Instant::now(), recloaks: 0, from: from.into() }
+}
+
+// The plain case: des-k hid it (cloak 2), nothing recent, its screen is here. Focus reaching it
+// must bring its workspace, or the keyboard types into a window you cannot see (spec 0002).
+#[test]
+fn a_window_des_k_hid_is_followed() {
+    assert_eq!(verdict(&hidden_window(), 2, true, Instant::now()), Follow::Go);
+}
+
+// A window an [apps] rule hid takes focus right away or much later: following it would undo the
+// rule, so focus leaves it on the screen it opened on. Any cloak counts, since a new Chrome window
+// reads 3; once shown (cloak 0) the rule no longer holds it (spec 0027 AC-5).
+#[test]
+fn a_window_a_rule_hid_is_not_followed() {
+    let mut s = hidden_window();
+    s.ruled.insert(OWNER, ruled("DEL-2"));
+    let now = Instant::now();
+    assert_eq!(verdict(&s, 3, true, now), Follow::RuleHid { from: "DEL-2".into() });
+    assert_eq!(verdict(&s, 2, true, now), Follow::RuleHid { from: "DEL-2".into() });
+    assert_eq!(verdict(&s, 0, true, now), Follow::NotOurs);
+}
+
+// Only cloak 2 is des-k's. Another cloak is Windows' own (a suspended app, another virtual
+// desktop): switching for it would show a workspace for nothing.
+#[test]
+fn a_window_des_k_did_not_cloak_is_not_followed() {
+    let s = hidden_window();
+    for cloak in [0, 1, 4] {
+        assert_eq!(verdict(&s, cloak, true, Instant::now()), Follow::NotOurs, "cloak {cloak}");
+    }
+}
+
+// A reopened window often takes focus just before restore hides it; that focus is not you, so for
+// 2 s it is ignored, and from 2 s on it counts again (spec 0003).
+#[test]
+fn a_window_restore_hid_is_ignored_for_two_seconds() {
+    let mut s = hidden_window();
+    let t = Instant::now();
+    s.restored.insert(OWNER, t);
+    assert_eq!(verdict(&s, 2, true, t + Duration::from_millis(1999)), Follow::JustRestored);
+    assert_eq!(verdict(&s, 2, true, t + RESTORED_IGNORE), Follow::Go);
+}
+
+// Windows can hand focus back to the window a stay send just hid; following it would bring you
+// to the workspace you just sent it away to. Only that window, and only for 1 s (spec 0004).
+#[test]
+fn a_window_just_sent_is_ignored_for_a_second() {
+    let mut s = hidden_window();
+    let t = Instant::now();
+    s.sent = Some((WIN, t));
+    assert_eq!(verdict(&s, 2, true, t + Duration::from_millis(999)), Follow::JustSent);
+    assert_eq!(verdict(&s, 2, true, t + Duration::from_secs(1)), Follow::Go);
+    s.sent = Some((300, t));
+    assert_eq!(verdict(&s, 2, true, t), Follow::Go);
+}
+
+// A screen unplugged a moment ago has nothing to switch; the follow is skipped and logged.
+#[test]
+fn a_window_on_a_missing_screen_is_not_followed() {
+    assert_eq!(verdict(&hidden_window(), 2, false, Instant::now()), Follow::NoScreen);
+}
+
+// Windows can hand focus to a window mid cloak; going straight back to the workspace you just
+// left would undo your switch. Only that workspace, only for 1 s.
+#[test]
+fn the_workspace_just_left_is_not_followed_back_for_a_second() {
+    let mut s = hidden_window();
+    let t = Instant::now();
+    s.monitors.get_mut("DEL-1").unwrap().last_switch = Some((t, 2));
+    assert_eq!(verdict(&s, 2, true, t + Duration::from_millis(999)), Follow::JustLeft);
+    assert_eq!(verdict(&s, 2, true, t + Duration::from_secs(1)), Follow::Go);
+    s.monitors.get_mut("DEL-1").unwrap().last_switch = Some((t, 1));
+    assert_eq!(verdict(&s, 2, true, t), Follow::Go);
+}
+
+// Two windows on two workspaces passing focus back and forth would switch the screen in a loop;
+// after a follow the screen waits 1 s before it follows again.
+#[test]
+fn a_screen_cools_down_for_a_second_after_a_follow() {
+    let mut s = hidden_window();
+    let t = Instant::now();
+    s.monitors.get_mut("DEL-1").unwrap().last_follow = Some(t);
+    assert_eq!(verdict(&s, 2, true, t + Duration::from_millis(999)), Follow::Cooling);
+    assert_eq!(verdict(&s, 2, true, t + Duration::from_secs(1)), Follow::Go);
+}
+
+// When several reasons hold, the earlier one wins, so the log names it and a rule's window still
+// gets focus moved off it.
+#[test]
+fn the_first_reason_that_holds_wins() {
+    let mut s = hidden_window();
+    let t = Instant::now();
+    s.restored.insert(WIN, t);
+    s.sent = Some((WIN, t));
+    s.monitors.get_mut("DEL-1").unwrap().last_follow = Some(t);
+    assert_eq!(verdict(&s, 2, false, t), Follow::JustRestored);
+    s.ruled.insert(WIN, ruled("DEL-1"));
+    assert_eq!(verdict(&s, 2, false, t), Follow::RuleHid { from: "DEL-1".into() });
+}

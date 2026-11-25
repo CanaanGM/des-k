@@ -1260,45 +1260,83 @@ pub fn follow(hwnd: HWND) {
         s.monitors.iter().find_map(|(dev, m)| Some((h, dev.clone(), m.hidden.iter().position(|l| l.contains(&(h.0 as isize)))?)))
     });
     let Some((h, name, ws)) = found else { return };
+    let mon = mon_of(&s, &name);
+    let wins = [hwnd.0 as isize, owner.0 as isize];
+    match follow_verdict(&s, wins, &name, ws, cloaked(h), mon.is_some(), Instant::now()) {
+        Follow::RuleHid { from } => {
+            let app = who(hwnd);
+            info!("follow: a rule hid {app} and it has not been shown yet, ignored");
+            let mon = mon_of(&s, &from).unwrap_or_else(|| unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) });
+            focus_off(&app, mon);
+        }
+        Follow::NotOurs => {}
+        Follow::JustRestored => info!("follow: restore just hid {}, ignored", who(hwnd)),
+        Follow::JustSent => info!("follow: just sent {}, ignored", who(hwnd)),
+        Follow::NoScreen => warn!("follow: {name} not found, ignored {}", who(hwnd)),
+        Follow::JustLeft => info!("follow: {name} just left workspace {}, ignored {}", ws + 1, who(hwnd)),
+        Follow::Cooling => info!("follow: {name} cooling down, ignored {}", who(hwnd)),
+        Follow::Go => {
+            let Some(mon) = mon else { return }; // Go comes only with its screen found
+            let app = who(hwnd);
+            if switch_to(&mut s, mon, &name, ws, Some(hwnd), None) == Switch::Switched {
+                s.monitors.get_mut(&name).expect("switch_to keeps the monitor").last_follow = Some(Instant::now());
+                info!("follow: {name} -> workspace {}/{} for {app}", ws + 1, settings::get().workspaces);
+            }
+        }
+    }
+}
+
+/// What follow does with a hidden window that came to the front: ignore it for the first
+/// reason that holds, in this order, or Go.
+#[derive(Clone, PartialEq, Debug)]
+enum Follow {
+    /// A rule hid it and it has not been shown yet: focus moves off it on screen `from`.
+    RuleHid { from: String },
+    /// Not des-k's cloak.
+    NotOurs,
+    JustRestored,
+    JustSent,
+    NoScreen,
+    JustLeft,
+    Cooling,
+    Go,
+}
+
+/// Follow's ignore rules. `wins` is the window and its root owner, hidden on workspace `ws` of
+/// screen `name`; `cloak` is its `DWMWA_CLOAKED` value and `found` whether that screen is present.
+fn follow_verdict(s: &State, wins: [isize; 2], name: &str, ws: usize, cloak: u32, found: bool, now: Instant) -> Follow {
     // Apps take focus just after a rule hid them, or long after (Teams): your screen stays, and
     // the keyboard leaves the hidden window (spec 0027 AC-5). Before the check below: a new
     // Chrome window can carry its own cloak too, which reads 3, not 2.
-    if cloaked(h) != 0
-        && let Some(from) = [hwnd, owner].iter().find_map(|w| s.ruled.get(&(w.0 as isize))).map(|r| r.from.clone())
+    if cloak != 0
+        && let Some(r) = wins.iter().find_map(|w| s.ruled.get(w))
     {
-        let app = who(hwnd);
-        info!("follow: a rule hid {app} and it has not been shown yet, ignored");
-        let mon = mon_of(&s, &from).unwrap_or_else(|| unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) });
-        return focus_off(&app, mon);
+        return Follow::RuleHid { from: r.from.clone() };
     }
-    if cloaked(h) != 2 {
-        return;
+    if cloak != 2 {
+        return Follow::NotOurs;
     }
-    let app = who(hwnd);
-    if [hwnd, owner].iter().any(|w| s.restored.get(&(w.0 as isize)).is_some_and(|t| t.elapsed() < RESTORED_IGNORE)) {
-        return info!("follow: restore just hid {app}, ignored");
+    let within = |t: Instant, limit: Duration| now.saturating_duration_since(t) < limit;
+    let cooldown = Duration::from_millis(FOLLOW_COOLDOWN_MS);
+    if wins.iter().any(|w| s.restored.get(w).is_some_and(|&t| within(t, RESTORED_IGNORE))) {
+        return Follow::JustRestored;
     }
     // Windows can hand focus back to a window a stay send just hid.
-    let just_sent = |&(sent, t): &(isize, Instant)| t.elapsed() < Duration::from_millis(FOLLOW_COOLDOWN_MS) && [hwnd, owner].iter().any(|w| w.0 as isize == sent);
-    if s.sent.as_ref().is_some_and(just_sent) {
-        return info!("follow: just sent {app}, ignored");
+    if s.sent.is_some_and(|(sent, t)| within(t, cooldown) && wins.contains(&sent)) {
+        return Follow::JustSent;
     }
-    let Some(mon) = mon_of(&s, &name) else {
-        return warn!("follow: {name} not found, ignored {app}");
-    };
-    let m = &s.monitors[&name];
-    let recent = |t: Instant| t.elapsed() < Duration::from_millis(FOLLOW_COOLDOWN_MS);
+    if !found {
+        return Follow::NoScreen;
+    }
+    let m = &s.monitors[name];
     // Windows can hand focus to a window mid cloak; going straight back would undo your switch.
-    if m.last_switch.is_some_and(|(t, left)| recent(t) && left == ws) {
-        return info!("follow: {name} just left workspace {}, ignored {app}", ws + 1);
+    if m.last_switch.is_some_and(|(t, left)| within(t, cooldown) && left == ws) {
+        return Follow::JustLeft;
     }
-    if m.last_follow.is_some_and(recent) {
-        return info!("follow: {name} cooling down, ignored {app}");
+    if m.last_follow.is_some_and(|t| within(t, cooldown)) {
+        return Follow::Cooling;
     }
-    if switch_to(&mut s, mon, &name, ws, Some(hwnd), None) == Switch::Switched {
-        s.monitors.get_mut(&name).expect("switch_to keeps the monitor").last_follow = Some(Instant::now());
-        info!("follow: {name} -> workspace {}/{} for {app}", ws + 1, settings::get().workspaces);
-    }
+    Follow::Go
 }
 
 /// Show workspace `target` (already valid) on one monitor. `focus` is the window to leave
