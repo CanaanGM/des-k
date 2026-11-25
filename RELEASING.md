@@ -15,7 +15,7 @@ The installed des-k runs as admin and can install an update from the tray with o
 
 ## Release steps
 
-1. Set the new version in `Cargo.toml` and run `cargo build`, so `Cargo.lock` follows. Add the release to `CHANGELOG.md`, and add its cards to `NEWS` in `src/whats_new.rs` if it has news.
+1. Set the new version in `Cargo.toml` and run `cargo build`, so `Cargo.lock` follows. Add the release to `CHANGELOG.md`, and add its cards to `NEWS` in `src/whats_new.rs` if it has news. Add it to the Windows builds list in `README.md` and in the guide (`site/guide-content.html`, copied into `site/index.html`): in the row of the build you run the drill on, or in a new row for a build not listed yet.
 2. Commit, push `main`, and wait for CI to pass.
 3. Run the **recovery drill** (below) on that commit. Tag only when every fault passes.
 4. Tag that commit and push the tag: `git tag vX.Y.Z`, then `git push origin vX.Y.Z`. CI builds the setup and the zip and creates a **draft** release with them and `SHA256SUMS.txt`. Nobody else, and no copy of des-k, can download a draft's files.
