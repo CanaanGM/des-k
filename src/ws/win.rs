@@ -123,6 +123,18 @@ pub(super) fn enum_windows() -> Vec<HWND> {
     all
 }
 
+// Focus. Windows may refuse to move it (the foreground lock): that is a FALSE, never harm.
+
+pub(super) fn get_foreground_window() -> HWND {
+    // SAFETY: takes nothing and only reads.
+    unsafe { GetForegroundWindow() }
+}
+
+pub(super) fn set_foreground_window(h: HWND) -> BOOL {
+    // SAFETY: plain values only; any handle is checked (above).
+    unsafe { SetForegroundWindow(h) }
+}
+
 // Screens: user32 checks every HMONITOR it is given too, so a screen that just left only makes
 // the call fail.
 

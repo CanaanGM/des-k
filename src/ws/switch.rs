@@ -53,7 +53,7 @@ pub(super) fn pick<T>(from: Source, act_on: settings::ActOn, focus: impl FnOnce(
 /// The focused window's screen, or None when nothing counts as focused: nothing in front, the
 /// desktop, a taskbar, or a window on no screen (AC-7).
 pub(super) fn focused_screen() -> Option<HMONITOR> {
-    let fg = unsafe { GetForegroundWindow() };
+    let fg = win::get_foreground_window();
     let class = class_name(fg);
     if is_desktop(fg, win::get_shell_window(), &class) || matches!(class.as_str(), "Shell_TrayWnd" | "Shell_SecondaryTrayWnd") {
         return None;
@@ -167,7 +167,7 @@ pub fn back(from: Source) {
 /// so keyboard focus never sits in a window you cannot see (spec 0002).
 pub fn follow(hwnd: HWND) {
     // des-k's own switch may have moved focus on since the event fired.
-    if unsafe { GetForegroundWindow() } != hwnd {
+    if win::get_foreground_window() != hwnd {
         return;
     }
     let mut s = state();
@@ -332,7 +332,7 @@ pub(super) fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize,
         }
     };
 
-    let fg = unsafe { GetForegroundWindow() };
+    let fg = win::get_foreground_window();
     // Leaving an empty workspace left focus on the desktop; nobody's focus to keep there.
     let fg_desktop = is_desktop(fg, win::get_shell_window(), &class_name(fg));
     let mut fg_hidden = false;
@@ -392,16 +392,16 @@ pub(super) fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize,
     m.desktop.clear();
 
     let first = shown.first().map(|&raw| HWND(raw as *mut _));
-    match focus_after(focus, unsafe { GetForegroundWindow() }, fg_hidden, fg_desktop, first) {
+    match focus_after(focus, win::get_foreground_window(), fg_hidden, fg_desktop, first) {
         FocusAfter::Leave => {}
-        FocusAfter::Bring(h) => unsafe {
-            let _ = SetForegroundWindow(h);
-            if GetForegroundWindow() != h {
+        FocusAfter::Bring(h) => {
+            let _ = win::set_foreground_window(h);
+            if win::get_foreground_window() != h {
                 warn!("follow: could not focus {}", who(h));
             }
         },
-        FocusAfter::Next(h) => unsafe { let _ = SetForegroundWindow(h); },
-        FocusAfter::Desktop => unsafe { let _ = SetForegroundWindow(win::get_shell_window()); },
+        FocusAfter::Next(h) => { let _ = win::set_foreground_window(h); },
+        FocusAfter::Desktop => { let _ = win::set_foreground_window(win::get_shell_window()); },
     }
     if crate::cloak::unknown() {
         info!("{name}: workspace {}/{count} (hiding is off on this Windows)", target + 1);

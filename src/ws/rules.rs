@@ -79,7 +79,7 @@ pub(super) fn place_in(s: &mut State, h: HWND, rule: &settings::Rule, name: Stri
     let now = spot_of(h);
     let from_area = work_area(from_mon);
     let spot = Spot { rect: remap(from_area, land.area, now.rect), state: now.state };
-    let was_fg = unsafe { GetForegroundWindow() } == h;
+    let was_fg = win::get_foreground_window() == h;
     let hide = s.monitors.entry(land.id.clone()).or_insert_with(|| Monitor::of(&land)).active != k;
     let mut how = String::from("visible");
     if hide {
@@ -142,7 +142,7 @@ pub(super) fn focus_off(app: &str, mon: HMONITOR) {
     let next = app_windows_on(mon).first().copied().unwrap_or(win::get_shell_window());
     keys::mask();
     // Its return, not GetForegroundWindow: the other app's thread may take a moment to activate.
-    if !unsafe { SetForegroundWindow(next) }.as_bool() {
+    if !win::set_foreground_window(next).as_bool() {
         warn!("apps: could not move focus off {app}");
     }
 }
@@ -194,7 +194,7 @@ pub fn recloak(h: HWND) {
     if let Some(r) = s.ruled.get_mut(&raw) {
         r.recloaks += 1;
     }
-    let fg = unsafe { GetForegroundWindow() };
+    let fg = win::get_foreground_window();
     if fg == h || win::get_ancestor(fg, GA_ROOTOWNER) == h {
         let mon = mon_of(s, &from).unwrap_or_else(|| win::monitor_from_window(h, MONITOR_DEFAULTTONEAREST));
         focus_off(&app, mon);

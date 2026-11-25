@@ -650,7 +650,7 @@ pub(super) fn give_back(s: &mut State, id: &str, last: bool, notes: &mut Vec<Not
         let m = mon_mut(s, id);
         (m.area, m.active)
     };
-    let fg = unsafe { GetForegroundWindow() };
+    let fg = win::get_foreground_window();
     let unknown = crate::cloak::unknown();
     // Each window's way home, worked out before any moves: a hung one counts as a try.
     // (hwnd, record, home workspace, goes home in view, the list it is in now)
@@ -742,7 +742,7 @@ pub(super) fn give_back(s: &mut State, id: &str, last: bool, notes: &mut Vec<Not
     if fg_hidden {
         // Never leave keyboard focus in a window just hidden.
         let next = app_windows().first().copied().unwrap_or(win::get_shell_window());
-        unsafe { let _ = SetForegroundWindow(next); }
+        let _ = win::set_foreground_window(next);
     }
     let e = s.back.get_mut(id).expect("counted by check_in");
     e.1 += moved;

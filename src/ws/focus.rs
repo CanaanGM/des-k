@@ -6,7 +6,7 @@ pub(super) fn focus(h: HWND) {
     if hung(h) {
         return;
     }
-    unsafe { let _ = SetForegroundWindow(h); }
+    let _ = win::set_foreground_window(h);
     if win::is_iconic(h).as_bool() {
         let _ = win::show_window(h, SW_RESTORE);
     }
@@ -33,13 +33,13 @@ pub fn show_desktop() {
         return info!("show desktop: {name}, {} window(s) back", back.len());
     }
     let list: Vec<HWND> = app_windows_on(mon).into_iter().filter(|&h| !win::is_iconic(h).as_bool() && !hung(h)).collect();
-    let fg = unsafe { GetForegroundWindow() };
+    let fg = win::get_foreground_window();
     for &h in &list {
         let _ = win::show_window(h, SW_SHOWMINNOACTIVE);
     }
     // Don't leave keyboard focus in a window we just minimized.
     if list.contains(&fg) {
-        unsafe { let _ = SetForegroundWindow(win::get_shell_window()); }
+        let _ = win::set_foreground_window(win::get_shell_window());
     }
     m.desktop = list.iter().map(|h| h.0 as isize).collect();
     info!("show desktop: {name}, {} window(s) minimized", list.len());

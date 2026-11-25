@@ -394,7 +394,7 @@ pub fn restore_tick() -> bool {
                 _ if device_name(win::monitor_from_window(h, MONITOR_DEFAULTTONEAREST)) != p.device => {}
                 _ => {
                     r.pending.retain(|&p| p != i);
-                    plan.push(Hide { h, key, i, app: fp.app.clone(), to: (dev.clone(), ws), then: After::Home { was_fg: unsafe { GetForegroundWindow() } == h } });
+                    plan.push(Hide { h, key, i, app: fp.app.clone(), to: (dev.clone(), ws), then: After::Home { was_fg: win::get_foreground_window() == h } });
                 }
             }
         }
@@ -440,11 +440,9 @@ pub fn restore_tick() -> bool {
                 if was_fg {
                     let mon = win::monitor_from_window(p.h, MONITOR_DEFAULTTONEAREST);
                     let next = app_windows_on(mon).first().copied().unwrap_or(win::get_shell_window());
-                    unsafe {
-                        let _ = SetForegroundWindow(next);
-                        if GetForegroundWindow() != next {
-                            warn!("restore: could not move focus");
-                        }
+                    let _ = win::set_foreground_window(next);
+                    if win::get_foreground_window() != next {
+                        warn!("restore: could not move focus");
                     }
                 }
             }

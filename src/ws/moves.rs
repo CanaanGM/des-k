@@ -6,7 +6,7 @@ use super::*;
 /// The indicator lights every workspace while it is pinned.
 pub fn pin() {
     // A dialog is never hidden itself, so its owner is what a switch would hide.
-    let h = unsafe { win::get_ancestor(GetForegroundWindow(), GA_ROOTOWNER) };
+    let h = win::get_ancestor(win::get_foreground_window(), GA_ROOTOWNER);
     if !app_windows().contains(&h) {
         return info!("pin: nothing to pin ({}, {})", who(h), class_name(h));
     }
@@ -60,7 +60,7 @@ pub fn send(to: To, follow: bool) {
         }
         None => {
             // A dialog is never hidden itself, so its owner goes.
-            let h = unsafe { win::get_ancestor(GetForegroundWindow(), GA_ROOTOWNER) };
+            let h = win::get_ancestor(win::get_foreground_window(), GA_ROOTOWNER);
             // Only what a switch would hide: never the desktop, the taskbar, or a tool window.
             if !app_windows().contains(&h) {
                 return info!("send: nothing to send ({}, {})", who(h), class_name(h));
@@ -140,7 +140,7 @@ pub fn send(to: To, follow: bool) {
         unpinned = sent(&mut s);
         // It is cloaked now, so the filter skips it.
         let next = app_windows_on(mon).first().copied().unwrap_or(win::get_shell_window());
-        unsafe { let _ = SetForegroundWindow(next); }
+        let _ = win::set_foreground_window(next);
     } else if target == active {
         let Some(shell) = shell() else { return };
         if let Err(e) = shell.hide(h, false) {
@@ -148,7 +148,7 @@ pub fn send(to: To, follow: bool) {
         }
         unpinned = sent(&mut s);
         s.monitors.get_mut(&name).expect("found above").hidden[from].retain(|&w| w != raw);
-        unsafe { let _ = SetForegroundWindow(h); }
+        let _ = win::set_foreground_window(h);
     } else {
         unpinned = sent(&mut s);
         let m = s.monitors.get_mut(&name).expect("found above");
@@ -375,7 +375,7 @@ pub(super) fn move_to(hwnd: HWND, old: HMONITOR, new: HMONITOR) -> windows::core
 pub(super) fn put(hwnd: HWND, to: Spot) -> windows::core::Result<()> {
     let mut wp = WINDOWPLACEMENT { length: size_of::<WINDOWPLACEMENT>() as u32, ..Default::default() };
     win::get_window_placement(hwnd, &mut wp)?;
-    let fg = unsafe { GetForegroundWindow() };
+    let fg = win::get_foreground_window();
     wp.rcNormalPosition = shift(to.rect, -1);
     wp.flags = WINDOWPLACEMENT_FLAGS(0);
     wp.showCmd = match to.state {
@@ -399,8 +399,8 @@ pub(super) fn put(hwnd: HWND, to: Spot) -> windows::core::Result<()> {
             win::set_window_placement(hwnd, &wp)?;
         }
         // There is no maximize without activation.
-        if unsafe { GetForegroundWindow() } != fg && !fg.is_invalid() {
-            unsafe { let _ = SetForegroundWindow(fg); }
+        if win::get_foreground_window() != fg && !fg.is_invalid() {
+            let _ = win::set_foreground_window(fg);
         }
     }
     if to.state == 'n' {
