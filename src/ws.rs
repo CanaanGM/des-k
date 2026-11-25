@@ -12,9 +12,7 @@ use windows::Win32::{
         Dwm::DWMWA_CLOAKED,
         Gdi::{HDC, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MONITORINFOEXW},
     },
-    System::{
-        Com::{CLSCTX_ALL, CoCreateInstance},
-    },
+    System::Com::CLSCTX_ALL,
     UI::{
         Shell::{IVirtualDesktopManager, VirtualDesktopManager},
         WindowsAndMessaging::*,

@@ -8,6 +8,7 @@ use windows::Win32::Devices::Display::{
 use windows::Win32::Foundation::WIN32_ERROR;
 use windows::Win32::Graphics::Dwm::{DWMWINDOWATTRIBUTE, DwmGetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, MONITOR_FROM_FLAGS, MonitorFromPoint, MonitorFromRect, MonitorFromWindow};
+use windows::Win32::System::Com::{CLSCTX, CoCreateInstance};
 use windows::Win32::System::SystemInformation::GetTickCount;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MONITOR_DPI_TYPE};
 
@@ -224,6 +225,19 @@ pub(super) fn display_config_get_target_name(name: &mut DISPLAYCONFIG_TARGET_DEV
     name.header.size = size_of::<DISPLAYCONFIG_TARGET_DEVICE_NAME>() as u32;
     // SAFETY: the header heads a whole live DISPLAYCONFIG_TARGET_DEVICE_NAME and names it (above).
     unsafe { DisplayConfigGetDeviceInfo(&mut name.header) }
+}
+
+// Virtual desktops, through the shell's documented IVirtualDesktopManager (raw vtable calls stay in cloak.rs).
+
+pub(super) fn co_create_instance<T: windows::core::Interface>(clsid: &windows::core::GUID, ctx: CLSCTX) -> windows::core::Result<T> {
+    // SAFETY: clsid is a live GUID that COM only reads, and the windows crate asks the new object
+    // for T's own interface; without COM on this thread the call fails with an error.
+    unsafe { CoCreateInstance(clsid, None, ctx) }
+}
+
+pub(super) fn is_window_on_current_virtual_desktop(vdm: &IVirtualDesktopManager, h: HWND) -> windows::core::Result<BOOL> {
+    // SAFETY: vdm is a live interface the windows crate holds a reference on; the shell checks the handle.
+    unsafe { vdm.IsWindowOnCurrentVirtualDesktop(h) }
 }
 
 pub(super) fn get_tick_count() -> u32 {

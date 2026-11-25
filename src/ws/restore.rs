@@ -210,7 +210,7 @@ pub fn load() -> Restoring {
     }
 
     if !adopt.is_empty() {
-        let (Ok(shell), Ok(vdm)) = (Shell::new(), unsafe { CoCreateInstance::<_, IVirtualDesktopManager>(&VirtualDesktopManager, None, CLSCTX_ALL) }) else {
+        let (Ok(shell), Ok(vdm)) = (Shell::new(), win::co_create_instance::<IVirtualDesktopManager>(&VirtualDesktopManager, CLSCTX_ALL)) else {
             warn!("shell unavailable, saved layout not loaded");
             return restoring;
         };
@@ -218,7 +218,7 @@ pub fn load() -> Restoring {
         let mut fold_now = HashSet::new();
         for (dev, ws, raw, pid) in adopt {
             let h = HWND(raw as *mut _);
-            let on_current = unsafe { vdm.IsWindowOnCurrentVirtualDesktop(h) }.is_ok_and(|b| b.as_bool());
+            let on_current = win::is_window_on_current_virtual_desktop(&vdm, h).is_ok_and(|b| b.as_bool());
             if !(win::is_window(Some(h)).as_bool() && pid_of(h) == pid && cloaked(h) == 2 && on_current) {
                 continue; // closed, reused handle, or not hidden by us any more
             }

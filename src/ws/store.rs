@@ -272,11 +272,11 @@ pub(super) fn write_state(text: String) -> Result<(), String> {
 /// quit leaves it, plus the W lines of any window it could not show.
 pub fn rescue() {
     let Ok(text) = std::fs::read_to_string(state_file()) else { return info!("no saved layout, nothing to show") };
-    let vdm = unsafe { CoCreateInstance::<_, IVirtualDesktopManager>(&VirtualDesktopManager, None, CLSCTX_ALL) }.ok();
+    let vdm = win::co_create_instance::<IVirtualDesktopManager>(&VirtualDesktopManager, CLSCTX_ALL).ok();
     let Some(shell) = shell_for_exit() else { return };
     let (out, shown, left) = rescued(&text, |raw, pid| {
         let h = HWND(raw as *mut _);
-        let on_current = vdm.as_ref().is_some_and(|v| unsafe { v.IsWindowOnCurrentVirtualDesktop(h) }.is_ok_and(|b| b.as_bool()));
+        let on_current = vdm.as_ref().is_some_and(|v| win::is_window_on_current_virtual_desktop(v, h).is_ok_and(|b| b.as_bool()));
         if !(win::is_window(Some(h)).as_bool() && pid_of(h) == pid && cloaked(h) == 2 && on_current) {
             return None; // closed, reused handle, or not hidden by des-k
         }
