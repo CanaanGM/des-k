@@ -327,7 +327,8 @@ fn main() -> windows::core::Result<()> {
             keys::WM_RECORDED => match keys::recording_window() {
                 Some(h) if hints::owns(h) => hints::recorded(msg.wParam.0 as u16, msg.lParam.0 as u8),
                 Some(h) if welcome::owns(h) => welcome::recorded(msg.wParam.0 as u16, msg.lParam.0 as u8),
-                _ => settings_page::recording::recorded(msg.wParam.0 as u16, msg.lParam.0 as u8),
+                Some(h) if settings_page::owns(h) => settings_page::recording::recorded(msg.wParam.0 as u16, msg.lParam.0 as u8),
+                _ => {}
             },
             keys::WM_HINTS => hints::toggle(),
             keys::WM_OVERVIEW => {

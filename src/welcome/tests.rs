@@ -1,5 +1,6 @@
 // The first run's tests: the taken line, the shortcut and touchpad words, and the render test.
 use super::*;
+use crate::settings::ALT;
 
 // The Done step's last line names exactly the Windows keys des-k holds: a key given back
 // must leave the line, or you'd think Windows still lost it.

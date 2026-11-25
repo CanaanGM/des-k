@@ -2,6 +2,8 @@
 // a pass over one screen's canvas with its click areas, focus and hover, and what Narrator
 // reads, over that screen's own control ids. The widgets drawn through it are in
 // controls/widgets.rs. Each screen keeps its own context around this one, with its own content.
+// Shortcut recording's shared half is in controls/record.rs (AC-8).
+pub(crate) mod record;
 pub(crate) mod widgets;
 
 use crate::ui::{Bx, Canvas};

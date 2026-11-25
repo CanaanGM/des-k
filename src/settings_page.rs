@@ -91,7 +91,7 @@ const I_FOLDER: &str = "\u{E8B7}";
 
 pub(crate) static DEFAULTS: LazyLock<Settings> = LazyLock::new(Settings::default);
 
-use settings::{ALT, CTRL, SHIFT, WIN};
+use settings::{CTRL, SHIFT, WIN};
 
 /// Where a caption link goes.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -530,6 +530,11 @@ fn compose(c: &mut Canvas, w: &Win) -> Out {
 
 fn hwnd() -> Option<HWND> {
     get(|w| w.hwnd)
+}
+
+/// Whether the page is the window recording: main hands it WM_RECORDED.
+pub fn owns(h: HWND) -> bool {
+    hwnd() == Some(h)
 }
 
 /// The theme the page paints with: the color picker's preview while it shows a color the

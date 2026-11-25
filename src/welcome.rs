@@ -24,8 +24,8 @@ use windows::Win32::{
 };
 use windows::core::{PCWSTR, w};
 
-use crate::controls::{self, Screen, Style, Tone, widgets::Cards};
-use crate::settings::{self, ALT, Action, CTRL, Combo, Motion, Owner, SHIFT, Settings, WIN, edit::Edit};
+use crate::controls::{self, Screen, Style, Tone, record, widgets::Cards};
+use crate::settings::{self, Action, CTRL, Combo, Motion, Owner, Settings, WIN, edit::Edit};
 use crate::settings_page::{self as sp, menu::{Does, Menu}, recording::{Plan, Prompt}, rows::{Kind, WinKey}};
 use crate::setup::{self, GaveBack, Row as PadRow, State as PadState, Wrote};
 use crate::ui::{self, Bx, Canvas, F, Fonts, Theme, buffered, dark_title, mix, op, theme};
@@ -1960,17 +1960,13 @@ fn start_rec(rec: Rec) {
     // One recording at a time.
     crate::hints::cancel_recording();
     crate::settings_page::recording::cancel_recording();
-    if let Some(h) = hwnd() {
-        crate::keys::record(h, true);
-    }
+    record::start(hwnd());
     layout();
     reveal();
 }
 
 fn stop_rec() {
-    if let Some(h) = hwnd() {
-        crate::keys::record(h, false);
-    }
+    record::stop(hwnd());
     let _ = set(|w| {
         let f = w.rec.and_then(field_of);
         w.rec = None;
@@ -2001,41 +1997,21 @@ pub fn recorded(vk: u16, mods: u8) {
     if vk == VK_ESCAPE.0 && mods == 0 {
         return stop_rec();
     }
-    let refuse = |title: &str, sub: &str| {
-        let _ = set(|w| w.refused = Some((title.into(), sub.into())));
-        layout();
+    let kind = match rec {
+        Rec::Digits(_) => record::Kind::Digit,
+        Rec::Pair(..) => record::Kind::Arrow,
+        Rec::List(..) | Rec::Gesture(..) => record::Kind::Combo,
     };
+    if let Err((title, sub)) = record::check(vk, mods, kind, &record::WORDS) {
+        let _ = set(|w| w.refused = Some((title.into(), sub.into())));
+        return layout();
+    }
+    stop_rec();
     let title = |r: Rec| field_of(r).map_or("Gestures", title_of);
     match rec {
-        Rec::Digits(key) => {
-            let digit = (b'1' as u16..=b'9' as u16).contains(&vk) || (VK_NUMPAD1.0..=VK_NUMPAD9.0).contains(&vk);
-            if !digit {
-                return refuse("Press a digit 1 to 9", "Hold the keys, then press any digit. Still recording; Esc alone cancels.");
-            }
-            if mods & (WIN | CTRL | ALT) == 0 {
-                return refuse(if mods == SHIFT { "Shift alone can't be used" } else { "A digit needs Win, Ctrl or Alt" }, "Hold Win, Ctrl or Alt with the digit. Still recording.");
-            }
-            stop_rec();
-            run(sp::recording::plan_digits(key, mods));
-        }
-        Rec::Pair(p, n) => {
-            if vk != VK_LEFT.0 && vk != VK_RIGHT.0 {
-                return refuse("Press ← or →", "Hold the keys, then press either arrow. Still recording; Esc alone cancels.");
-            }
-            if mods == 0 {
-                return refuse("A key needs Win, Ctrl, Alt or Shift", "Hold one of them with the arrow. Still recording; Esc alone cancels.");
-            }
-            stop_rec();
-            run(plan_pair(p, n, mods, true, title(rec)));
-        }
+        Rec::Digits(key) => run(sp::recording::plan_digits(key, mods)),
+        Rec::Pair(p, n) => run(plan_pair(p, n, mods, true, title(rec))),
         Rec::List(..) | Rec::Gesture(..) => {
-            if !settings::savable(vk) {
-                return refuse("This key can't be saved", "Use a letter, a digit, F1 to F24, an arrow, or Home, End, Page Up, Page Down, Insert, Delete, Space, Enter, Tab, or Esc with a modifier. Still recording.");
-            }
-            if mods == 0 {
-                return refuse("A key needs Win, Ctrl, Alt or Shift", "Hold one of them with the key. Still recording; Esc alone cancels.");
-            }
-            stop_rec();
             let combo = Combo { mods, vk };
             match rec {
                 Rec::List(key, replace) => run(sp::recording::plan_combo(key, replace, combo)),

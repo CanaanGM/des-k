@@ -1,5 +1,6 @@
 // Tests for the rows and their words: steps, the file round trip, greyed rows, problem titles.
 use super::*;
+use crate::settings::ALT;
 use crate::settings_page::cards::changed;
 
 // A hand written value off the grid is kept as is, and the next step lands on the grid,

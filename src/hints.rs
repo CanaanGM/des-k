@@ -20,6 +20,7 @@ use windows::Win32::{
 };
 use windows::core::{HSTRING, PCWSTR, w};
 
+use crate::controls::record;
 use crate::settings::{self, Action, Combo, Motion, Owner, Settings, edit::Edit};
 use crate::setup::{self, GaveBack, Row as PadRow, State};
 use crate::ui::{self, Bx, Canvas, F, Theme, buffered, dark_title, mix, op};
@@ -982,7 +983,7 @@ fn start_rec() {
         w.rec = Rec::Recording(None);
         w.error = None;
     });
-    crate::keys::record(h, true);
+    record::start(Some(h));
     relayout(None);
     focus_button(ID_CANCEL);
 }
@@ -990,7 +991,7 @@ fn start_rec() {
 /// Ends recording or the clash prompt, saving nothing.
 fn stop_rec() {
     let Some(h) = hwnd() else { return };
-    crate::keys::record(h, false);
+    record::stop(Some(h));
     let _ = set(|w| w.rec = Rec::Idle);
     relayout(None);
     focus_button(ID_SET);
@@ -1022,6 +1023,9 @@ pub fn owns(h: HWND) -> bool {
     hwnd() == Some(h)
 }
 
+/// The settings page's refusals, two of them in this window's own words.
+const WORDS: record::Words = record::Words { not_savable: ("This key can't be saved; try another", "Use a letter, a number row digit, F1 to F24, an arrow, or Home, End, Page Up, Page Down, Insert, Delete, Space, Enter, Tab, or Esc with a modifier. Still recording."), no_mods: ("Hold Win, Ctrl, Alt or Shift with the key.", "A combo needs at least one of them. Still recording; Esc alone cancels."), ..record::WORDS };
+
 /// The hook's WM_RECORDED while this window records: the settings page's rules (spec 0012
 /// AC-7, AC-9). Main thread.
 pub fn recorded(vk: u16, mods: u8) {
@@ -1031,18 +1035,12 @@ pub fn recorded(vk: u16, mods: u8) {
     if vk == VK_ESCAPE.0 && mods == 0 {
         return stop_rec();
     }
-    let refuse = |title: &str, sub: &str| {
+    if let Err((title, sub)) = record::check(vk, mods, record::Kind::Combo, &WORDS) {
         let _ = set(|w| w.rec = Rec::Recording(Some((title.into(), sub.into()))));
-        relayout(None);
-    };
-    if !settings::savable(vk) {
-        return refuse("This key can't be saved; try another", "Use a letter, a number row digit, F1 to F24, an arrow, or Home, End, Page Up, Page Down, Insert, Delete, Space, Enter, Tab, or Esc with a modifier. Still recording.");
-    }
-    if mods == 0 {
-        return refuse("Hold Win, Ctrl, Alt or Shift with the key.", "A combo needs at least one of them. Still recording; Esc alone cancels.");
+        return relayout(None);
     }
     let Some(h) = hwnd() else { return };
-    crate::keys::record(h, false);
+    record::stop(Some(h));
     let combo = Combo { mods, vk };
     match recorded_rec(&settings::get(), combo) {
         None => stop_rec(),
