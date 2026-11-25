@@ -366,3 +366,56 @@ fn rescue_keeps_away_lines() {
     assert_eq!((shown, left), (1, 0));
     assert_eq!(out, "M DEL-1 0 0 0 100 100\tDell\nA DEL-1 1 100 7 0 0 10 10 n 0\ta\tc\tt\n");
 }
+
+// Win+Ctrl+arrows cycle: past the last workspace you land on the first, and before the first
+// on the last, so either key reaches every workspace.
+#[test]
+fn a_step_wraps_both_ways() {
+    assert_eq!(step_target(3, 1, 4), 0);
+    assert_eq!(step_target(0, -1, 4), 3);
+    assert_eq!(step_target(1, 1, 4), 2);
+    assert_eq!(step_target(2, -1, 4), 1);
+}
+
+// With one workspace a step lands where it started, so switch only shows the indicator and
+// hides nothing.
+#[test]
+fn a_step_with_one_workspace_stays_put() {
+    assert_eq!(step_target(0, 1, 1), 0);
+    assert_eq!(step_target(0, -1, 1), 0);
+}
+
+fn shown_on(active: usize, last: Option<usize>) -> Monitor {
+    let mut m = Monitor::with(4);
+    m.active = active;
+    m.last_switch = last.map(|ws| (Instant::now(), ws));
+    m
+}
+
+// A digit past your workspace count must not switch anywhere: the indicator says there is no
+// such workspace, whatever jump_back says.
+#[test]
+fn a_jump_past_the_count_is_missing() {
+    let m = shown_on(1, Some(0));
+    assert_eq!(jump_target(&m, 4, 4, true), Jump::Missing);
+    assert_eq!(jump_target(&m, 8, 4, false), Jump::Missing);
+}
+
+// Pressing the shown workspace's digit is a back key only when you turned jump_back on and
+// there is a last workspace; otherwise it just shows where you are (spec 0024 AC-8).
+#[test]
+fn a_jump_to_the_shown_workspace_goes_back_only_with_jump_back_on() {
+    let m = shown_on(2, Some(0));
+    assert_eq!(jump_target(&m, 2, 4, true), Jump::Back(0));
+    assert_eq!(jump_target(&m, 2, 4, false), Jump::Stay);
+    assert_eq!(jump_target(&shown_on(2, None), 2, 4, true), Jump::Stay);
+}
+
+// Any other digit goes to its workspace, even with a back target waiting: jump_back changes
+// only the shown workspace's digit.
+#[test]
+fn a_jump_elsewhere_goes_there() {
+    let m = shown_on(2, Some(0));
+    assert_eq!(jump_target(&m, 3, 4, true), Jump::Go(3));
+    assert_eq!(jump_target(&m, 0, 4, false), Jump::Go(0));
+}

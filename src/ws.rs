@@ -1155,6 +1155,11 @@ pub(crate) fn under_mouse() -> (HMONITOR, String) {
     (mon, device_name(mon))
 }
 
+/// The workspace a step of `dir` (-1 / +1) from `active` lands on, wrapping both ways.
+fn step_target(active: usize, dir: isize, count: usize) -> usize {
+    (active as isize + dir).rem_euclid(count as isize) as usize
+}
+
 /// Switch the workspace of the monitor under the mouse by `dir` (-1 / +1), wrapping like a send.
 pub fn switch(dir: isize) {
     let (mon, dev) = under_mouse();
@@ -1162,12 +1167,38 @@ pub fn switch(dir: isize) {
     let mut s = state();
     let name = id_of(&mut s, &dev);
     let active = mon_mut(&mut s, &name).active;
-    let target = (active as isize + dir).rem_euclid(count as isize) as usize;
+    let target = step_target(active, dir, count);
     if target == active {
         indicator::show(mon, card(&s, &name, active, count)); // nowhere to go: still show where we are
         return;
     }
     switch_to(&mut s, mon, &name, target, None, None);
+}
+
+/// What a jump to one workspace does.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Jump {
+    /// Past the count: only the indicator, saying so.
+    Missing,
+    /// Already shown and nothing to go back to: only the indicator.
+    Stay,
+    /// Already shown with `jump_back` on: back to the last workspace.
+    Back(usize),
+    Go(usize),
+}
+
+/// Where a jump to workspace `index` (0 based) goes on screen `m`.
+fn jump_target(m: &Monitor, index: usize, count: usize, jump_back: bool) -> Jump {
+    if index >= count {
+        return Jump::Missing;
+    }
+    if index != m.active {
+        return Jump::Go(index);
+    }
+    match jump_back.then(|| m.back_target(count)).flatten() {
+        Some(ws) => Jump::Back(ws),
+        None => Jump::Stay,
+    }
 }
 
 /// Show workspace `index` (0 based) on the monitor under the mouse. Past the count, or
@@ -1178,24 +1209,23 @@ pub fn jump(index: usize) {
     let count = settings::get().workspaces;
     let mut s = state();
     let name = id_of(&mut s, &dev);
-    let active = mon_mut(&mut s, &name).active;
-    if index >= count {
-        info!("jump: no workspace {} ({count} workspaces)", index + 1);
-    }
-    if index >= count {
-        return indicator::show(mon, card(&s, &name, active, count).with(Says::NoWorkspace { n: index + 1 }));
-    }
-    if index == active {
-        let back = settings::get().jump_back.then(|| mon_mut(&mut s, &name).back_target(count)).flatten();
-        let Some(target) = back else {
-            return indicator::show(mon, card(&s, &name, active, count));
-        };
-        if switch_to(&mut s, mon, &name, target, None, None) == Switch::Switched {
-            info!("jump: {name} already on workspace {}, back to {}/{count}", index + 1, target + 1);
+    let m = mon_mut(&mut s, &name);
+    let active = m.active;
+    match jump_target(m, index, count, settings::get().jump_back) {
+        Jump::Missing => {
+            info!("jump: no workspace {} ({count} workspaces)", index + 1);
+            indicator::show(mon, card(&s, &name, active, count).with(Says::NoWorkspace { n: index + 1 }));
         }
-        return;
+        Jump::Stay => indicator::show(mon, card(&s, &name, active, count)),
+        Jump::Back(target) => {
+            if switch_to(&mut s, mon, &name, target, None, None) == Switch::Switched {
+                info!("jump: {name} already on workspace {}, back to {}/{count}", index + 1, target + 1);
+            }
+        }
+        Jump::Go(target) => {
+            switch_to(&mut s, mon, &name, target, None, None);
+        }
     }
-    switch_to(&mut s, mon, &name, index, None, None);
 }
 
 /// Show the workspace the screen under the mouse showed before its last switch; pressed again,
