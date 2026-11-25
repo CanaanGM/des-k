@@ -31,7 +31,7 @@ use windows::Win32::{
 };
 use windows::core::w;
 
-use crate::settings::{Fit, Pick, name_order};
+use crate::settings::{Fit, Pick, parse::name_order};
 use crate::ui::Picture;
 use crate::wallpaper::Problem;
 
@@ -1103,7 +1103,7 @@ fn list(folder: &std::path::Path, source: &Source) -> Result<Vec<(String, Stamp)
             let dir = std::fs::read_dir(folder.join(f)).map_err(|_| Problem::Missing)?;
             dir.flatten()
                 .filter_map(|e| {
-                    let name = e.file_name().into_string().ok().filter(|n| crate::settings::is_picture_name(n))?;
+                    let name = e.file_name().into_string().ok().filter(|n| crate::settings::parse::is_picture_name(n))?;
                     let meta = e.metadata().ok().filter(std::fs::Metadata::is_file)?;
                     Some((format!("{f}\\{name}"), meta.modified().ok()))
                 })

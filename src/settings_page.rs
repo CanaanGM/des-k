@@ -6,7 +6,7 @@
 // and no child controls, so everything scrolls together; the gesture picker's menu is drawn in
 // it too. Lives on the main thread: its keys reach wndproc through main's loop. Sizes are in
 // dip, scaled to the screen's dpi when drawn. The page never keeps its own copy of a value: it
-// draws what settings::get() holds, and every change goes through settings::write.
+// draws what settings::get() holds, and every change goes through settings::edit::write.
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -25,7 +25,7 @@ use windows::Win32::{
 };
 use windows::core::{PCWSTR, w};
 
-use crate::settings::{self, Action, Combo, Edit, Motion, Owner, Pick, Problem, Settings};
+use crate::settings::{self, Action, Combo, Motion, Owner, Pick, Settings, edit::Edit, parse::Problem};
 use crate::setup::{self, GaveBack, Row as PadRow, State as PadState, Wrote};
 use crate::ui::{self, Bx, Canvas, F, Fonts, Theme, buffered, dark_title, mix, op, theme};
 use crate::uia::{self, Node, Tree};
@@ -816,7 +816,7 @@ pub(crate) fn name_path(screen: Option<&str>, row: Nm) -> Option<Vec<String>> {
 /// empty writes "" (no name on this screen), and only when All screens has a name to hide;
 /// unchanged text writes nothing.
 pub(crate) fn name_edit(s: &Settings, screen: Option<&str>, row: Nm, text: &str, enter: bool) -> Option<Edit> {
-    let text = settings::clean_name(text);
+    let text = settings::parse::clean_name(text);
     let path = name_path(screen, row)?;
     let (state, saved) = name_held(s, screen, row);
     match (state, row) {
@@ -942,7 +942,7 @@ pub(crate) fn wall_tick(s: &Settings, screen: Option<&str>, k: usize, file: &str
         }
         None => names.push(file.to_string()),
     }
-    names.sort_by(|a, b| settings::name_order(a, b));
+    names.sort_by(|a, b| settings::parse::name_order(a, b));
     let pick = match names.len() {
         0 => Pick::None,
         1 => Pick::Picture(names.remove(0)),
@@ -1025,14 +1025,14 @@ fn wall_reveal(top: usize, line: usize, n: usize, rows: usize) -> usize {
 /// The wallpapers folder's pictures, by name with case ignored (AC-13, AC-14), read as a
 /// row's menu opens. A missing folder lists none.
 fn wall_folder() -> Vec<String> {
-    wall_names(&crate::ws::data_dir().join("wallpapers"), true, settings::is_picture_name)
+    wall_names(&crate::ws::data_dir().join("wallpapers"), true, settings::parse::is_picture_name)
 }
 
 /// The folder's slideshow folders and their picture counts (spec 0028 AC-11, AC-13), read only
 /// as a row's menu opens: subfolders whose names the file's reader takes as a folder.
 fn wall_dirs() -> Vec<(String, usize)> {
     let dir = crate::ws::data_dir().join("wallpapers");
-    wall_names(&dir, false, settings::is_folder_name)
+    wall_names(&dir, false, settings::parse::is_folder_name)
         .into_iter()
         .map(|f| {
             let n = wall_count(&f);
@@ -1043,7 +1043,7 @@ fn wall_dirs() -> Vec<(String, usize)> {
 
 /// How many pictures folder `name` holds at its top level; 0 when it isn't there.
 fn wall_count(name: &str) -> usize {
-    wall_names(&crate::ws::data_dir().join("wallpapers").join(name), true, settings::is_picture_name).len()
+    wall_names(&crate::ws::data_dir().join("wallpapers").join(name), true, settings::parse::is_picture_name).len()
 }
 
 /// The names of `dir`'s files (or subfolders) that pass `keep`, in slideshow order.
@@ -1056,7 +1056,7 @@ fn wall_names(dir: &std::path::Path, files: bool, keep: fn(&str) -> bool) -> Vec
         .filter_map(|e| e.file_name().into_string().ok())
         .filter(|n| keep(n))
         .collect();
-    names.sort_by(|a, b| settings::name_order(a, b));
+    names.sort_by(|a, b| settings::parse::name_order(a, b));
     names
 }
 
@@ -1436,7 +1436,7 @@ pub fn tick() {
 
 /// A hand edit was put in effect: an open page shows what changed until Dismiss or the next
 /// one. Changes made on the page show none.
-pub fn hand_edit(changes: &[settings::Change], _moves: &[String]) {
+pub fn hand_edit(changes: &[settings::store::Change], _moves: &[String]) {
     if hwnd().is_none() {
         return;
     }
@@ -1638,7 +1638,7 @@ thread_local! {
     static PAGE: RefCell<Option<Win>> = const { RefCell::new(None) };
 }
 
-// Never hold the borrow across a call that comes back here: settings::write reloads, and the
+// Never hold the borrow across a call that comes back here: settings::edit::write reloads, and the
 // reload calls refresh().
 fn get<R>(f: impl FnOnce(&Win) -> R) -> Option<R> {
     ui::get(&PAGE, "settings page get", f)
@@ -2073,7 +2073,7 @@ impl Ctx<'_, '_> {
 
     /// Problems whose key is this row's, as its in-row note (AC-SET-5).
     fn bad(&self, key: &str) -> Option<NoteSpec> {
-        let problems = settings::problems();
+        let problems = settings::store::problems();
         let p = problems.iter().find(|p| p.key == key)?;
         let mut lines = vec![P::Mono(p.message.clone())];
         if find_row(key).is_some() {
@@ -2203,7 +2203,7 @@ impl Ctx<'_, '_> {
     fn section_notes(&mut self, sec: Section, y: f32) -> f32 {
         let mut h = 0.0;
         let owned = |k: &str| find_row(k).is_some() || shortcut(k).is_some() || k == "workspaces" || shown_in_row(k);
-        let problems = settings::problems();
+        let problems = settings::store::problems();
         let list: Vec<&Problem> = problems.iter().filter(|p| home(&p.key) == Some(sec) && !owned(&p.key)).collect();
         for p in list {
             let fix = match sec {
@@ -3766,7 +3766,7 @@ impl Ctx<'_, '_> {
         match &ch.id {
             None => {
                 cap.push(t("The place for every screen without its own."));
-                let named: Vec<String> = settings::problems()
+                let named: Vec<String> = settings::store::problems()
                     .iter()
                     .filter_map(|p| p.key.strip_prefix("indicator.screens.\"")?.split('"').next().map(String::from))
                     .filter_map(|id| choices.iter().find(|c| c.id.as_deref() == Some(id.as_str())).map(|c| c.name.clone()))
@@ -3830,7 +3830,7 @@ impl Ctx<'_, '_> {
     /// The end of a place row's caption: All screens says its default and Reset; a screen says
     /// All screens' value and Reset for a key it sets, From All screens for one it doesn't.
     fn place_pieces(&self, key: &'static str, ch: &ScreenChoice) -> Vec<P> {
-        let bad = settings::problems().iter().any(|p| p.key == Self::place_problem(key, ch.id.as_deref()));
+        let bad = settings::store::problems().iter().any(|p| p.key == Self::place_problem(key, ch.id.as_deref()));
         match &ch.id {
             None => {
                 let (v, d) = (pos_get(self.s.indicator_pos, key), pos_get(DEFAULTS.indicator_pos, key));
@@ -3850,7 +3850,7 @@ impl Ctx<'_, '_> {
     }
 
     fn place_bad(&self, key: &str, ch: &ScreenChoice) -> Option<NoteSpec> {
-        let problems = settings::problems();
+        let problems = settings::store::problems();
         let p = problems.iter().find(|p| p.key == Self::place_problem(key, ch.id.as_deref()))?;
         let (title, fix) = match &ch.id {
             None => {
@@ -4129,7 +4129,7 @@ impl Ctx<'_, '_> {
 
     /// A bad color in the file, as its row's note.
     fn color_bad(&self, key: &str) -> Option<NoteSpec> {
-        let problems = settings::problems();
+        let problems = settings::store::problems();
         let p = problems.iter().find(|p| p.key == key)?;
         let what = ws_index(key).map_or("Windows' accent".to_string(), |i| format!("des-k's {}", WS_NAMES[i]));
         Some(NoteSpec { tone: Tone::Warn, icon: I_WARN, title: format!("des-k can't use this value, so it uses {what}"), lines: vec![P::Mono(p.message.clone()), t(" Type a color here, or Reset takes the line out.")], buttons: vec![], group: 1 })
@@ -4590,7 +4590,7 @@ impl Ctx<'_, '_> {
         let t = self.c.t;
         let b = t.b;
         let vh = self.w.vh;
-        let problems = settings::problems();
+        let problems = settings::store::problems();
         let count = |sec: Option<Section>| problems.iter().filter(|p| home(&p.key) == sec).count();
         let mut items: Vec<(Option<Section>, &str, &str)> = vec![];
         if count(None) > 0 {
@@ -4662,7 +4662,7 @@ impl Ctx<'_, '_> {
     /// changed by hand. Returns their height with their margins (0 with none).
     fn banners(&mut self) -> f32 {
         let mut list: Vec<NoteSpec> = vec![];
-        if let Some(why) = settings::parse_error() {
+        if let Some(why) = settings::store::parse_error() {
             list.push(NoteSpec {
                 tone: Tone::Warn,
                 icon: I_WARN,
@@ -5304,12 +5304,12 @@ fn app_choice(w: &Win, s: &Settings, from: Ctl, i: usize) -> Option<Edit> {
         }
         Ctl::AppWs(r) => {
             let (key, rule) = s.apps.get(r)?;
-            (i != rule.workspace && i < s.workspaces).then(|| app_edit(&settings::app_key_in_file(key), AppChange::Ws(i)))
+            (i != rule.workspace && i < s.workspaces).then(|| app_edit(&settings::edit::app_key_in_file(key), AppChange::Ws(i)))
         }
         Ctl::AppScreen(r) => {
             let (key, rule) = s.apps.get(r)?;
             let id = app_screens(&w.pics.view, rule).into_iter().nth(i)?.0;
-            (id != rule.screen).then(|| app_edit(&settings::app_key_in_file(key), AppChange::Screen(id)))
+            (id != rule.screen).then(|| app_edit(&settings::edit::app_key_in_file(key), AppChange::Screen(id)))
         }
         _ => None,
     }
@@ -5487,7 +5487,7 @@ fn escape(prompt: Option<&Prompt>, error: bool, edited: bool) -> Option<Ctl> {
 fn compose(c: &mut Canvas, w: &Win) -> Out {
     let s = settings::get();
     let cw = (w.vw - X0 - PAD_R).min(COL_MAX);
-    let mut x = Ctx { c, w, s: &s, ro: settings::parse_error().is_some(), cw, top0: 0.0, out: Out { hits: vec![], height: 0.0, fixed: 0.0, tops: vec![], cards: vec![], said: vec![], geo: Geo::default() } };
+    let mut x = Ctx { c, w, s: &s, ro: settings::store::parse_error().is_some(), cw, top0: 0.0, out: Out { hits: vec![], height: 0.0, fixed: 0.0, tops: vec![], cards: vec![], said: vec![], geo: Geo::default() } };
     let fixed = x.measured(|c| c.banners());
     x.out.fixed = fixed;
     let top0 = fixed - w.scroll;
@@ -5497,7 +5497,7 @@ fn compose(c: &mut Canvas, w: &Win) -> Out {
     x.c.text(X0, y, 32.0, "Settings", F::Heading, b.tx);
     y += 36.0;
     y += x.c.para(X0, y, cw, 20.0, &[("Every change saves to settings.toml and works at once. Restore waits for des-k's next start.", F::Body, b.tx2)]);
-    let problems = settings::problems();
+    let problems = settings::store::problems();
     let notes: Vec<&Problem> = problems.iter().filter(|p| home(&p.key).is_none()).collect();
     if !notes.is_empty() {
         y += 32.0;
@@ -5590,7 +5590,7 @@ fn place_box() {
     let Some((page, want, at, font, held, hint)) = get(|w| {
         let s = settings::get();
         let open = w.menu.is_some() || w.pick.is_some() || w.chooser.is_some();
-        let can = settings::parse_error().is_none() && !open;
+        let can = settings::store::parse_error().is_none() && !open;
         let (want, held, hint) = match w.focus {
             Some(Ctl::Words) if can && s.attention_enabled => (Some((Ctl::Words, None)), s.attention_text.clone(), (String::new(), 0)),
             Some(Ctl::Name(row)) if can => {
@@ -5951,7 +5951,7 @@ fn assert_no_pick() {
 fn save(key: &'static str, v: i64) {
     assert_no_pick();
     let Some(row) = find_row(key) else { return };
-    match settings::write(Edit::Value(key, file_value(row, v))) {
+    match settings::edit::write(Edit::Value(key, file_value(row, v))) {
         Ok(()) => {
             let _ = set(|w| w.error = None);
             refresh();
@@ -5976,7 +5976,7 @@ fn commit(edit: Edit, title: &str) {
 /// `commit`, saying whether it saved.
 fn wrote(edit: Edit, title: &str) -> bool {
     assert_no_pick();
-    match settings::write(edit) {
+    match settings::edit::write(edit) {
         Ok(()) => {
             let _ = set(|w| w.error = None);
             refresh();
@@ -6290,7 +6290,7 @@ fn choose(i: usize) {
 }
 
 fn act(ctl: Ctl) {
-    if ctl.writes() && settings::parse_error().is_some() {
+    if ctl.writes() && settings::store::parse_error().is_some() {
         return; // read only
     }
     let s = settings::get();
@@ -6298,7 +6298,7 @@ fn act(ctl: Ctl) {
         Ctl::Side(sec) => jump(sec),
         Ctl::Welcome => crate::welcome::show(),
         Ctl::WhatsNew => crate::whats_new::show_current(),
-        Ctl::Open => crate::tray::open(&settings::path()),
+        Ctl::Open => crate::tray::open(&settings::store::path()),
         Ctl::Toggle(key) if unused(&s, key).is_empty() => save(key, 1 - value(&s, key)),
         Ctl::Toggle(_) => {} // greyed: kept but not in use
         Ctl::Choice(ACCENT, i) => set_accent(i == 1),
@@ -6319,7 +6319,7 @@ fn act(ctl: Ctl) {
         }
         Ctl::AppX(r) => {
             if let Some((key, _)) = s.apps.get(r) {
-                commit(app_edit(&settings::app_key_in_file(key), AppChange::Remove), "Apps");
+                commit(app_edit(&settings::edit::app_key_in_file(key), AppChange::Remove), "Apps");
             }
         }
         Ctl::ScreenItem(i) => choose_screen(i),
@@ -6473,7 +6473,7 @@ fn reset_color(key: &'static str) {
 /// type in high contrast or read only.
 fn enter_hex(key: &'static str, caret: Option<usize>) {
     let _ = set(|w| {
-        if w.theme.hc || settings::parse_error().is_some() {
+        if w.theme.hc || settings::store::parse_error().is_some() {
             return;
         }
         if !w.hexes.iter().any(|x| x.key == key) {
@@ -6517,7 +6517,7 @@ fn save_hex(key: &'static str) {
         return layout();
     };
     let edit = if key == ACCENT { Edit::At(path_of(ACCENT), format!("#{c:06X}").into()) } else { color_edit(key, c) };
-    match settings::write(edit) {
+    match settings::edit::write(edit) {
         Ok(()) => {
             let still = set(|w| {
                 w.error = None;
@@ -7048,7 +7048,7 @@ fn outside(now: Option<u32>, file: u32, written: Option<u32>) -> bool {
 fn must_close(w: &Win) -> bool {
     let Some(p) = &w.pick else { return false };
     let s = settings::get();
-    w.theme.hc || settings::parse_error().is_some() || ws_index(p.key).is_some_and(|i| i >= s.workspaces) || outside(file_color(&s, p.key), p.file, p.written)
+    w.theme.hc || settings::store::parse_error().is_some() || ws_index(p.key).is_some_and(|i| i >= s.workspaces) || outside(file_color(&s, p.key), p.file, p.written)
 }
 
 /// The page's theme with `color` for `key`, while the page doesn't show that color already.
@@ -7077,11 +7077,11 @@ fn pick_open(key: &'static str, anchor: Anchor, from: Option<Ctl>) {
     ease_finish();
     let s = settings::get();
     let Some(color) = file_color(&s, key) else { return };
-    if ws_index(key).is_some_and(|i| i >= s.workspaces) || settings::parse_error().is_some() {
+    if ws_index(key).is_some_and(|i| i >= s.workspaces) || settings::store::parse_error().is_some() {
         return;
     }
     // What the file holds now, after any hex box save, for Esc and Cancel to put back.
-    let before = settings::raw_at(&path_of(key));
+    let before = settings::edit::raw_at(&path_of(key));
     let wait = Duration::from_millis(unsafe { GetDoubleClickTime() } as u64);
     let _ = set(|w| {
         if w.theme.hc || w.pick.is_some() {
@@ -7127,7 +7127,7 @@ fn pick_write(edit: Edit, value: u32) -> bool {
     if set(|w| w.pick.as_mut().map(|p| p.written = Some(value))).flatten().is_none() {
         return false;
     }
-    let result = settings::write(edit);
+    let result = settings::edit::write(edit);
     let _ = set(|w| {
         let theme = w.theme;
         // The reload inside the write may have closed it.
@@ -7210,7 +7210,7 @@ fn pick_close(how: How) {
     }
     let wrote = match how {
         How::Keep(_) if color != file => pick_write(color_edit(key, color), color),
-        How::Undo => match undo_edit(key, before.as_ref(), settings::raw_at(&path_of(key)).as_ref()) {
+        How::Undo => match undo_edit(key, before.as_ref(), settings::edit::raw_at(&path_of(key)).as_ref()) {
             Some(edit) => pick_write(edit, start),
             None => true,
         },
@@ -7468,7 +7468,7 @@ fn pick_lost_keys() {
 
 /// A click opens the picker over this control (spec 0021 AC-1): the hand shows there.
 fn opens(w: &Win, ctl: Option<Ctl>) -> bool {
-    !w.theme.hc && settings::parse_error().is_none() && w.rec.is_none() && matches!(ctl, Some(Ctl::WsTile(..) | Ctl::ShowTile(..) | Ctl::Swatch(_)))
+    !w.theme.hc && settings::store::parse_error().is_none() && w.rec.is_none() && matches!(ctl, Some(Ctl::WsTile(..) | Ctl::ShowTile(..) | Ctl::Swatch(_)))
 }
 
 /// The screen Where it shows changes; None: All screens.
@@ -7880,7 +7880,7 @@ fn next_stop(w: &Win, vk: VIRTUAL_KEY) -> Option<Ctl> {
 /// Left and Right on the focused stop: a switch goes off or on, a number steps, a choice moves,
 /// a shortcut row picks des-k or Windows, the tiles add or remove.
 fn change(focus: Ctl, right: bool) {
-    if settings::parse_error().is_some() {
+    if settings::store::parse_error().is_some() {
         return; // read only
     }
     let s = settings::get();
@@ -7979,7 +7979,7 @@ fn on_key(h: HWND, vk: VIRTUAL_KEY) {
         // On the tiles: removes the last workspace, as × does; on a shortcut row, its last key.
         VK_DELETE => match focus {
             Some(Ctl::Tiles) => change(Ctl::Tiles, false),
-            Some(Ctl::KeyRow(k)) if settings::parse_error().is_none() => {
+            Some(Ctl::KeyRow(k)) if settings::store::parse_error().is_none() => {
                 let s = settings::get();
                 if let Some(sh) = shortcut(k)
                     && let Some(&i) = drawn_order(&s, sh).last()
@@ -8283,7 +8283,7 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                             // Custom: a press on the picture puts the card's center there.
                             if w.press == Some(Ctl::Picture)
                                 && settings::get().indicator_enabled
-                                && settings::parse_error().is_none()
+                                && settings::store::parse_error().is_none()
                                 && let Some(at) = w.hits.iter().find(|h| h.ctl == Ctl::Picture).map(|h| h.at)
                             {
                                 w.dragging = Some(percent(at, (x, y)));
@@ -8484,7 +8484,7 @@ mod tests {
     use super::*;
 
     fn loaded(text: &str) -> &'static Settings {
-        Box::leak(Box::new(settings::parse_for_test(text).0))
+        Box::leak(Box::new(settings::parse::parse_for_test(text).0))
     }
 
     /// An edit in words, since toml values don't compare: "at colors.ws2 = \"#DDB43D\"".
@@ -8524,7 +8524,7 @@ mod tests {
         assert_eq!(said(place_edit(none, None, ACROSS, 70.0)), "at indicator.x = 70");
         // And what the screen then uses: its spot from its table, the rest from All screens.
         let text = "[indicator.screens.\"DEL-A0F5-1234\"]\nspot = \"top-right\"\n";
-        let after = settings::parse_for_test(&settings::apply_for_test(text, &place_edit(one, Some(id), GAP, 40.0).unwrap())).0;
+        let after = settings::parse::parse_for_test(&settings::edit::apply_for_test(text, &place_edit(one, Some(id), GAP, 40.0).unwrap())).0;
         assert_eq!(pos_of(&after, Some(id)).gap, 40);
         assert_eq!(pos_of(&after, Some(id)).spot, settings::Spot::TopRight);
     }
@@ -8619,8 +8619,8 @@ mod tests {
                 Kind::Choice(words) => (d + 1) % words.len() as i64,
                 Kind::Ladder(ladder) => if d == ladder[0] { ladder[1] } else { ladder[0] },
             };
-            let text = settings::edit_for_test(row.key, file_value(row, v));
-            let (s, warn) = settings::parse_for_test(&text);
+            let text = settings::edit::edit_for_test(row.key, file_value(row, v));
+            let (s, warn) = settings::parse::parse_for_test(&text);
             assert!(warn.is_empty(), "{}: {warn:?}", row.key);
             assert_eq!(value(&s, row.key), v, "{}", row.key);
         }
@@ -8682,11 +8682,11 @@ mod tests {
     fn a_screen_id_with_odd_letters_keeps_its_own_table() {
         let id = "DEL#1.A";
         let at = name_edit(loaded(""), Some(id), Nm::Ws(1), "Notes", false).unwrap();
-        let text = settings::apply_for_test("[names]\nws2 = \"Code\"\n", &at);
-        let (read, warn) = settings::parse_for_test(&text);
+        let text = settings::edit::apply_for_test("[names]\nws2 = \"Code\"\n", &at);
+        let (read, warn) = settings::parse::parse_for_test(&text);
         assert!(warn.is_empty(), "{warn:?}");
         assert_eq!((read.ws_name(id, 1), read.ws_name("internal", 1)), (Some("Notes"), Some("Code")));
-        let gone = settings::apply_for_test(&text, &Edit::Remove(name_path(Some(id), Nm::Ws(1)).unwrap()));
+        let gone = settings::edit::apply_for_test(&text, &Edit::Remove(name_path(Some(id), Nm::Ws(1)).unwrap()));
         assert!(!gone.contains("screens"), "{gone}");
         assert!(gone.contains("ws2 = \"Code\""), "{gone}");
     }
@@ -8711,9 +8711,9 @@ mod tests {
         assert_eq!(e(Some("internal"), 2, ""), "remove wallpaper.screens.internal.ws3");
         assert_eq!(e(Some("internal"), 3, ""), "none");
         let own = "[wallpaper.screens.internal]\nws2 = \"city.jpg\"\n";
-        let gone = settings::apply_for_test(own, &wall_edit(loaded(own), Some("internal"), 1, &Pick::None).unwrap());
+        let gone = settings::edit::apply_for_test(own, &wall_edit(loaded(own), Some("internal"), 1, &Pick::None).unwrap());
         assert!(!gone.contains("screens"), "{gone}");
-        let (read, warn) = settings::parse_for_test(&settings::apply_for_test("", &wall_edit(loaded(""), Some("DEL#1.A"), 2, &pic("a b.png")).unwrap()));
+        let (read, warn) = settings::parse::parse_for_test(&settings::edit::apply_for_test("", &wall_edit(loaded(""), Some("DEL#1.A"), 2, &pic("a b.png")).unwrap()));
         assert!(warn.is_empty(), "{warn:?}");
         assert_eq!(read.wall_name("DEL#1.A", 2), Some("a b.png"));
     }
@@ -8759,7 +8759,7 @@ mod tests {
         let own = loaded("[wallpaper]\nws2 = [\"city.jpg\", \"desk.png\"]\n[wallpaper.screens.internal]\nws2 = [\"city.jpg\", \"desk.png\", \"x.jpg\"]\n");
         assert_eq!(said(wall_tick(own, Some("internal"), 1, "x.jpg")), "remove wallpaper.screens.internal.ws2", "the same set as all screens");
         // What it writes reads back as the set it meant.
-        let (read, warn) = settings::parse_for_test(&settings::apply_for_test(text, &wall_tick(s, None, 0, "desk.png").unwrap()));
+        let (read, warn) = settings::parse::parse_for_test(&settings::edit::apply_for_test(text, &wall_tick(s, None, 0, "desk.png").unwrap()));
         assert!(warn.is_empty(), "{warn:?}");
         assert_eq!(read.wallpaper[0], Pick::Set(vec!["desk.png".into(), "forest.jpg".into()]));
     }
@@ -8792,7 +8792,7 @@ mod tests {
         let text = "[wallpaper]\nws2 = \"a.jpg\"\n[wallpaper.screens.internal]\nws1 = \"x.jpg\"\nws2 = \"b.jpg\"\n[wallpaper.screens.\"DEL-1\"]\nws2 = \"c.jpg\"\n[wallpaper.screens.\"LG-2\"]\nws2 = \"d.jpg\"\n";
         let present = ["internal".to_string(), "DEL-1".to_string()];
         let edit = wall_use_edit(loaded(text), &present, 1).expect("two screens to clear");
-        let (read, warn) = settings::parse_for_test(&settings::apply_for_test(text, &edit));
+        let (read, warn) = settings::parse::parse_for_test(&settings::edit::apply_for_test(text, &edit));
         assert!(warn.is_empty(), "{warn:?}");
         assert_eq!(read.wallpaper_screens.get("internal").map(|o| (o[0].clone(), o[1].clone())), Some((Some(pic("x.jpg")), None)), "row 1 kept");
         assert!(!read.wallpaper_screens.contains_key("DEL-1"), "its last key gone, with its table");
@@ -8810,7 +8810,7 @@ mod tests {
         let text = "[wallpaper]\nws2 = \"a.jpg\"\n[wallpaper.screens.internal]\nws1 = \"x.jpg\"\nws2 = \"b.jpg\"\nws3 = \"\"\n[wallpaper.screens.\"LG-2\"]\nws2 = \"d.jpg\"\nws3 = \"e.jpg\"\n";
         let reset = |k: usize| {
             let edit = wall_edit(loaded(text), None, k, &Pick::None).expect("something to take out");
-            let (read, warn) = settings::parse_for_test(&settings::apply_for_test(text, &edit));
+            let (read, warn) = settings::parse::parse_for_test(&settings::edit::apply_for_test(text, &edit));
             assert!(warn.is_empty(), "{warn:?}");
             read
         };
@@ -8883,10 +8883,10 @@ mod tests {
     fn a_workspace_time_back_at_the_default_leaves_no_key() {
         let text = "[wallpaper]\ninterval = 30\nws3 = \"beach\"\n";
         assert_eq!(said(wall_interval_edit(loaded(text), 2, true)), "at wallpaper.intervals.ws3 = 45");
-        let own = settings::apply_for_test(text, &wall_interval_edit(loaded(text), 2, true).unwrap());
+        let own = settings::edit::apply_for_test(text, &wall_interval_edit(loaded(text), 2, true).unwrap());
         assert_eq!(loaded(&own).interval_for(2), 45);
         assert_eq!(said(wall_interval_edit(loaded(&own), 2, false)), "remove wallpaper.intervals.ws3");
-        let back = settings::apply_for_test(&own, &wall_interval_edit(loaded(&own), 2, false).unwrap());
+        let back = settings::edit::apply_for_test(&own, &wall_interval_edit(loaded(&own), 2, false).unwrap());
         assert!(!back.contains("intervals"), "{back}");
         assert_eq!(said(wall_interval_edit(loaded("[wallpaper]\ninterval = 1440\n"), 0, true)), "none", "already 24 h");
     }
@@ -9114,20 +9114,20 @@ mod tests {
     #[test]
     fn app_rules_write_one_thing_each() {
         let file = "[apps]\n# mine\n";
-        let added = settings::apply_for_test(file, &app_edit("slack.exe", AppChange::Add(2, Some("DEL-1".into()))));
+        let added = settings::edit::apply_for_test(file, &app_edit("slack.exe", AppChange::Add(2, Some("DEL-1".into()))));
         // It goes in right under [apps]; the comment stays where it was, after it.
         assert_eq!(added, "[apps]\n\"slack.exe\" = { workspace = 3, screen = \"DEL-1\" }\n# mine\n");
-        let rule = |text: &str| settings::parse_for_test(text).0.apps;
-        let moved = settings::apply_for_test(&added, &app_edit("slack.exe", AppChange::Ws(0)));
+        let rule = |text: &str| settings::parse::parse_for_test(text).0.apps;
+        let moved = settings::edit::apply_for_test(&added, &app_edit("slack.exe", AppChange::Ws(0)));
         assert_eq!(rule(&moved), vec![("slack.exe".to_string(), settings::Rule { workspace: 0, screen: Some("DEL-1".into()) })]);
-        let other = settings::apply_for_test(&moved, &app_edit("slack.exe", AppChange::Screen(Some("internal".into()))));
+        let other = settings::edit::apply_for_test(&moved, &app_edit("slack.exe", AppChange::Screen(Some("internal".into()))));
         assert!(other.contains("screen = \"internal\""), "{other}");
-        let any = settings::apply_for_test(&other, &app_edit("slack.exe", AppChange::Screen(None)));
+        let any = settings::edit::apply_for_test(&other, &app_edit("slack.exe", AppChange::Screen(None)));
         assert_eq!(rule(&any), vec![("slack.exe".to_string(), settings::Rule { workspace: 0, screen: None })]);
-        let gone = settings::apply_for_test(&any, &app_edit("slack.exe", AppChange::Remove));
+        let gone = settings::edit::apply_for_test(&any, &app_edit("slack.exe", AppChange::Remove));
         assert_eq!(gone, file);
         // Added with no screen when its window's screen isn't plugged in.
-        let bare = settings::apply_for_test(file, &app_edit("spotify.exe", AppChange::Add(0, None)));
+        let bare = settings::edit::apply_for_test(file, &app_edit("spotify.exe", AppChange::Add(0, None)));
         assert!(bare.contains("\"spotify.exe\" = { workspace = 1 }\n"), "{bare}");
     }
 
@@ -9222,7 +9222,7 @@ mod tests {
     // taken out, since the file is yours. Nothing is written when the file holds it already.
     #[test]
     fn undo_writes_back_exactly_what_the_file_had() {
-        let k = |t: &str| settings::raw_for_test(t, &path_of("colors.ws2"));
+        let k = |t: &str| settings::edit::raw_for_test(t, &path_of("colors.ws2"));
         let saved = k("[colors]\nws2 = \"#92BF4F\"\n");
         assert_eq!(said(undo_edit("colors.ws2", None, saved.as_ref())), "remove colors.ws2");
         let typed = k("[colors]\nws2 = \"#DDB43C\" # mine\n");
@@ -9404,7 +9404,7 @@ mod tests {
     #[test]
     fn a_key_back_has_gets_the_clash_prompt() {
         let _one = SETTINGS.lock();
-        settings::use_for_test("workspaces = 4\n");
+        settings::store::use_for_test("workspaces = 4\n");
         let combo = settings::Combo { mods: settings::WIN, vk: 0x08 };
         let Plan::Ask(p) = plan_combo("shortcuts.finder", Some(0), combo) else { panic!("took back's key without asking") };
         assert_eq!(p.title, "Win Backspace is already in use");
@@ -9416,7 +9416,7 @@ mod tests {
     #[test]
     fn a_click_inside_a_tile_never_removes_a_workspace() {
         let _one = SETTINGS.lock();
-        settings::use_for_test("workspaces = 4\n");
+        settings::store::use_for_test("workspaces = 4\n");
         let mut win = fake_win(ui::LIGHT, 1.0);
         win.hover = Some(Ctl::WsTile(0, 3));
         let out = measure(&win);
@@ -9436,7 +9436,7 @@ mod tests {
     #[test]
     fn a_click_on_a_menu_line_lands_on_that_line() {
         let _one = SETTINGS.lock();
-        settings::use_for_test("workspaces = 4
+        settings::store::use_for_test("workspaces = 4
 ");
         let mut win = fake_win(ui::LIGHT, 1.0);
         let out = measure(&win);
@@ -9477,7 +9477,7 @@ mod tests {
     #[test]
     fn overview_tiles_past_your_count_open_nothing() {
         let _one = SETTINGS.lock();
-        settings::use_for_test("workspaces = 2\n");
+        settings::store::use_for_test("workspaces = 2\n");
         let mut win = fake_win(ui::LIGHT, 1.0);
         let out = measure(&win);
         take(&mut win, out);
@@ -9565,55 +9565,55 @@ ws3 = \"Research\"
 ";
         let states: [(&str, Option<Section>, Setup); 71] = [
             ("wallpaper-alone-own", Some(Section::Workspaces), |w| {
-                settings::use_for_test("[wallpaper]\nws1 = \"forest.jpg\"\nws2 = [\"desk.png\", \"dunes.jpg\"]\n[wallpaper.screens.internal]\nws2 = \"forest.jpg\"\n");
+                settings::store::use_for_test("[wallpaper]\nws1 = \"forest.jpg\"\nws2 = [\"desk.png\", \"dunes.jpg\"]\n[wallpaper.screens.internal]\nws2 = \"forest.jpg\"\n");
                 w.pics.view.present.truncate(1);
                 w.pics.view.waiting.clear();
                 w.scroll = DOWN_TO_WALL;
             }),
             ("wallpaper-unused", Some(Section::Workspaces), |w| {
-                settings::use_for_test("[wallpaper]\nws1 = \"forest.jpg\"\nws2 = [\"desk.png\", \"dunes.jpg\"]\n[wallpaper.screens.internal]\nws2 = \"forest.jpg\"\n[wallpaper.screens.\"DEL-A0F5-1234\"]\nws1 = \"city.jpg\"\nws2 = \"city.jpg\"\n");
+                settings::store::use_for_test("[wallpaper]\nws1 = \"forest.jpg\"\nws2 = [\"desk.png\", \"dunes.jpg\"]\n[wallpaper.screens.internal]\nws2 = \"forest.jpg\"\n[wallpaper.screens.\"DEL-A0F5-1234\"]\nws1 = \"city.jpg\"\nws2 = \"city.jpg\"\n");
                 w.scroll = DOWN_TO_WALL;
             }),
             ("wallpaper-slides", Some(Section::Workspaces), |w| {
-                settings::use_for_test(SLIDES);
+                settings::store::use_for_test(SLIDES);
                 slides(w);
                 w.scroll = DOWN_TO_WALL;
             }),
             ("wallpaper-slides-end", Some(Section::Workspaces), |w| {
-                settings::use_for_test(SLIDES);
+                settings::store::use_for_test(SLIDES);
                 slides(w);
                 w.focus = Some(Ctl::Stepper("wallpaper.interval"));
                 w.scroll = DOWN_TO_WALL + 330.0;
             }),
             ("wallpaper-slides-folders", Some(Section::Workspaces), |w| {
-                settings::use_for_test(SLIDES);
+                settings::store::use_for_test(SLIDES);
                 slides(w);
                 w.wall_files = FILES.map(String::from).to_vec();
                 w.wall_dirs = DIRS.map(|(f, n)| (f.to_string(), n)).to_vec();
                 w.scroll = DOWN_TO_WALL;
             }),
             ("wallpaper-slides-tick", Some(Section::Workspaces), |w| {
-                settings::use_for_test(SLIDES);
+                settings::store::use_for_test(SLIDES);
                 slides(w);
                 w.wall_files = FILES.map(String::from).to_vec();
                 w.wall_dirs = DIRS.map(|(f, n)| (f.to_string(), n)).to_vec();
                 w.scroll = DOWN_TO_WALL;
             }),
             ("wallpaper-slides-screen", Some(Section::Workspaces), |w| {
-                settings::use_for_test(SLIDES);
+                settings::store::use_for_test(SLIDES);
                 slides(w);
                 portrait(w);
                 w.scroll = DOWN_TO_WALL;
             }),
             ("wallpaper-slides-gone", Some(Section::Workspaces), |w| {
-                settings::use_for_test(SLIDES);
+                settings::store::use_for_test(SLIDES);
                 slides(w);
                 w.pics.view.waiting = vec![crate::ws::Waiting { id: "LG-2".into(), name: "LG 27UL850".into(), windows_name: "LG 27UL850".into(), windows: vec![] }];
                 w.wall_screen = Some("LG-2".into());
                 w.scroll = DOWN_TO_WALL;
             }),
             ("wallpaper-slides-cant", Some(Section::Workspaces), |w| {
-                settings::use_for_test("workspaces = 5
+                settings::store::use_for_test("workspaces = 5
 [wallpaper]
 dim = 30
 ws1 = \"beach\"
@@ -9629,45 +9629,45 @@ ws3 = 10
                 w.scroll = DOWN_TO_WALL;
             }),
             ("wallpaper", Some(Section::Workspaces), |w| {
-                settings::use_for_test(WALL);
+                settings::store::use_for_test(WALL);
                 w.scroll = DOWN_TO_WALL;
             }),
             ("wallpaper-screen", Some(Section::Workspaces), |w| {
-                settings::use_for_test(WALL);
+                settings::store::use_for_test(WALL);
                 portrait(w);
                 w.scroll = DOWN_TO_WALL;
             }),
             ("wallpaper-menu", Some(Section::Workspaces), |w| {
-                settings::use_for_test(WALL);
+                settings::store::use_for_test(WALL);
                 w.wall_files = FILES.map(String::from).to_vec();
                 w.scroll = DOWN_TO_WALL;
             }),
             ("wallpaper-menu-screen", Some(Section::Workspaces), |w| {
-                settings::use_for_test(WALL);
+                settings::store::use_for_test(WALL);
                 portrait(w);
                 w.wall_files = FILES.map(String::from).to_vec();
                 w.scroll = DOWN_TO_WALL;
             }),
             ("wallpaper-empty", Some(Section::Workspaces), |w| w.scroll = DOWN_TO_WALL),
             ("wallpaper-many", Some(Section::Workspaces), |w| {
-                settings::use_for_test(WALL);
+                settings::store::use_for_test(WALL);
                 let many = ["alps.jpg", "aurora.png", "beach 2.jpg", "canyon.jpg", "city.jpg", "desk.png", "dunes.jpg", "fjord.jpg", "forest.jpg", "glacier.png", "harbor.jpg", "lake at dawn.PNG", "meadow.jpg", "moon.png"];
                 w.wall_files = many.map(String::from).to_vec();
                 w.wall_top = 3;
                 w.scroll = DOWN_TO_WALL;
             }),
             ("wallpaper-cant-show", Some(Section::Workspaces), |w| {
-                settings::use_for_test(WALL);
+                settings::store::use_for_test(WALL);
                 w.pics.wall_problems = vec![("forest.jpg".into(), crate::wallpaper::Problem::Missing), ("desk.png".into(), crate::wallpaper::Problem::Undecodable)];
                 w.scroll = DOWN_TO_WALL;
             }),
             ("wallpaper-cant-draw", Some(Section::Workspaces), |w| {
-                settings::use_for_test(WALL);
+                settings::store::use_for_test(WALL);
                 w.pics.wall_failed = true;
                 w.scroll = DOWN_TO_WALL;
             }),
             ("wallpaper-fit", Some(Section::Workspaces), |w| {
-                settings::use_for_test("fastest = true
+                settings::store::use_for_test("fastest = true
 [wallpaper]
 fit = \"center\"
 transition = \"fade\"
@@ -9678,29 +9678,29 @@ ws2 = \"desk.png\"
                 w.scroll = DOWN_TO_WALL + 120.0;
             }),
             ("wallpaper-chooser", Some(Section::Workspaces), |w| {
-                settings::use_for_test(WALL);
+                settings::store::use_for_test(WALL);
                 w.pics.view.waiting = vec![crate::ws::Waiting { id: "LG-2".into(), name: "LG 27UL850".into(), windows_name: "LG 27UL850".into(), windows: vec![] }];
                 w.scroll = DOWN_TO_WALL;
             }),
             ("wallpaper-one", Some(Section::Workspaces), |w| {
-                settings::use_for_test(WALL);
+                settings::store::use_for_test(WALL);
                 w.pics.screens.truncate(1);
                 w.pics.view.present.truncate(1);
                 w.pics.view.names.truncate(1);
                 w.scroll = DOWN_TO_WALL - 200.0;
             }),
             ("apps-add-many", Some(Section::Apps), |w| {
-                settings::use_for_test(APPS);
+                settings::store::use_for_test(APPS);
                 fake_apps(w, false);
                 let more: Vec<crate::apps::Seen> = (1..=27).map(|i| crate::apps::Seen { key: format!("app{i}.exe"), name: format!("App number {i}"), ..w.pics.apps[1].clone() }).collect();
                 w.pics.apps.extend(more);
             }),
             ("apps", Some(Section::Apps), |w| {
-                settings::use_for_test(APPS);
+                settings::store::use_for_test(APPS);
                 fake_apps(w, false);
             }),
             ("apps-notes", Some(Section::Apps), |w| {
-                settings::use_for_test("[apps]
+                settings::store::use_for_test("[apps]
 \"spotify.exe\" = { workspace = 6 }
 \"ms-teams.exe\" = { workspace = 2, screen = \"LG-2\" }
 \"notepad.exe\" = { workspace = 1, screen = \"GSM-5B7F-12345\" }
@@ -9711,37 +9711,37 @@ ws2 = \"desk.png\"
                 w.hover = Some(Ctl::AppX(3));
             }),
             ("apps-add", Some(Section::Apps), |w| {
-                settings::use_for_test(APPS);
+                settings::store::use_for_test(APPS);
                 fake_apps(w, false);
             }),
             ("apps-add-none", Some(Section::Apps), |w| {
-                settings::use_for_test(APPS);
+                settings::store::use_for_test(APPS);
                 fake_apps(w, true);
             }),
             ("apps-ws", Some(Section::Apps), |w| {
-                settings::use_for_test(APPS);
+                settings::store::use_for_test(APPS);
                 fake_apps(w, false);
             }),
             ("apps-screen", Some(Section::Apps), |w| {
-                settings::use_for_test(APPS);
+                settings::store::use_for_test(APPS);
                 fake_apps(w, false);
                 w.pics.view.waiting = vec![crate::ws::Waiting { id: "LG-2".into(), name: "LG 27UL850".into(), windows_name: "LG 27UL850".into(), windows: vec![] }];
             }),
             ("apps-empty", Some(Section::Apps), |w| fake_apps(w, false)),
             ("colors", Some(Section::Colors), |_| {}),
             ("colors-own", Some(Section::Colors), |w| {
-                settings::use_for_test("[colors]\naccent = \"#E0457B\"\nws2 = \"#FFF4B0\"\nws3 = \"blue\"\n");
+                settings::store::use_for_test("[colors]\naccent = \"#E0457B\"\nws2 = \"#FFF4B0\"\nws3 = \"blue\"\n");
                 w.focus = Some(Ctl::Hex(ACCENT));
                 w.hexes = vec![Hex { key: ACCENT, digits: "2E8B5".into(), caret: 5, anchor: 5, line: None }];
                 w.own = Some(0x2E8B57);
             }),
             ("place", Some(Section::Indicator), |w| {
-                settings::use_for_test("[indicator]\nspot = \"top-right\"\n");
+                settings::store::use_for_test("[indicator]\nspot = \"top-right\"\n");
                 w.scroll = 470.0;
                 w.focus = Some(Ctl::Picture);
             }),
             ("place-screen", Some(Section::Indicator), |w| {
-                settings::use_for_test("[indicator]\nspot = \"top-right\"\n[indicator.screens.\"DEL-A0F5-1234\"]\nspot = \"custom\"\nx = 70\ny = 120\n");
+                settings::store::use_for_test("[indicator]\nspot = \"top-right\"\n[indicator.screens.\"DEL-A0F5-1234\"]\nspot = \"custom\"\nx = 70\ny = 120\n");
                 w.screen = Some("DEL-A0F5-1234".into());
                 w.scroll = 470.0;
             }),
@@ -9762,10 +9762,10 @@ ws2 = \"desk.png\"
             ("indicator", Some(Section::Indicator), |_| {}),
             ("attention", Some(Section::Attention), |_| {}),
             ("attention-own", Some(Section::Attention), |w| {
-                settings::use_for_test("[attention]\ntext = \"{{AppName}} has something for you\"\n[indicator]\nstyle = \"dots\"\n");
+                settings::store::use_for_test("[attention]\ntext = \"{{AppName}} has something for you\"\n[indicator]\nstyle = \"dots\"\n");
                 w.focus = Some(Ctl::Words);
             }),
-            ("attention-off", Some(Section::Attention), |_| settings::use_for_test("[attention]\nenabled = false\n")),
+            ("attention-off", Some(Section::Attention), |_| settings::store::use_for_test("[attention]\nenabled = false\n")),
             ("overview", Some(Section::Overview), |w| w.focus = Some(Ctl::Stepper("overview.fade_ms"))),
             ("motion", Some(Section::Motion), |w| w.focus = Some(Ctl::Toggle("fastest"))),
             ("touchpad", Some(Section::Touchpad), |_| {}),
@@ -9775,7 +9775,7 @@ ws2 = \"desk.png\"
                 w.kb = false;
             }),
             ("overview-slots", Some(Section::Overview), |w| {
-                settings::use_for_test("workspaces = 3\n");
+                settings::store::use_for_test("workspaces = 3\n");
                 w.hover = Some(Ctl::ShowTile(0, 1));
                 w.kb = false;
             }),
@@ -9796,7 +9796,7 @@ ws2 = \"desk.png\"
                 w.pick = Some(p);
             }),
             ("pick-accent", Some(Section::Colors), |w| {
-                settings::use_for_test("[colors]\naccent = \"#E0457B\"\n");
+                settings::store::use_for_test("[colors]\naccent = \"#E0457B\"\n");
                 let mut p = picking(ACCENT, Anchor::Swatch(ACCENT), 0x2E8B57);
                 p.focus = Stop::Done;
                 w.pick = Some(p);
@@ -9831,53 +9831,53 @@ ws2 = \"desk.png\"
             }),
             // Spec 0023: the Names card in each of its states, then the Indicator's.
             ("names", Some(Section::Workspaces), |w| {
-                settings::use_for_test(NAMES);
+                settings::store::use_for_test(NAMES);
                 w.scroll = DOWN_TO_NAMES;
             }),
             ("names-empty", Some(Section::Workspaces), |w| w.scroll = DOWN_TO_NAMES),
             ("names-screen", Some(Section::Workspaces), |w| {
-                settings::use_for_test(NAMES);
+                settings::store::use_for_test(NAMES);
                 w.pics.view.present[0].name = "Left".into();
                 w.names_screen = Some("internal".into());
                 w.scroll = DOWN_TO_NAMES;
             }),
             ("names-follow", Some(Section::Workspaces), |w| {
-                settings::use_for_test(NAMES);
+                settings::store::use_for_test(NAMES);
                 w.pics.view.present[0].name = "Left".into();
                 (w.names_screen, w.focus) = (Some("internal".into()), Some(Ctl::Name(Nm::Ws(0))));
                 w.scroll = DOWN_TO_NAMES;
             }),
             ("names-own-emptied", Some(Section::Workspaces), |w| {
-                settings::use_for_test(NAMES);
+                settings::store::use_for_test(NAMES);
                 w.pics.view.present[0].name = "Left".into();
                 (w.names_screen, w.focus, w.typed) = (Some("internal".into()), Some(Ctl::Name(Nm::Ws(1))), Some(String::new()));
                 w.scroll = DOWN_TO_NAMES;
             }),
             ("names-all-emptied", Some(Section::Workspaces), |w| {
-                settings::use_for_test(NAMES);
+                settings::store::use_for_test(NAMES);
                 (w.focus, w.typed) = (Some(Ctl::Name(Nm::Ws(0))), Some(String::new()));
                 w.scroll = DOWN_TO_NAMES;
             }),
             ("names-typing", Some(Section::Workspaces), |w| {
-                settings::use_for_test(NAMES);
+                settings::store::use_for_test(NAMES);
                 (w.focus, w.typed) = (Some(Ctl::Name(Nm::Ws(2))), Some("Ideas 💡".into()));
                 w.scroll = DOWN_TO_NAMES;
             }),
             ("names-failed", Some(Section::Workspaces), |w| {
-                settings::use_for_test(NAMES);
+                settings::store::use_for_test(NAMES);
                 w.unsaved = vec![(None, Nm::Ws(1), "Codex".into())];
                 w.error = Some(("Workspace 2 name".into(), "os error 32".into()));
                 w.scroll = DOWN_TO_NAMES;
             }),
             ("names-one", Some(Section::Workspaces), |w| {
-                settings::use_for_test(NAMES);
+                settings::store::use_for_test(NAMES);
                 w.pics.screens.truncate(1);
                 w.pics.view.present.truncate(1);
                 w.pics.view.names.truncate(1);
                 w.scroll = DOWN_TO_NAMES - 120.0;
             }),
             ("names-menu", Some(Section::Workspaces), |w| {
-                settings::use_for_test("[names.screens.internal]
+                settings::store::use_for_test("[names.screens.internal]
 screen = \"Desk\"
 [names.screens.\"DEL-A0F5-1234\"]
 screen = \"Desk\"
@@ -9889,31 +9889,31 @@ screen = \"Desk\"
                 w.scroll = DOWN_TO_NAMES;
             }),
             ("names-readonly", Some(Section::Workspaces), |w| {
-                settings::use_for_test(NAMES);
-                settings::broken_for_test("expected `=`, found newline at line 3 column 9");
+                settings::store::use_for_test(NAMES);
+                settings::store::broken_for_test("expected `=`, found newline at line 3 column 9");
                 w.names_screen = Some("internal".into());
                 w.scroll = DOWN_TO_NAMES;
             }),
-            ("indicator-names", Some(Section::Indicator), |_| settings::use_for_test(NAMES)),
+            ("indicator-names", Some(Section::Indicator), |_| settings::store::use_for_test(NAMES)),
             ("indicator-no-screen", Some(Section::Indicator), |w| {
-                settings::use_for_test(&format!("{NAMES}[indicator]
+                settings::store::use_for_test(&format!("{NAMES}[indicator]
 screen_name = false
 "));
                 w.scroll = 200.0;
             }),
             ("indicator-dots", Some(Section::Indicator), |w| {
-                settings::use_for_test("[indicator]
+                settings::store::use_for_test("[indicator]
 style = \"dots\"
 ");
                 w.scroll = 200.0;
             }),
             ("indicator-off", Some(Section::Indicator), |w| {
-                settings::use_for_test("[indicator]
+                settings::store::use_for_test("[indicator]
 enabled = false
 ");
                 w.scroll = 200.0;
             }),
-            ("attention-names", Some(Section::Attention), |_| settings::use_for_test(NAMES)),
+            ("attention-names", Some(Section::Attention), |_| settings::store::use_for_test(NAMES)),
         ];
         for (tname, theme, scale) in &runs {
             for (sname, sec, setup) in &states {
@@ -9922,7 +9922,7 @@ enabled = false
                     continue;
                 }
                 let mut win = fake_win(*theme, *scale);
-                settings::use_for_test("");
+                settings::store::use_for_test("");
                 setup(&mut win);
                 fake_wall(&win);
                 let out = measure(&win);

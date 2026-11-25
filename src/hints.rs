@@ -20,7 +20,7 @@ use windows::Win32::{
 };
 use windows::core::{HSTRING, PCWSTR, w};
 
-use crate::settings::{self, Action, Combo, Edit, Motion, Owner, Settings};
+use crate::settings::{self, Action, Combo, Motion, Owner, Settings, edit::Edit};
 use crate::setup::{self, GaveBack, Row as PadRow, State};
 use crate::ui::{self, Bx, Canvas, F, Theme, buffered, dark_title, mix, op};
 use crate::uia::{self, Node, Tree};
@@ -823,7 +823,7 @@ fn scroll_by(dy: f32) {
 }
 
 /// Settings or Windows' touchpad state changed: show it at once, if the window is open
-/// (settings::reload, the touchpad thread, getting active).
+/// (settings::store::reload, the touchpad thread, getting active).
 pub fn refresh() {
     if hwnd().is_none() {
         return;
@@ -1011,7 +1011,7 @@ fn focus_button(id: i32) {
 
 /// Saves an edit; a failure shows in the footer until the next action.
 fn save(edit: Edit) {
-    let failed = settings::write(edit).err();
+    let failed = settings::edit::write(edit).err();
     let _ = set(|w| w.error = failed);
     refresh();
     relayout(None);

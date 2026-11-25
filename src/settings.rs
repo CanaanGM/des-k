@@ -11,23 +11,12 @@ use std::sync::Arc;
 use toml::{Table, Value};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
-mod edit;
-mod parse;
-mod store;
+pub(crate) mod edit;
+pub(crate) mod parse;
+pub(crate) mod store;
 
 use parse::{NAMED_KEYS, action};
 use store::{CURRENT, Loaded};
-
-// Until the callers name the new paths, in the commit after this move (spec 0035 AC-4).
-pub(crate) use edit::{Edit, app_key_in_file, raw_at, write};
-#[cfg(test)]
-pub(crate) use edit::{apply_for_test, edit_for_test, raw_for_test};
-pub(crate) use parse::{Problem, clean_name, is_folder_name, is_picture_name, name_order};
-#[cfg(test)]
-pub(crate) use parse::parse_for_test;
-pub(crate) use store::{Change, load, parse_error, path, problems, watch};
-#[cfg(test)]
-pub(crate) use store::{broken_for_test, use_for_test};
 
 pub const WIN: u8 = 1;
 pub const CTRL: u8 = 2;

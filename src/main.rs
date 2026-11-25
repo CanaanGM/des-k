@@ -182,7 +182,7 @@ fn main() -> windows::core::Result<()> {
     unsafe { let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2); }
     unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok()? };
     indicator::init();
-    settings::load(); // before anything that reads it: ws, keys, the indicator
+    settings::store::load(); // before anything that reads it: ws, keys, the indicator
     // Lets you try a Windows des-k does not know on your own screens (spec 0030 AC-14).
     #[cfg(debug_assertions)]
     if std::env::args().any(|a| a == "--pretend-unknown-windows") {
@@ -225,7 +225,7 @@ fn main() -> windows::core::Result<()> {
     let first_run = settings::get().first_run_seen != Some(true);
     if first_run {
         welcome::show();
-        if let Err(why) = settings::write(settings::Edit::Value("first_run_seen", true.into())) {
+        if let Err(why) = settings::edit::write(settings::edit::Edit::Value("first_run_seen", true.into())) {
             error!("first run: could not write first_run_seen = true, so it opens again at the next start ({why})");
         }
     }
@@ -364,7 +364,7 @@ fn main() -> windows::core::Result<()> {
                 if ui::refresh() {
                     ui::repaint_all();
                 }
-                settings::watch();
+                settings::store::watch();
                 ws::check_screens(true);
                 ws::resync();
                 tray::warn_if_broken();

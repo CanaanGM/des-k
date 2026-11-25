@@ -21,7 +21,7 @@ use windows::Win32::{
 };
 use windows::core::{PCWSTR, w};
 
-use crate::settings::{self, Edit, Settings};
+use crate::settings::{self, Settings, edit::Edit};
 use crate::settings_page::{self as sp, Section};
 use crate::ui::{self, Bx, Canvas, F, Fonts, Theme, buffered, dark_title, mix, op, theme};
 use crate::update::{self, Version};
@@ -209,7 +209,7 @@ fn open_due(news: Vec<(Version, &'static [Card])>, ours: Version) {
 }
 
 fn remember(ours: Version) {
-    if let Err(why) = settings::write(Edit::Value("whats_new_seen", ours.to_string().into())) {
+    if let Err(why) = settings::edit::write(Edit::Value("whats_new_seen", ours.to_string().into())) {
         error!("what's new: could not write whats_new_seen = \"{ours}\", so What's new opens again at the next start ({why})");
     }
 }

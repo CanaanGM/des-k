@@ -1700,7 +1700,7 @@ fn in_order(mut all: Vec<(String, RECT)>) -> Vec<String> {
 fn moves(s: &State, count: usize) -> Vec<String> {
     let order = screen_order();
     let mut out = Vec::new();
-    // Logged (settings::apply), so a screen not plugged in goes by Windows' name, never a rename.
+    // Logged (settings::store::apply), so a screen not plugged in goes by Windows' name, never a rename.
     for m in moved(s, count, |s, id| s.monitors.get(id).map_or_else(|| id.to_string(), |m| m.name.clone())).into_iter().filter(|m| m.windows > 0) {
         let name = m.device.and_then(|d| order.iter().position(|o| *o == d)).map_or(m.name, |i| format!("Screen {}", i + 1));
         let from: Vec<String> = m.from.iter().map(|ws| (ws + 1).to_string()).collect();
@@ -1759,7 +1759,7 @@ fn moved(s: &State, count: usize, name: fn(&State, &str) -> String) -> Vec<Moved
 /// moves the windows of every removed workspace onto the new last one; a screen showing a
 /// removed one switches to the new last one with all of them in view, elsewhere they stay
 /// hidden. Returns `removal`'s lines, as they were before the move. Main thread, from
-/// `settings::apply` only, never under `state()`.
+/// `settings::store::apply` only, never under `state()`.
 pub fn resize(count: usize) -> Vec<String> {
     let mut s = state();
     let lines = moves(&s, count);
@@ -3706,7 +3706,7 @@ mod tests {
         let at = |id: &str, left| Screen { device: String::new(), id: id.into(), name: "DELL U2720Q".into(), area: rect(left, 0, left + 10, 10), full: rect(left, 0, left + 10, 10), primary: false };
         let s = State { present: vec![at("DEL-4123#1", 0), at("DEL-4123#2", 100)], ..State::default() };
         let labels = |file: &str| {
-            let set = settings::parse_for_test(file).0;
+            let set = settings::parse::parse_for_test(file).0;
             (label_by(&set, &s, "DEL-4123#1"), label_by(&set, &s, "DEL-4123#2"))
         };
         assert_eq!(labels(""), ("DELL U2720Q #1".into(), "DELL U2720Q #2".into()));

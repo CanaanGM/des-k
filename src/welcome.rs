@@ -1,6 +1,6 @@
 // The first run (spec 0017, 0017-first-run.md; replaces spec 0011's welcome screen where they
 // differ): five steps in one window, Try it, Shortcuts, Behavior, Touchpad and Done, where every
-// setting it shows changes on the spot through settings::write and is in effect at once. Drawn
+// setting it shows changes on the spot through settings::edit::write and is in effect at once. Drawn
 // to the approved design (pdesk-design restart/first-run-r11.html, with the More rows of
 // first-run-r15.html): Windows' title bar, a thin progress line, the step, and a footer band.
 // One drawn window with its own focus list and no child controls; the gesture picker's menu is
@@ -24,7 +24,7 @@ use windows::Win32::{
 };
 use windows::core::{PCWSTR, w};
 
-use crate::settings::{self, ALT, Action, CTRL, Combo, Edit, Motion, Owner, SHIFT, Settings, WIN};
+use crate::settings::{self, ALT, Action, CTRL, Combo, Motion, Owner, SHIFT, Settings, WIN, edit::Edit};
 use crate::settings_page::{self as sp, Does, Kind, Menu, Plan, Prompt, WinKey};
 use crate::setup::{self, GaveBack, Row as PadRow, State as PadState, Wrote};
 use crate::ui::{self, Bx, Canvas, F, Fonts, Theme, buffered, dark_title, mix, op, theme};
@@ -247,7 +247,7 @@ struct Win {
     tree: Tree,
 }
 
-// Never hold the borrow across a call that comes back here: settings::write reloads, and the
+// Never hold the borrow across a call that comes back here: settings::edit::write reloads, and the
 // reload calls refresh().
 fn get<R>(f: impl FnOnce(&Win) -> R) -> Option<R> {
     ui::get(&FIRST, "first run get", f)
@@ -2185,7 +2185,7 @@ fn save(key: &'static str, v: i64) {
 }
 
 fn commit(edit: Edit, title: &str) {
-    match settings::write(edit) {
+    match settings::edit::write(edit) {
         Ok(()) => {
             let _ = set(|w| w.error = None);
         }
