@@ -272,6 +272,7 @@ impl Settings {
             ("shortcuts.overview", list(&self.overview)),
             ("shortcuts.pin", list(&self.pin)),
             ("shortcuts.hints", list(&self.hints)),
+            ("shortcuts.pause", list(&self.pause)),
             ("indicator.enabled", self.indicator_enabled.to_string()),
             ("indicator.style", word(STYLES.iter().find(|(_, v)| *v == self.indicator_style).map(|(w, _)| *w))),
             ("indicator.screen_name", self.indicator_screen_name.to_string()),

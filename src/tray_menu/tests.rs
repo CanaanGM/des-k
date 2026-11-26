@@ -32,7 +32,7 @@ fn a_chip_line_cuts_the_workspace_name_before_the_screen() {
 }
 
 fn menu(screens: Vec<TrayScreen>) -> Menu {
-    Menu { version: "0.3.0".into(), screens, broken: false, hints_key: None, log: true, check: Check::Ready, quit: Quit::Plain }
+    Menu { version: "0.3.0".into(), screens, broken: false, hints_key: None, paused: false, swipes_off: false, log: true, check: Check::Ready, quit: Quit::Plain }
 }
 
 /// Screens on a grid of 16 × 9 units, like the design's: (x, y, w, h, workspace number).
@@ -76,7 +76,7 @@ fn the_items_say_what_they_do_now() {
     m.check = Check::Busy;
     m.hints_key = Some(Combo { mods: WIN | CTRL, vk: b'H' as u16 });
     let items = m.items();
-    assert_eq!(items.iter().map(|i| i.id).collect::<Vec<_>>(), [Id::Hints, Id::Settings, Id::Log, Id::Update, Id::Quit]);
+    assert_eq!(items.iter().map(|i| i.id).collect::<Vec<_>>(), [Id::Hints, Id::Settings, Id::Log, Id::Update, Id::Pause, Id::Quit]);
     assert_eq!((items[2].on, items[3].on, items[3].label.as_str()), (false, false, "Checking for updates…"));
     assert_eq!(items[0].keys, ["Win", "Ctrl", "H"]);
     m.check = Check::Newer(Version(0, 4, 0));
@@ -106,7 +106,22 @@ fn the_items_say_what_they_do_now() {
     m.check = Check::Failed(Fail::Timeout);
     assert_eq!(m.items()[3].line, "Couldn't check: GitHub did not answer in time.");
     m.quit = Quit::Stops;
-    assert!(m.items()[4].line.contains("no gestures until you turn Windows' on"));
+    assert!(m.items()[5].line.contains("no gestures until you turn Windows' on"));
+}
+
+// Spec 0039 AC-1, AC-5: one item pauses and resumes, saying which it does now, and a paused des-k
+// with Windows' gestures off says why a swipe does nothing, since nothing else on screen does.
+#[test]
+fn the_pause_item_says_pause_or_resume() {
+    let mut m = menu(vec![]);
+    let it = &m.items()[4];
+    assert_eq!((it.id, it.label.as_str(), it.line.as_str(), it.on), (Id::Pause, "Pause des-k", "", true));
+    m.paused = true;
+    assert_eq!((m.items()[4].label.as_str(), m.items()[4].line.as_str()), ("Resume des-k", ""));
+    m.swipes_off = true;
+    assert_eq!(m.items()[4].line, "Swipes do nothing until you resume");
+    m.paused = false;
+    assert_eq!(m.items()[4].line, "", "running, swipes work: no line");
 }
 
 fn twelve_mixed() -> Vec<TrayScreen> {
@@ -156,6 +171,11 @@ fn render() {
         }),
         ("quit-saved", two(), Some(0), |s| {
             s.menu.quit = Quit::Saved;
+            s.hot = Some(5);
+        }),
+        ("paused", two(), Some(0), |s| {
+            s.menu.paused = true;
+            s.menu.swipes_off = true;
             s.hot = Some(4);
         }),
         ("quit-stops", two(), Some(0), |s| s.menu.quit = Quit::Stops),

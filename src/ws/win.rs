@@ -244,3 +244,11 @@ pub(super) fn get_tick_count() -> u32 {
     // SAFETY: takes nothing and only reads the clock.
     unsafe { GetTickCount() }
 }
+
+/// The tick count of your last key press, click or mouse move, from any program.
+pub(super) fn last_input() -> Option<u32> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+    let mut info = LASTINPUTINFO { cbSize: size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+    // SAFETY: info is a live local with its size set, as the call requires; it is only written.
+    unsafe { GetLastInputInfo(&mut info) }.as_bool().then_some(info.dwTime)
+}

@@ -275,6 +275,7 @@ pub struct Settings {
     pub overview: Vec<Combo>, // opens the workspace overview (spec 0010)
     pub pin: Vec<Combo>,      // keeps the focused window on every workspace (spec 0014)
     pub hints: Vec<Combo>,    // opens the Shortcut hints window (spec 0017); none by default
+    pub pause: Vec<Combo>,    // pauses des-k, and resumes it (spec 0039); none by default
     pub indicator_enabled: bool,
     pub indicator_style: Style,
     pub indicator_pos: Pos,
@@ -398,6 +399,7 @@ impl Default for Settings {
             overview: vec![Combo { mods: WIN, vk: VK_TAB.0 }],
             pin: vec![Combo { mods: WIN | CTRL, vk: b'U' as u16 }],
             hints: vec![],
+            pause: vec![],
             indicator_enabled: true,
             indicator_style: Style::Card,
             indicator_pos: Pos::default(),
@@ -468,6 +470,9 @@ overview = ["Win+Tab"]
 pin = ["Win+Ctrl+U"]
 # Opens the Shortcut hints window: every des-k shortcut and gesture, as set now. [] is no key.
 hints = []
+# Pauses des-k: every hidden window comes back and Windows gets its own shortcuts back,
+# until you press it again or pick Resume des-k in the tray menu. [] is no key.
+pause = []
 
 [indicator]
 enabled = true
@@ -675,7 +680,7 @@ pub fn savable(vk: u16) -> bool {
 }
 
 /// The shortcut lists in the order the hook tries them, then the digit sets (keys::shortcut).
-pub const LISTS: [&str; 11] = ["previous", "next", "back", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "finder", "overview", "pin", "hints"];
+pub const LISTS: [&str; 12] = ["previous", "next", "back", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "finder", "overview", "pin", "hints", "pause"];
 pub const SETS: [&str; 3] = ["jump", "send_to", "send_to_stay"];
 
 /// Who already uses a combo the page is about to save (spec 0012 AC-9).
@@ -706,6 +711,7 @@ impl Settings {
             "overview" => &self.overview,
             "pin" => &self.pin,
             "hints" => &self.hints,
+            "pause" => &self.pause,
             _ => &[],
         }
     }

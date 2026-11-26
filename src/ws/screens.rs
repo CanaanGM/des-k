@@ -448,7 +448,7 @@ pub(super) fn check_in(s: &mut State, present: Vec<Screen>, tick: bool) -> Vec<N
     let forget: Vec<String> = s
         .monitors
         .iter()
-        .filter(|(id, m)| m.device.is_none() && !now.contains(*id) && !pending.contains(*id) && !s.away.values().any(|a| &a.home == *id))
+        .filter(|(id, m)| m.device.is_none() && !now.contains(*id) && !pending.contains(*id) && !s.away.values().any(|a| &a.home == *id) && m.held.iter().all(Vec::is_empty))
         .map(|(id, _)| id.clone())
         .collect();
     for id in forget {
@@ -527,6 +527,19 @@ pub(super) fn claims(s: &mut State, now: &HashSet<String>) -> bool {
             any = true;
         }
     }
+    // A held window you moved to another screen while paused stays where you put it after the
+    // resume, by the same rule (spec 0039 AC-12).
+    let held: Vec<(isize, String)> = s.monitors.iter().flat_map(|(id, m)| m.held.iter().flatten().map(move |&(raw, _)| (raw, id.clone()))).collect();
+    for (raw, home) in held {
+        let (Some((prev, _)), Some(cur)) = (s.spots.get(&raw).cloned(), screen_now(s, raw)) else { continue };
+        if is_claim(&prev, &cur, &home, &s.seen, now) {
+            for m in s.monitors.values_mut() {
+                m.held.iter_mut().for_each(|l| l.retain(|&(w, _)| w != raw));
+            }
+            info!("{} stays in view after the resume: you moved it to another screen", who(HWND(raw as *mut _)));
+            any = true;
+        }
+    }
     any
 }
 
@@ -535,6 +548,8 @@ pub(super) fn claims(s: &mut State, now: &HashSet<String>) -> bool {
 pub(super) fn mark_away(s: &mut State, id: &str) -> usize {
     let Some(m) = s.monitors.get(id) else { return 0 };
     let hidden: HashSet<isize> = m.hidden.iter().flatten().copied().collect();
+    // A held window belongs to its held workspace, not the one shown (spec 0039 AC-12).
+    let held: HashMap<isize, usize> = m.held.iter().enumerate().flat_map(|(ws, l)| l.iter().map(move |&(raw, _)| (raw, ws))).collect();
     let active = m.active;
     let list: Vec<(isize, Spot)> = s.spots.iter().filter(|(raw, (sid, _))| sid == id && !hidden.contains(raw)).map(|(&raw, &(_, sp))| (raw, sp)).collect();
     let mut n = 0;
@@ -544,7 +559,7 @@ pub(super) fn mark_away(s: &mut State, id: &str) -> usize {
             continue; // closed, or already away from a screen it left before (invariant 3)
         }
         let pinned = s.pinned.contains(&raw);
-        s.away.insert(raw, Away { home: id.to_string(), ws: active, spot, pinned, pid: pid_of(h) });
+        s.away.insert(raw, Away { home: id.to_string(), ws: held.get(&raw).copied().unwrap_or(active), spot, pinned, pid: pid_of(h) });
         n += 1;
     }
     if n > 0 {
@@ -564,6 +579,7 @@ pub(super) fn fold(s: &mut State, id: &str, notes: &mut Vec<Note>) {
     let count = settings::get().workspaces;
     let Some(gone) = s.monitors.get_mut(id) else { return };
     let lists = std::mem::replace(&mut gone.hidden, vec![Vec::new(); count]);
+    let held = std::mem::replace(&mut gone.held, vec![Vec::new(); count]);
     gone.device = None;
     gone.desktop.clear();
     let (from, name) = (gone.area, gone.name.clone());
@@ -593,6 +609,13 @@ pub(super) fn fold(s: &mut State, id: &str, notes: &mut Vec<Note>) {
             n += 1;
         }
     }
+    let open = |raw: isize, pid: u32| win::is_window(Some(HWND(raw as *mut _))).as_bool() && pid_of(HWND(raw as *mut _)) == pid;
+    let spots = &s.spots;
+    let aways = held_aways(id, held, open, |raw| fold_spot(spots.get(&raw), id, || spot_of(HWND(raw as *mut _))));
+    for (raw, a) in aways {
+        s.away.entry(raw).or_insert(a);
+        n += 1;
+    }
     // Kept with the shown workspace when one fails to show: a switch away and back shows it.
     let (_, stuck) = show_all(show, |raw| uncloak(&shell, raw));
     mon_mut(s, &main.id).hidden[main_active].extend(stuck);
@@ -607,6 +630,19 @@ pub(super) fn fold(s: &mut State, id: &str, notes: &mut Vec<Note>) {
             text: format!("{} unplugged: {} moved here", label(s, id), words(waiting)),
         });
     }
+}
+
+/// A folding screen's held windows (spec 0039 AC-12): they are in view already, so each one still
+/// `open` (same pid) gets an away record with the workspace it is held on and its `spot` there,
+/// and leaves `held`; nothing is hidden or moved.
+pub(super) fn held_aways(id: &str, held: Vec<Vec<(isize, u32)>>, open: impl Fn(isize, u32) -> bool, mut spot: impl FnMut(isize) -> Spot) -> Vec<(isize, Away)> {
+    let mut out = Vec::new();
+    for (ws, list) in held.into_iter().enumerate() {
+        for (raw, pid) in list.into_iter().filter(|&(raw, pid)| open(raw, pid)) {
+            out.push((raw, Away { home: id.to_string(), ws, spot: spot(raw), pinned: false, pid }));
+        }
+    }
+    out
 }
 
 /// Where a folded window goes on the main display, from workspace `ws` of the screen that left.
@@ -652,6 +688,8 @@ pub(super) fn give_back(s: &mut State, id: &str, last: bool, notes: &mut Vec<Not
     };
     let fg = win::get_foreground_window();
     let unknown = crate::cloak::unknown();
+    // Paused: every window goes home in view and is held on its workspace again (spec 0039 AC-12).
+    let hold = !hiding_allowed(s);
     // Each window's way home, worked out before any moves: a hung one counts as a try.
     // (hwnd, record, home workspace, goes home in view, the list it is in now)
     let mine: Vec<_> = s
@@ -659,7 +697,7 @@ pub(super) fn give_back(s: &mut State, id: &str, last: bool, notes: &mut Vec<Not
         .iter()
         .filter(|&(&raw, a)| a.home == id && !hung(HWND(raw as *mut _)))
         .map(|(&raw, a)| {
-            let (ws, in_view) = goes_in_view(a, count, active, unknown);
+            let (ws, in_view) = goes_in_view(a, count, active, unknown || hold);
             (raw, a.clone(), ws, in_view, hidden_on(s, raw))
         })
         .collect();
@@ -734,6 +772,11 @@ pub(super) fn give_back(s: &mut State, id: &str, last: bool, notes: &mut Vec<Not
             s.spots.insert(raw, (id.to_string(), landed));
             if a.pinned {
                 s.pinned.insert(raw);
+            } else if hold {
+                for m in s.monitors.values_mut() {
+                    m.held.iter_mut().for_each(|l| l.retain(|&(w, _)| w != raw));
+                }
+                mon_mut(s, id).held[ws].push((raw, a.pid));
             }
             moved += did as usize;
             changed = true;
@@ -826,8 +869,13 @@ pub(super) fn refresh_spots(s: &mut State, now: &HashSet<String>) {
             found.push((h.0 as isize, p.id.clone()));
         }
     }
+    // A held window on no screen (a pause showed it while Windows still left it off a gone screen,
+    // and Windows then minimized it) goes by its held screen, as a hidden one does: else its spot
+    // is dropped, the fold reads it minimized, and it comes home minimized (spec 0039 AC-12).
+    let in_view: HashSet<isize> = found.iter().map(|&(raw, _)| raw).collect();
     for (id, m) in &s.monitors {
         found.extend(m.hidden.iter().flatten().map(|&raw| (raw, id.clone())));
+        found.extend(m.held.iter().flatten().filter(|(raw, _)| !in_view.contains(raw)).map(|&(raw, _)| (raw, id.clone())));
     }
     let mut fresh = HashMap::new();
     for (raw, id) in found {

@@ -135,6 +135,31 @@ hints = [\"Win+F\"]
     assert_eq!(s.combo_owner("hints", Combo { mods: WIN, vk: b'F' as u16 }), Some(Owner::List("finder")));
 }
 
+// Pause has no key until you set one, so no combo is taken from Windows for it; a key you set
+// sticks; a bad value resets just this key; and one another shortcut has stays with that one
+// (spec 0039 AC-13).
+#[test]
+fn the_pause_key_is_off_by_default_and_loses_a_clash() {
+    assert!(parse("").0.pause.is_empty());
+    let (s, warn) = parse("[shortcuts]
+pause = [\"Win+Ctrl+P\"]
+");
+    assert_eq!(s.pause, [Combo { mods: WIN | CTRL, vk: b'P' as u16 }]);
+    assert!(warn.is_empty(), "{warn:?}");
+    let (s, warn) = parse("[shortcuts]
+pause = 3
+finder = [\"Win+F\"]
+");
+    assert!(s.pause.is_empty());
+    assert_eq!(s.finder, Settings::default().finder, "the bad pause value costs only itself");
+    assert_eq!(warn.len(), 1, "{warn:?}");
+    let (s, warn) = parse("[shortcuts]
+pause = [\"Win+Tab\"]
+");
+    assert!(s.pause.is_empty());
+    assert_eq!(warn, ["shortcuts: Win+Tab is in both overview and pause, pause turned off"]);
+}
+
 // Off must stay the default (the overview opens at once unless you ask), a chosen style
 // must stick, and a typo, or the "zoom" an older file may still hold, costs only the
 // animation, never the keys next to it (AC-11, AC-14).

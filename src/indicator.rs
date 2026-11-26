@@ -30,6 +30,7 @@ const FADE_TIMER: usize = 1;
 const FADE_STEP_MS: u32 = 16;
 const LINE_MS: u32 = 1500; // a card with a line stays at least this long, so it can be read
 const NOTE_MS: u32 = 3000; // a screen unplugged or back
+const PAUSED_MS: u32 = 6000; // a paused start's note: unasked, right after logon (spec 0039 AC-5)
 
 /// What the indicator says: `active` (0 based) of `count` on a screen, named when there are two
 /// or more, with any lines under it.
@@ -84,12 +85,21 @@ pub enum Line {
     /// Follow switched here because `app`'s window came forward; empty when it has no name
     /// (spec 0038 AC-12). The Card style only.
     Followed { app: String },
+    /// A start came up paused, shown at your first input (spec 0039 AC-5).
+    Paused,
 }
 
 impl Line {
     fn note(&self) -> bool {
         // A popup comes unasked, like a screen note, so it holds as long; so does a warning.
         matches!(self, Line::ScreenGone { .. } | Line::ScreenBack { .. } | Line::Wants { .. } | Line::NotSaved)
+    }
+
+    /// Shown with `indicator.enabled = false` too. A window that wants you has its own switch,
+    /// `[attention] enabled` (spec 0022 AC-8); a paused start's note reports a state you may have
+    /// forgotten, not a key you pressed (spec 0039 AC-5).
+    fn shows_when_off(&self) -> bool {
+        matches!(self, Line::Wants { .. } | Line::Paused)
     }
 }
 
@@ -192,6 +202,7 @@ fn words(card: &Card, line: &Line, named: bool) -> Words {
         },
         Line::NotSaved => Words { icon: '\u{E7BA}', ink: Ink::Warn, title: "Layout can't be saved".into(), chip: None, sub: "Nothing hidden".into(), sub_chip: None },
         Line::Followed { app } => w('\u{E8AB}', came_forward(app), String::new()),
+        Line::Paused => Words { icon: '\u{E769}', ink: Ink::Accent, title: "des-k is paused".into(), chip: None, sub: "Resume from the tray icon".into(), sub_chip: None },
     }
 }
 
@@ -581,12 +592,23 @@ pub fn busy(mon: HMONITOR) -> bool {
     full && unsafe { MonitorFromWindow(GetForegroundWindow(), MONITOR_DEFAULTTONEAREST) } == mon
 }
 
+/// How long a card with these lines stays before it fades, given the `hold_ms` setting.
+fn hold_for(lines: &[Line], hold_ms: u32) -> u32 {
+    if lines.contains(&Line::Paused) {
+        PAUSED_MS
+    } else if lines.iter().any(Line::note) {
+        NOTE_MS
+    } else if !lines.is_empty() {
+        hold_ms.max(LINE_MS)
+    } else {
+        hold_ms
+    }
+}
+
 /// Show `card` centered on `mon`'s work area, replacing whatever the indicator shows.
 pub fn show(mon: HMONITOR, card: Card) {
     let st = settings::get();
-    // A window that wants you has its own switch, `[attention] enabled` (spec 0022 AC-8).
-    let wants = card.lines.iter().any(|l| matches!(l, Line::Wants { .. }));
-    if !st.indicator_enabled && !wants {
+    if !st.indicator_enabled && !card.lines.iter().any(Line::shows_when_off) {
         return;
     }
     let Some(h) = window() else { return };
@@ -605,13 +627,7 @@ pub fn show(mon: HMONITOR, card: Card) {
     };
     let (w, ht) = ((w * scale).ceil() as i32, (ht * scale).ceil() as i32);
 
-    let hold = if card.lines.iter().any(Line::note) {
-        NOTE_MS
-    } else if !card.lines.is_empty() {
-        st.hold_ms.max(LINE_MS)
-    } else {
-        st.hold_ms
-    };
+    let hold = hold_for(&card.lines, st.hold_ms);
     // Enough steps to fade from full to 0 in about fade_ms; 0 hides on the first tick.
     let full = (theme.b.alpha * 255.0).round() as u8;
     let ticks = (ui::motion_ms(st.fade_ms) / FADE_STEP_MS).max(1);
@@ -830,6 +846,20 @@ mod tests {
         unsafe { ReleaseDC(None, dc) };
     }
 
+    // Spec 0039 AC-5: a paused start's note is the one reminder that reaches you at logon, so it
+    // must show even with the indicator turned off, and stay long enough to be read unasked; the
+    // indicator off still silences ordinary cards, and other notes keep their 3 s.
+    #[test]
+    fn the_paused_note_shows_with_the_indicator_off_and_stays_6_s() {
+        assert!(Line::Paused.shows_when_off());
+        assert!(!Line::NotSaved.shows_when_off(), "only attention and the paused note pass the switch");
+        let paused = card(1, true).with(Line::Paused);
+        assert_eq!(hold_for(&paused.lines, 200), 6000);
+        assert_eq!(hold_for(&card(1, true).with(Line::NotSaved).lines, 200), 3000);
+        assert_eq!(hold_for(&card(1, true).lines, 200), 200);
+        assert_eq!(spoken(&paused, Style::Card), "Workspace 2 of 4, DELL U2720Q, des-k is paused, Resume from the tray icon");
+    }
+
     /// Draws every state the design shows to target/indicator/ PNGs, to compare by eye with
     /// pdesk-design/restart/captures/ir5-* (spec 0017 AC-1).
     #[test]
@@ -857,6 +887,7 @@ mod tests {
             ("unpinned", Card::new(1, 4, dell()).with(Line::Unpinned)),
             ("past-count", Card::new(1, 4, dell()).with(Line::NoWorkspace { n: 7 })),
             ("not-saved", Card::new(1, 4, dell()).with(Line::NotSaved)),
+            ("paused", Card::new(1, 4, dell()).with(Line::Paused)),
             ("unplugged", Card::new(0, 4, None).with(gone(None))),
             ("back", Card::new(1, 4, dell()).with(Line::ScreenBack { name: "DELL U2720Q".into(), moved: 5, left: 0, here: true })),
             ("back-some-left", Card::new(1, 4, dell()).with(Line::ScreenBack { name: "DELL U2720Q".into(), moved: 3, left: 2, here: true })),

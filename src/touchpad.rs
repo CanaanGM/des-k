@@ -334,6 +334,11 @@ fn post(fingers: usize, motion: Motion, rule: Option<settings::Gesture>) {
 /// A recognized gesture. One with a twice rule waits `twice_ms` for its second go: then only
 /// the twice rule runs, else only the once rule (spec 0011 AC-5).
 fn recognized(hwnd: HWND, fingers: usize, motion: Motion) {
+    // Paused: no gesture acts, and none logs. Main drops it anyway, but this thread's line said
+    // `gesture 4 up → overview` for a swipe that did nothing (spec 0039 AC-4, AC-15).
+    if crate::keys::paused() {
+        return;
+    }
     // Read now, before any twice wait: while Windows acts on gestures too, each would do two things.
     if let Err(why) = crate::setup::windows_off() {
         return info!("gesture {fingers} {} → skipped, Windows' {why}", motion.word());

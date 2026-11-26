@@ -27,6 +27,7 @@ use crate::{keys, settings};
 
 pub(crate) mod focus;
 pub(crate) mod moves;
+pub(crate) mod pause;
 pub(crate) mod restore;
 pub(crate) mod rules;
 pub(crate) mod screens;
@@ -38,6 +39,7 @@ mod win;
 // Each piece sees the others through these, the way their code saw one file before.
 use focus::*;
 use moves::*;
+use pause::*;
 use restore::*;
 use rules::*;
 use screens::*;
@@ -78,9 +80,15 @@ const RECLOAKS: u8 = 3;
 // this many times (about 1 s).
 const NEW_RETRY: Duration = Duration::from_millis(15);
 const NEW_TRIES: u32 = 66;
+/// One list per workspace of windows a pause shows, each with its pid (spec 0039).
+type HeldLists = Vec<Vec<(isize, u32)>>;
+
 struct Monitor {
     active: usize,
     hidden: Vec<Vec<isize>>, // one per workspace: the windows it hid, top of z-order first
+    // One per workspace, like `hidden`: the windows a pause showed and their pid, which resume
+    // hides again (spec 0039). Never cloaked by des-k while held.
+    held: HeldLists,
     last_follow: Option<Instant>,
     last_switch: Option<(Instant, usize)>, // when, and the workspace it left
     desktop: Vec<isize>, // what show_desktop minimized, top first; any switch or send here clears it
@@ -100,6 +108,7 @@ impl Monitor {
         Monitor {
             active: 0,
             hidden: vec![Vec::new(); count],
+            held: vec![Vec::new(); count],
             last_follow: None,
             last_switch: None,
             desktop: Vec::new(),
@@ -124,6 +133,13 @@ impl Monitor {
     /// removed workspace go to the new last one; if this screen showed a removed one, it
     /// shows the new last one and the returned windows (top first) must be shown.
     fn resize(&mut self, count: usize) -> Vec<isize> {
+        // Held windows of a removed workspace are kept by the new last one, as hidden ones are
+        // (spec 0039 AC-12).
+        if self.held.len() > count {
+            let gone: Vec<(isize, u32)> = self.held.drain(count..).flatten().collect();
+            self.held[count - 1].extend(gone);
+        }
+        self.held.resize(count, Vec::new());
         if self.hidden.len() <= count {
             self.hidden.resize(count, Vec::new());
             return vec![];
@@ -220,6 +236,10 @@ struct State {
     // The screen id des-k last acted on (spec 0038 AC-7): a key pressed with nothing focused acts
     // there. Memory only; read only through `target`, which checks the screen is present.
     last_acted: Option<String>,
+    // Paused (spec 0039): des-k hides nothing and acts on no key, swipe or rule; `held` keeps
+    // each shown window's workspace. Written only by `pause`, `resume` and `load`, always with
+    // `keys::set_paused`, so the hook and the tray read it without this lock.
+    paused: bool,
 }
 
 static STATE: LazyLock<Mutex<State>> = LazyLock::new(Default::default);

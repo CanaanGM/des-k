@@ -99,14 +99,24 @@ const V0_9_0: [Card; 5] = [
     Card { pic: Pic::Note, title: "A hidden window that wants you", text: Text::Attention, button: "Change the words", to: (Section::Attention, None) },
 ];
 
-/// 0.11.0's card (spec 0038 AC-18). Nothing about the Copilot key: an upgrader keeps theirs.
-const V0_11_0: [Card; 1] = [Card {
-    pic: Pic::Screens,
-    title: "Keys can follow your focus",
-    text: Text::Plain("Shortcuts can act on the focused window's screen instead of the one under the mouse. And when a window comes forward on another workspace, the indicator names its app."),
-    button: "Choose",
-    to: (Section::Workspaces, None),
-}];
+/// 0.11.0's cards (spec 0038 AC-18, spec 0039 AC-16). Nothing about the Copilot key: an upgrader
+/// keeps theirs.
+const V0_11_0: [Card; 2] = [
+    Card {
+        pic: Pic::Screens,
+        title: "Keys can follow your focus",
+        text: Text::Plain("Shortcuts can act on the focused window's screen instead of the one under the mouse. And when a window comes forward on another workspace, the indicator names its app."),
+        button: "Choose",
+        to: (Section::Workspaces, None),
+    },
+    Card {
+        pic: Pic::Screens,
+        title: "Pause des-k",
+        text: Text::Plain("Pick Pause des-k in the tray for a game or to try Windows on its own: every window comes back and Windows gets its keys back. Resume puts each window back on its workspace."),
+        button: "Set a key",
+        to: (Section::Shortcuts, None),
+    },
+];
 
 /// Every release with news, oldest first. A release without an entry opens nothing; add one
 /// before each release that has news (spec 0029 Follow-up).

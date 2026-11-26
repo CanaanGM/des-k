@@ -1,5 +1,6 @@
 // Tray icon near the clock: shows des-k is running, opens des-k's own menu (tray_menu.rs, spec
-// 0017) with Shortcut hints, Settings, Open log, Check for updates (spec 0015) and Quit, and
+// 0017) with Shortcut hints, Settings, Open log, Check for updates (spec 0015), Pause (spec 0039)
+// and Quit, and
 // runs what you pick there, an update install too (spec 0018). Warns once when hiding windows stopped working. Lives on the main
 // thread (its messages come through main's loop), adds itself again whenever explorer
 // restarts, and has des-k hide its windows again then.
@@ -48,6 +49,10 @@ thread_local! {
     static WAITING: Cell<bool> = const { Cell::new(false) }; // no taskbar yet, said so once
     /// What a click on the current balloon does, if anything.
     static BALLOON: RefCell<Option<Click>> = const { RefCell::new(None) };
+    /// A balloon asked for before the taskbar was there (title, text, warning): the icon it
+    /// needs comes with TaskbarCreated, and the balloon with it. At logon a start that came up
+    /// paused lost its balloon this way (spec 0039 AC-5, found 2026-11-26).
+    static HELD: RefCell<Option<(String, String, bool)>> = const { RefCell::new(None) };
     /// An update answer while the broken warning shows (spec 0015 AC-9, spec 0017 AC-TRY-7):
     /// the menu's update item says it instead of a balloon, until the next check. A newer
     /// release is always kept, so the item offers it after the balloon is gone (spec 0018 AC-1).
@@ -59,10 +64,15 @@ thread_local! {
 }
 
 const TIP: &str = "des-k";
+const PAUSED_TIP: &str = "des-k · paused";
 
-/// The tooltip: the warning's while it shows.
+/// The tooltip: the warning's while it shows, else whether des-k is paused (spec 0039 AC-5).
 fn tip() -> String {
-    if BROKEN.get() { BROKEN_TIP.with_borrow(Clone::clone) } else { TIP.to_string() }
+    match () {
+        _ if BROKEN.get() => BROKEN_TIP.with_borrow(Clone::clone),
+        _ if crate::ws::pause::paused() => PAUSED_TIP.to_string(),
+        _ => TIP.to_string(),
+    }
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -84,6 +94,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                             ASKED.set(true);
                             update::check(hwnd);
                         }
+                        Some(Click::Resume) => crate::ws::pause::resume(),
                         None => {}
                     },
                     _ => {}
@@ -188,6 +199,9 @@ fn add(hwnd: HWND) {
             warn!("tray: icon version 4 refused, the menu can't tell a keyboard open from a click");
         }
     }
+    if let Some((title, text, warn)) = HELD.take() {
+        show(hwnd, &title, &text, warn);
+    }
 }
 
 /// A click on the icon, Enter or Space on it, or its context menu: opens the menu, or closes
@@ -273,26 +287,50 @@ pub fn screens_changed(lines: &[String]) {
     balloon("Screens changed", &lines.join("\n"), false, None);
 }
 
+/// Pause or resume happened: the icon goes gray or back to color, and the tooltip follows (spec
+/// 0039 AC-5). Never under the ws lock.
+pub fn paused_changed() {
+    if let Some(h) = WND.get() {
+        add(h);
+    }
+}
+
+/// A start that came up paused (spec 0039 AC-5): once, and a click resumes.
+pub fn started_paused() {
+    balloon("des-k is paused", "Click to resume", false, Some(Click::Resume));
+}
+
 /// state.txt could not be saved, so des-k hid nothing (spec 0034 AC-2). Once a run, from main's
 /// 1 s timer, never under the ws lock.
 pub fn cant_save() {
     balloon("des-k can't save your layout", "Check the free space on your system drive. Until it can save, des-k hides nothing.", true, None);
 }
 
-/// What a balloon click does: open a page or file through explorer, install a release, or
-/// check for updates (the hiding warning's).
+/// What a balloon click does: open a page or file through explorer, install a release, check
+/// for updates (the hiding warning's), or resume a pause (spec 0039).
 #[derive(Clone, Debug)]
 enum Click {
     Open(String),
     Install(Version),
     Check,
+    Resume,
 }
 
 /// A balloon from the icon, and what a click on it does. Sets the tooltip too, so the broken
 /// one stays (BROKEN is set before its balloon).
 fn balloon(title: &str, text: &str, warn: bool, click: Option<Click>) {
     BALLOON.replace(click);
+    // No taskbar yet: no icon to carry it, so it waits for the icon. The latest one wins, as a
+    // new balloon replaces the one showing.
+    if WAITING.get() {
+        HELD.replace(Some((title.into(), text.into(), warn)));
+        return;
+    }
     let Some(h) = WND.get() else { return };
+    show(h, title, text, warn);
+}
+
+fn show(h: HWND, title: &str, text: &str, warn: bool) {
     let mut nid = data(h);
     // Without NIF_SHOWTIP, version 4 hides the tooltip from this balloon on.
     nid.uFlags = NIF_TIP | NIF_INFO | NIF_SHOWTIP;
@@ -386,7 +424,7 @@ pub fn installed(o: Outcome) {
 /// Both colors are strong enough to read on light and dark taskbars.
 pub fn draw_icon() -> Option<HICON> {
     let s = unsafe { GetSystemMetrics(SM_CXSMICON) }.max(16);
-    let px = logo_pixels(s);
+    let px = if crate::ws::pause::paused() { gray(&logo_pixels(s)) } else { logo_pixels(s) };
     // Ignored when the color bitmap has alpha, but CreateIconIndirect requires one.
     let mask = vec![0u8; ((s + 15) / 16 * 2 * s) as usize];
     unsafe {
@@ -428,6 +466,18 @@ fn logo_pixels(s: i32) -> Vec<u32> {
         }
     }
     px
+}
+
+/// The logo in gray, for a paused des-k (spec 0039 AC-5): each pixel's own lightness, so the
+/// squares keep their shape and blend, and alpha stays as it was.
+fn gray(px: &[u32]) -> Vec<u32> {
+    px.iter()
+        .map(|&p| {
+            let ch = |shift: u32| (p >> shift & 0xFF) as f32;
+            let l = (0.299 * ch(16) + 0.587 * ch(8) + 0.114 * ch(0)).round() as u32;
+            p & 0xFF00_0000 | l << 16 | l << 8 | l
+        })
+        .collect()
 }
 
 /// A workspace chip's geometry, in px of a 16 px icon (spec 0025 AC-10). Not wired to the
@@ -607,6 +657,9 @@ fn menu() -> Menu {
         screens: crate::ws::views::tray_screens(),
         broken: BROKEN.get(),
         hints_key: crate::settings::get().hints.first().copied(),
+        paused: crate::ws::pause::paused(),
+        // Windows' gestures stay off while paused, so a swipe does nothing (spec 0039 AC-4).
+        swipes_off: crate::touchpad::present() && st.off,
         // Debug builds with a console log there instead of to the file.
         log: log_path().exists(),
         check,
@@ -635,6 +688,7 @@ pub fn act(id: Id) {
                 update::check(hwnd);
             }
         },
+        Id::Pause => crate::ws::pause::toggle(),
         // Main's loop breaks on WM_CLOSE, the same path as `des-k --quit`.
         Id::Quit => unsafe { let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)); },
     }
@@ -710,6 +764,39 @@ mod tests {
         v
     }
 
+    /// Spec 0039 AC-5: the logo running and paused, side by side, at each tray size, in
+    /// target/tray/icon/paused-<size>.png. Gray must still read as des-k's four squares.
+    #[test]
+    #[ignore]
+    fn render_paused_icon() {
+        ui::canvas::gdiplus();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("tray").join("icon");
+        std::fs::create_dir_all(&dir).unwrap();
+        for size in [16, 20, 24, 32] {
+            let (on, off) = (logo_pixels(size), gray(&logo_pixels(size)));
+            let w = size * 3;
+            let mut strip = vec![0u32; (w * size) as usize];
+            for y in 0..size as usize {
+                let (row, s) = (y * w as usize, size as usize);
+                strip[row..row + s].copy_from_slice(&on[y * s..(y + 1) * s]);
+                strip[row + 2 * s..row + 3 * s].copy_from_slice(&off[y * s..(y + 1) * s]);
+            }
+            save(w, size, &strip, &dir.join(format!("paused-{size}.png")));
+        }
+    }
+
+    // Spec 0039 AC-5: a paused icon is gray, every pixel, yet keeps the logo's shape exactly.
+    #[test]
+    fn the_paused_icon_is_the_logo_in_gray() {
+        let (on, off) = (logo_pixels(16), gray(&logo_pixels(16)));
+        for (a, b) in on.iter().zip(&off) {
+            assert_eq!(a >> 24, b >> 24, "same shape");
+            let (r, g, bl) = (b >> 16 & 0xFF, b >> 8 & 0xFF, b & 0xFF);
+            assert!(r == g && g == bl, "gray: {b:#010x}");
+        }
+        assert_ne!(on, off);
+    }
+
     /// Writes target/tray/icon/<shape>-<theme>-<size>.png strips for the design page
     /// (pdesk-design/tray-number/), one cell a gap of one icon apart.
     #[test]
@@ -738,5 +825,17 @@ mod tests {
                 }
             }
         }
+    }
+
+    // Spec 0039 AC-5: at logon des-k starts before the taskbar, which is exactly when a start
+    // comes up paused. Its balloon must wait for the icon, click and all, or the one reminder
+    // that des-k is paused is lost (found after a reboot, 2026-11-26).
+    #[test]
+    fn a_balloon_before_the_taskbar_waits_for_the_icon() {
+        WAITING.set(true);
+        started_paused();
+        assert_eq!(HELD.take(), Some(("des-k is paused".into(), "Click to resume".into(), false)));
+        assert!(matches!(BALLOON.take(), Some(Click::Resume)), "a click on it still resumes");
+        WAITING.set(false);
     }
 }

@@ -3,7 +3,7 @@
 use super::*;
 
 const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activation", "act_on", "jump_back", "fastest", "first_run_seen", "whats_new_seen", "shortcuts", "indicator", "attention", "colors", "names", "wallpaper", "apps", "restore", "overview", "touchpad", "gesture"];
-const SHORTCUT_KEYS: &[&str] = &["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "jump", "send_to", "send_to_stay", "back", "finder", "overview", "pin", "hints"];
+const SHORTCUT_KEYS: &[&str] = &["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "jump", "send_to", "send_to_stay", "back", "finder", "overview", "pin", "hints", "pause"];
 const INDICATOR_KEYS: &[&str] = &["enabled", "style", "screen_name", "spot", "gap", "x", "y", "hold_ms", "fade_ms", "screens"];
 const SCREEN_KEYS: &[&str] = &["spot", "gap", "x", "y"];
 const ATTENTION_KEYS: &[&str] = &["enabled", "text"];
@@ -100,7 +100,7 @@ pub(super) fn parse(text: &str) -> (Settings, Vec<String>) {
         } else {
             (s.previous, s.next) = (previous, next);
         }
-        // Switch keys always win: a send list (or back, the finder, the overview, pin, hints) sharing
+        // Switch keys always win: a send list (or back, the finder, the overview, pin, hints, pause) sharing
         // a combo with them, or with an earlier list still on, is turned off (an empty list never
         // matches) (specs 0004, 0007, 0010, 0014, 0017, 0024).
         let mut taken = vec![("previous", s.previous.clone()), ("next", s.next.clone())];
@@ -114,6 +114,7 @@ pub(super) fn parse(text: &str) -> (Settings, Vec<String>) {
             ("overview", &mut s.overview),
             ("pin", &mut s.pin),
             ("hints", &mut s.hints),
+            ("pause", &mut s.pause),
         ];
         for (key, list) in sends {
             let got = combos(t, key, &format!("shortcuts.{key}"), list, &mut warn);

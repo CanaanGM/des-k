@@ -317,6 +317,7 @@ pub(crate) const MOVE: &[Short] = &[
     short("shortcuts.overview", "Open overview", Some((combo(WIN, 0x09), "opens Task View"))),
     short("shortcuts.finder", "Find a window", Some((combo(WIN, 0x46), "opens Feedback Hub"))),
     short("shortcuts.hints", "Open shortcut hints", None),
+    short("shortcuts.pause", "Pause des-k", None),
 ];
 
 pub(crate) const SEND: &[Short] = &[

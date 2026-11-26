@@ -318,6 +318,10 @@ pub(super) fn failed_hide(mut cloak: impl FnMut() -> u32, undo: impl FnOnce()) -
 /// `keep` is a visible window that comes along instead of being hidden (a follow send), and
 /// `note` a line for the card (spec 0038 AC-12).
 pub(super) fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize, focus: Option<HWND>, keep: Option<HWND>, note: Option<Says>) -> Switch {
+    // Nothing switches while paused (spec 0039); the keys and gestures that lead here are off then.
+    if !hiding_allowed(s) {
+        return Switch::Refused;
+    }
     s.last_acted = Some(name.to_string());
     let count = settings::get().workspaces;
     let active = mon_mut(s, name).active;
@@ -335,7 +339,6 @@ pub(super) fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize,
     let fg = win::get_foreground_window();
     // Leaving an empty workspace left focus on the desktop; nobody's focus to keep there.
     let fg_desktop = is_desktop(fg, win::get_shell_window(), &class_name(fg));
-    let mut fg_hidden = false;
     let hides = to_hide(crate::cloak::unknown(), || app_windows_on(mon), keep, &s.pinned);
     // Top first, as a hidden list keeps them, so showing them later is top-down (no flash).
     let list: Vec<(String, usize, isize)> = hides.iter().map(|h| (name.to_string(), active, h.0 as isize)).collect();
@@ -343,42 +346,7 @@ pub(super) fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize,
         indicator::show(mon, card(s, name, active, count).with(Says::NotSaved));
         return Switch::Refused;
     }
-    // Hide bottom-up: hiding the top window first briefly uncovers the ones behind it.
-    #[cfg(feature = "drill")]
-    let (mut done, half) = (0, hides.len().div_ceil(2));
-    for (i, &h) in hides.iter().enumerate().rev() {
-        match shell.hide(h, true) {
-            Ok(()) => {
-                fg_hidden |= h == fg;
-                #[cfg(feature = "drill")]
-                {
-                    done += 1;
-                    if done == 1 {
-                        crate::drill::at(crate::drill::Stop::KillAfterHide);
-                    }
-                    if done == half {
-                        crate::drill::at(crate::drill::Stop::PauseMidSwitch);
-                    }
-                }
-            }
-            // This very hide found the layout unknown, and cloak.rs said so: the rest stay in view.
-            Err(_) if crate::cloak::unknown() => {
-                for h in &hides[..=i] {
-                    unlist(s, h.0 as isize);
-                }
-                break;
-            }
-            Err(e) => {
-                let undo = || {
-                    let _ = shell.hide(h, false);
-                };
-                if failed_hide(|| cloaked(h), undo) {
-                    unlist(s, h.0 as isize);
-                }
-                warn!("cloak {:?} failed: {e}", h.0);
-            }
-        }
-    }
+    let fg_hidden = cloak_listed(s, &shell, &hides, fg);
     let m = s.monitors.get_mut(name).expect("made above");
 
     // uncloak keeps each one listed, silently, on an unknown layout.
@@ -416,6 +384,54 @@ pub(super) fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize,
     s.sent = None;
     save(s);
     Switch::Switched
+}
+
+/// Cloaks `hides`, which are listed and saved already (spec 0034 AC-1), bottom of z order first:
+/// hiding the top window first briefly uncovers the ones behind it. A window whose hide fails comes
+/// off its list unless it may still be cloaked; if the layout turns out unknown mid way the rest
+/// stay in view. The drill's stop points fire here, for a switch and a resume alike. Returns
+/// whether `fg` was hidden.
+pub(super) fn cloak_listed(s: &mut State, shell: &Shell, hides: &[HWND], fg: HWND) -> bool {
+    if !hiding_allowed(s) {
+        return false;
+    }
+    let mut fg_hidden = false;
+    #[cfg(feature = "drill")]
+    let (mut done, half) = (0, hides.len().div_ceil(2));
+    for (i, &h) in hides.iter().enumerate().rev() {
+        match shell.hide(h, true) {
+            Ok(()) => {
+                fg_hidden |= h == fg;
+                #[cfg(feature = "drill")]
+                {
+                    done += 1;
+                    if done == 1 {
+                        crate::drill::at(crate::drill::Stop::KillAfterHide);
+                    }
+                    if done == half {
+                        crate::drill::at(crate::drill::Stop::PauseMidSwitch);
+                    }
+                }
+            }
+            // This very hide found the layout unknown, and cloak.rs said so: the rest stay in view.
+            Err(_) if crate::cloak::unknown() => {
+                for h in &hides[..=i] {
+                    unlist(s, h.0 as isize);
+                }
+                break;
+            }
+            Err(e) => {
+                let undo = || {
+                    let _ = shell.hide(h, false);
+                };
+                if failed_hide(|| cloaked(h), undo) {
+                    unlist(s, h.0 as isize);
+                }
+                warn!("cloak {:?} failed: {e}", h.0);
+            }
+        }
+    }
+    fg_hidden
 }
 
 /// What `switch_to` did. Refused: nothing was shown or hidden, because the windows it would hide

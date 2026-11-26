@@ -102,6 +102,11 @@ pub fn waiting() -> bool {
 /// Every 15 ms while a window waits: places each one whose title or app id has come, and leaves
 /// one that waited `WAIT_FOR` where it is (AC-4, AC-16). Returns whether any still waits.
 pub fn pending_tick() -> bool {
+    // Paused: no rule acts, so the waiting windows stay where they opened and the timer stops (spec 0039 AC-4).
+    if ws::pause::paused() {
+        PENDING.take();
+        return false;
+    }
     let mut left = Vec::new();
     for (raw, since, shown) in PENDING.take() {
         let h = HWND(raw as *mut _);

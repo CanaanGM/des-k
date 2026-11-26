@@ -44,6 +44,10 @@ pub fn send(to: To, follow: bool) {
     }
     let count = settings::get().workspaces;
     let mut s = state();
+    // Nothing hides while paused (spec 0039); the keys are off then too.
+    if !hiding_allowed(&s) {
+        return;
+    }
     let recent = |t: Instant| t.elapsed() < Duration::from_millis(FOLLOW_COOLDOWN_MS);
     // A quick second stay press moves the window the last one sent, not the one that got focus.
     let repeat = s
@@ -295,6 +299,10 @@ pub fn place(hwnd: HWND, device: &str, ws: usize) -> Result<(), Miss> {
         return Err(Miss::Gone);
     }
     let mut s = state();
+    // Nothing hides while paused (spec 0039); the overview is closed then too.
+    if !hiding_allowed(&s) {
+        return Err(Miss::CantMove);
+    }
     let raw = hwnd.0 as isize;
     let t = who(hwnd);
     let hidden = hidden_on(&s, raw);

@@ -51,6 +51,7 @@ pub(crate) enum Id {
     Settings,
     Log,
     Update,
+    Pause,
     Quit,
 }
 
@@ -85,6 +86,9 @@ pub(crate) struct Menu {
     pub(crate) screens: Vec<TrayScreen>,
     pub(crate) broken: bool,
     pub(crate) hints_key: Option<Combo>,
+    /// Paused (spec 0039): the item reads Resume, with a line while swipes are off meanwhile.
+    pub(crate) paused: bool,
+    pub(crate) swipes_off: bool,
     pub(crate) log: bool,
     pub(crate) check: Check,
     pub(crate) quit: Quit,
@@ -116,7 +120,7 @@ fn failed_line(f: Fail) -> String {
 }
 
 impl Menu {
-    /// The items in order: Shortcut hints and Settings, Open log and the update item, Quit.
+    /// The items in order: Shortcut hints and Settings, Open log and the update item, Pause and Quit.
     fn items(&self) -> Vec<Item> {
         let item = |id, icon, label: &str| Item { id, icon, label: label.into(), line: String::new(), keys: vec![], new: false, on: true };
         let mut update = item(Id::Update, "\u{E895}", "Check for updates");
@@ -158,6 +162,11 @@ impl Menu {
             item(Id::Settings, "\u{E713}", "Settings"),
             Item { on: self.log, ..item(Id::Log, "\u{E8A5}", "Open log") },
             update,
+            match (self.paused, self.swipes_off) {
+                (false, _) => item(Id::Pause, "\u{E769}", "Pause des-k"),
+                (true, false) => item(Id::Pause, "\u{E768}", "Resume des-k"),
+                (true, true) => Item { line: "Swipes do nothing until you resume".into(), ..item(Id::Pause, "\u{E768}", "Resume des-k") },
+            },
             Item { line: quit.into(), ..item(Id::Quit, "\u{E7E8}", "Quit des-k") },
         ]
     }

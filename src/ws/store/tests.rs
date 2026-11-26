@@ -93,6 +93,45 @@ fn restore_off_keeps_no_title_but_a_whole_fingerprint() {
     assert!(matches!(&read[..], [Line::V { fp: Some(Fp { app, class, title }), .. }] if app == "code.exe" && class == "Chrome_WidgetWin_1" && title.is_empty()));
 }
 
+// Spec 0039 AC-9, AC-10: what a paused save writes, the next start holds. The Z line follows L; a
+// held window's H line names the screen and workspace it is held on; a window a pause could not
+// show keeps its W line; a restore entry still waiting is held, never hidden. A quit, crash or
+// --quit leaves this file, so each must read back as the same pause.
+#[test]
+fn a_paused_save_reads_back_as_the_same_pause() {
+    let (id, held, stuck): (&str, isize, isize) = ("DEL-4123-ABC", 0x7FFF_FFF0_0000, 0x7FFF_FFF1_0000);
+    let pid = 4_000_000_000; // no process has it: nothing is read from a real window
+    let mut s = State { logon: Some((0x1a, 1_700_000_000)), paused: true, ..State::default() };
+    let mut m = Monitor::with(4);
+    m.held[2].push((held, pid));
+    m.hidden[1].push(stuck);
+    s.monitors.insert(id.into(), m);
+    s.spots.insert(held, (id.into(), spot(-756, 'n')));
+    s.spots.insert(stuck, (id.into(), spot(0, 'n')));
+    let fp = Fp { app: "code.exe".into(), class: "c".into(), title: String::new() };
+    let saved = vec![crate::restore::Entry { dev: id.into(), ws: Some(3), pin: false, away: false, spot: Some(spot(500, 'n')), fp }];
+    s.restore = Some(Restore {
+        saved,
+        pending: vec![0],
+        resolved: HashSet::new(),
+        unclear_logged: HashSet::new(),
+        cache: HashMap::new(),
+        deadline: Instant::now(),
+        hidden: 0,
+        kept: 0,
+    });
+
+    let text = state_text(&mut s, true);
+
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[..2], ["L 1a 1700000000", "Z"]);
+    assert!(text.contains(&format!("\nW {id} 1 {stuck} ")), "the window that would not show keeps its W line:\n{text}");
+    let (paused, back) = held_in(&parse_state(&text, |_| None));
+    assert!(paused, "the next start comes up paused");
+    let back: Vec<(&str, usize, isize, u32, Option<Spot>)> = back.iter().map(|x| (x.0.as_str(), x.1, x.2, x.3, x.4)).collect();
+    assert_eq!(back, [(id, 2, held, pid, Some(spot(-756, 'n'))), (id, 3, 0, 0, Some(spot(500, 'n')))]);
+}
+
 // --quit after a crash shows what it can, but an away window's line stays: its screen may
 // still come back, after the next start or a reboot (AC-8).
 #[test]

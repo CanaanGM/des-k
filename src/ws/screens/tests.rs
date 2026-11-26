@@ -101,6 +101,26 @@ fn a_window_whose_screen_is_missing_keeps_its_spot() {
     assert_eq!(next_spot(old, "internal".into(), &now, true, || spot(0, 'n')), ("internal".to_string(), spot(0, 'n')));
 }
 
+// Spec 0039 AC-12 (and AC-2, AC-6 through it): pause in the 10 s after a screen leaves, and a
+// window hidden there shows on no screen, so Windows minimizes it. It is held, not hidden and
+// not away, yet its spot from before must stay frozen: else the fold reads it minimized, it
+// comes home minimized off its screen, and resume leaves it in view (found live 2026-11-26).
+#[test]
+fn a_held_window_on_no_screen_keeps_its_spot_while_its_screen_is_missing() {
+    // A handle no real window has: app_windows never lists it, as it never listed the minimized one.
+    let raw: isize = 0x7FFF_FFF0_0000;
+    let mut s = State::default();
+    let mut lg = Monitor::with(4);
+    lg.held[1].push((raw, 7));
+    s.monitors.insert("LG".into(), lg);
+    s.spots.insert(raw, ("LG".into(), spot(-756, 'n')));
+    let now: HashSet<String> = ["internal".to_string()].into();
+
+    refresh_spots(&mut s, &now);
+
+    assert_eq!(s.spots.get(&raw), Some(&("LG".to_string(), spot(-756, 'n'))), "the fold needs the spot it had on LG, normal, not minimized");
+}
+
 // Unplugging must never look like your move, nor Windows putting a window back on its own
 // screen; a drag between two screens that stayed is yours (spec 0016 AC-6).
 #[test]
@@ -222,6 +242,19 @@ fn a_fold_uses_the_spot_stored_for_the_screen_that_left() {
     assert_eq!(fold_spot(Some(&stored), "DEL-1", || panic!("read although stored")), spot(10, 'n'));
     assert_eq!(fold_spot(Some(&stored), "DEL-2", || spot(20, 'z')), spot(20, 'z'));
     assert_eq!(fold_spot(None, "DEL-1", || spot(30, 'n')), spot(30, 'n'));
+}
+
+// Spec 0039 AC-12: a screen that folds while paused must not lose which workspace each held
+// window belongs to. Each one still open gets an away record carrying its held workspace and its
+// spot there, so it goes home held on that workspace and resume hides it there. A closed window,
+// or one whose handle another process took, is nothing of yours to bring back.
+#[test]
+fn a_fold_while_paused_gives_each_held_window_an_away_record_with_its_workspace() {
+    let held = vec![vec![], vec![(10, 1)], vec![(20, 2), (30, 3), (40, 99)]];
+    let open = |raw: isize, pid: u32| raw != 30 && pid != 99; // 30 closed, 40's handle now another pid's
+    let out = held_aways("LG", held, open, |raw| spot(raw as i32, 'n'));
+    let rec = |ws: usize, raw: isize, pid: u32| (raw, Away { home: "LG".into(), ws, spot: spot(raw as i32, 'n'), pinned: false, pid });
+    assert_eq!(out, [rec(1, 10, 1), rec(2, 20, 2)]);
 }
 
 fn away(ws: usize, pinned: bool) -> Away {

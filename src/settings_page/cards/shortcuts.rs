@@ -211,6 +211,9 @@ impl Ctx<'_, '_> {
         if key == "shortcuts.hints" {
             cap.push(t(if all.is_empty() { "No key by default. Shows every key and gesture, on the screen under your mouse." } else { "Shows every key and gesture, on the screen under your mouse." }));
         }
+        if key == "shortcuts.pause" {
+            cap.push(t(if all.is_empty() { "No key by default. Shows every hidden window and gives Windows its keys back; press again to resume." } else { "Shows every hidden window and gives Windows its keys back; press again to resume." }));
+        }
         if let Some((wk, does)) = sh.win {
             let wk = spelled(&win_caps(wk));
             let line = if has {

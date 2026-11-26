@@ -62,8 +62,10 @@ pub(super) fn state_file() -> PathBuf {
 /// `L <logon id> <logon time>`, `M <screen id> <active> <left top right bottom>` TAB name,
 /// `W <screen id> <workspace> <hwnd> <pid> <spot>` TAB app TAB class TAB title (a hidden window),
 /// `P <screen id> <hwnd> <pid> <spot>` TAB fingerprint (a pinned one, spec 0014),
-/// `V <screen id> <spot>` TAB fingerprint (a visible one), and
-/// `A <home id> <workspace> <hwnd> <pid> <spot> <pinned>` TAB fingerprint (an away one).
+/// `V <screen id> <spot>` TAB fingerprint (a visible one),
+/// `A <home id> <workspace> <hwnd> <pid> <spot> <pinned>` TAB fingerprint (an away one), and while
+/// paused (spec 0039) `Z` after the L line and `H <screen id> <workspace> <hwnd> <pid> <spot>` TAB
+/// fingerprint (a held one: shown, with the workspace it goes back to; nothing ever cloaks it).
 /// While a restore runs, its pending entries are written too (hwnd 0), so another restart
 /// still has them. The closing save of an action: a failure is logged, the action stands.
 pub(super) fn save(s: &mut State) {
@@ -80,9 +82,16 @@ pub(super) fn try_save(s: &mut State) -> Result<(), String> {
     if settings::get().attention_enabled {
         s.wants = wants.into_iter().filter(|&h| hidden_on(s, h).is_some()).collect();
     }
-    // Shown by a switch, the finder or the overview, or gone: the rule is done with it.
+    // Shown by a switch, the finder or the overview, or gone: the rule is done with it. A held
+    // window is only shown for the pause (spec 0039).
     let ruled = std::mem::take(&mut s.ruled);
-    s.ruled = ruled.into_iter().filter(|&(h, _)| hidden_on(s, h).is_some()).collect();
+    s.ruled = ruled.into_iter().filter(|&(h, _)| hidden_on(s, h).is_some() || held_on(s, h).is_some()).collect();
+    // A closed window is nothing to hide at resume (AC-9).
+    for m in s.monitors.values_mut() {
+        for l in &mut m.held {
+            l.retain(|&(h, pid)| win::is_window(Some(HWND(h as *mut _))).as_bool() && pid_of(HWND(h as *mut _)) == pid);
+        }
+    }
     // A closed window's handle can come back for a new window, which must count as new.
     s.opened.retain(|&(h, pid)| win::is_window(Some(HWND(h as *mut _))).as_bool() && pid_of(HWND(h as *mut _)) == pid);
     save_lines(s, true)
@@ -132,9 +141,17 @@ pub fn cant_save_due() -> bool {
 /// Without fingerprints: only L, M and A lines (an exit that showed everything). A lines stay,
 /// so windows still go home to a screen that returns after a quit (spec 0016 AC-8).
 pub(super) fn save_lines(s: &mut State, fingerprints: bool) -> Result<(), String> {
+    write_state(state_text(s, fingerprints))
+}
+
+/// The text `save_lines` writes.
+pub(super) fn state_text(s: &mut State, fingerprints: bool) -> String {
     let mut out = String::new();
     if let Some((id, time)) = s.logon {
         out += &format!("L {id:x} {time}\n");
+    }
+    if s.paused {
+        out += "Z\n";
     }
     let restore_on = settings::get().restore_enabled;
     let line = |f: &Fp| fp_text(f, restore_on);
@@ -154,6 +171,8 @@ pub(super) fn save_lines(s: &mut State, fingerprints: bool) -> Result<(), String
     let spot = |raw: isize| s.spots.get(&raw).map_or_else(|| spot_of(HWND(raw as *mut _)), |x| x.1).text();
     // A window listed but not cloaked yet (spec 0034 AC-1) is still in view: its W line is its only one.
     let listed: HashSet<isize> = s.monitors.values().flat_map(|m| m.hidden.iter().flatten().copied()).collect();
+    // A held window's H line is its only one, so a restore never matches it twice (spec 0039 AC-9).
+    let held: HashSet<isize> = s.monitors.values().flat_map(|m| m.held.iter().flatten().map(|&(raw, _)| raw)).collect();
     for (id, m) in &s.monitors {
         let a = m.area;
         out += &format!("M {id} {} {} {} {} {}\t{}\n", m.active, a.left, a.top, a.right, a.bottom, crate::restore::clean(&m.name));
@@ -167,9 +186,14 @@ pub(super) fn save_lines(s: &mut State, fingerprints: bool) -> Result<(), String
                 out += &format!("W {id} {ws} {h} {pid} {}{}", spot(h), fp(hwnd, pid));
             }
         }
+        for (ws, list) in m.held.iter().enumerate() {
+            for &(h, pid) in list {
+                out += &held_line(id, ws, h, pid, &spot(h), &fp(HWND(h as *mut _), pid));
+            }
+        }
         if let Some(mon) = mon_of(s, id) {
             // An away window's A line says where it belongs.
-            for h in app_windows_on(mon).into_iter().filter(|h| !s.away.contains_key(&(h.0 as isize)) && !listed.contains(&(h.0 as isize))) {
+            for h in app_windows_on(mon).into_iter().filter(|h| needs_view_line(s, h.0 as isize, &listed, &held)) {
                 let (raw, pid) = (h.0 as isize, pid_of(h));
                 if s.pinned.contains(&raw) {
                     out += &format!("P {id} {raw} {pid} {}{}", spot(raw), fp(h, pid));
@@ -188,14 +212,27 @@ pub(super) fn save_lines(s: &mut State, fingerprints: bool) -> Result<(), String
             let sp = e.spot.unwrap_or(Spot { rect: RECT::default(), state: 'n' }).text();
             match (e.away, e.ws, e.pin) {
                 (true, Some(ws), pin) => out += &format!("A {} {ws} 0 0 {sp} {}{}", e.dev, pin as u8, line(&e.fp)),
-                (_, Some(ws), _) => out += &format!("W {} {ws} 0 0 {sp}{}", e.dev, line(&e.fp)),
+                // Paused: an entry still waiting is held when it matches, never hidden.
+                (_, Some(ws), _) => out += &format!("{} {} {ws} 0 0 {sp}{}", if s.paused { 'H' } else { 'W' }, e.dev, line(&e.fp)),
                 (_, None, true) => out += &format!("P {} 0 0 {sp}{}", e.dev, line(&e.fp)),
                 (_, None, false) => out += &format!("V {} {sp}{}", e.dev, line(&e.fp)),
             }
         }
     }
     s.apps = apps;
-    write_state(out)
+    out
+}
+
+/// A held window's H line (spec 0039 AC-9): a W line's fields under its own letter. `fp` is
+/// `fp_text`'s, ending the line.
+pub(super) fn held_line(id: &str, ws: usize, raw: isize, pid: u32, spot: &str, fp: &str) -> String {
+    format!("H {id} {ws} {raw} {pid} {spot}{fp}")
+}
+
+/// Whether a window in view gets a V or P line: not when its A, W or H line already says where it
+/// belongs, or a restore would match it twice (spec 0039 AC-9).
+pub(super) fn needs_view_line(s: &State, raw: isize, listed: &HashSet<isize>, held: &HashSet<isize>) -> bool {
+    !s.away.contains_key(&raw) && !listed.contains(&raw) && !held.contains(&raw)
 }
 
 /// A line's fingerprint, after its first tab: app, class and title. Only a restore reads a title,
@@ -212,11 +249,13 @@ pub(super) fn fp_text(f: &Fp, restore_on: bool) -> String {
 #[derive(Debug, PartialEq)]
 pub(super) enum Line {
     L(u64, i64),
+    Z,
     M { id: String, active: usize, area: RECT, name: String },
     W { id: String, ws: usize, raw: isize, pid: u32, spot: Option<Spot>, fp: Option<Fp> },
     P { id: String, raw: isize, pid: u32, spot: Option<Spot>, fp: Option<Fp> },
     V { id: String, spot: Option<Spot>, fp: Option<Fp> },
     A { raw: isize, away: Away, fp: Option<Fp> },
+    H { id: String, ws: usize, raw: isize, pid: u32, spot: Option<Spot>, fp: Option<Fp> },
 }
 
 pub(super) fn parse_state(text: &str, upgrade: impl Fn(&str) -> Option<String>) -> Vec<Line> {
@@ -234,6 +273,10 @@ pub(super) fn parse_line(line: &str, upgrade: &dyn Fn(&str) -> Option<String>) -
     let n = |v: &str| v.parse::<i64>().ok();
     Some(match head.split(' ').collect::<Vec<_>>().as_slice() {
         ["L", id, time] => Line::L(u64::from_str_radix(id, 16).ok()?, time.parse().ok()?),
+        ["Z"] => Line::Z,
+        ["H", id, ws, raw, pid, spot @ ..] if spot.len() == 5 => {
+            Line::H { id: id.to_string(), ws: ws.parse().ok()?, raw: raw.parse().ok()?, pid: pid.parse().ok()?, spot: Spot::parse(spot), fp }
+        }
         ["M", id, active, l, t, r, b] => {
             let area = RECT { left: n(l)? as i32, top: n(t)? as i32, right: n(r)? as i32, bottom: n(b)? as i32 };
             Line::M { id: id.to_string(), active: active.parse().ok()?, area, name: tail.to_string() }
@@ -298,10 +341,28 @@ pub fn rescue() {
 /// how many were shown and left. A lines stay, as a quit keeps them.
 pub(super) fn rescued(text: &str, mut show: impl FnMut(isize, u32) -> Option<bool>) -> (String, usize, usize) {
     let (mut out, mut shown, mut left) = (String::new(), 0, 0);
+    // Paused (spec 0039 AC-9): the pause, each held window's workspace and each screen's shown
+    // workspace stay for the next start, which comes up paused.
+    let paused = text.lines().any(|l| l == "Z");
     for line in text.lines() {
         let (head, tail) = line.split_once('\t').map_or((line, String::new()), |(h, t)| (h, format!("\t{t}")));
         match head.split(' ').collect::<Vec<_>>().as_slice() {
-            ["L", ..] => out += &format!("{line}\n"),
+            ["L", ..] | ["Z"] => out += &format!("{line}\n"),
+            ["M", ..] if paused => out += &format!("{line}\n"),
+            // A held window is never cloaked by des-k, but a crash between the pause's save and its
+            // shows leaves it so: shown like a W line's, and its line stays either way.
+            ["H", _, _, raw, pid, ..] => {
+                out += &format!("{line}\n");
+                if let (Ok(raw), Ok(pid)) = (raw.parse::<isize>(), pid.parse::<u32>())
+                    && raw != 0
+                {
+                    match show(raw, pid) {
+                        Some(true) => shown += 1,
+                        Some(false) => left += 1,
+                        None => {}
+                    }
+                }
+            }
             ["M", id, _, rest @ ..] => out += &format!("M {id} 0{}{tail}\n", rest.iter().map(|v| format!(" {v}")).collect::<String>()),
             // An away window's line stays whatever happens: its screen may still return (spec 0016 AC-8).
             ["A", _, _, raw, pid, ..] => {

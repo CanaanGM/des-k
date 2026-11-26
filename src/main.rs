@@ -115,12 +115,14 @@ fn start_task() {
     }
 }
 
-/// Hands the backdrop each screen's pictures when its shown workspace or the settings changed
-/// since `seen` (spec 0026). Each reload gets a new version number; never its address, which a
-/// freed copy can hand on (spec 0032).
-fn backdrop_check(seen: &mut Option<(u64, u64)>) {
+/// Hands the backdrop each screen's pictures when its shown workspace, the settings or the pause
+/// changed since `seen` (spec 0026). Each reload gets a new version number; never its address,
+/// which a freed copy can hand on (spec 0032). While paused every screen wishes for none, so your
+/// Windows wallpaper shows, and resume draws them again (spec 0039 AC-4).
+fn backdrop_check(seen: &mut Option<(u64, u64, bool)>) {
     let s = settings::get();
-    let now = (ws::views::SHOWN.load(std::sync::atomic::Ordering::Relaxed), s.version());
+    let paused = ws::pause::paused();
+    let now = (ws::views::SHOWN.load(std::sync::atomic::Ordering::Relaxed), s.version(), paused);
     if *seen == Some(now) {
         return;
     }
@@ -128,7 +130,7 @@ fn backdrop_check(seen: &mut Option<(u64, u64)>) {
     let wants = ws::views::shown().into_iter().map(|(rect, id, shown)| backdrop::Want {
         rect,
         shown,
-        files: (0..s.workspaces).map(|i| s.wallpaper_for(&id, i).and_then(backdrop::Source::of)).collect(),
+        files: (0..s.workspaces).map(|i| s.wallpaper_for(&id, i).filter(|_| !paused).and_then(backdrop::Source::of)).collect(),
         intervals: (0..s.workspaces).map(|i| s.interval_for(i)).collect(),
         id,
     });
@@ -222,6 +224,13 @@ fn main() -> windows::core::Result<()> {
     tray::init();
     // What the last update from the tray did, and its files and task cleared (spec 0018).
     tray::installed(install::outcome());
+    // A start that comes up paused says so once (spec 0039 AC-5), over an update's balloon: des-k
+    // doing nothing is the thing to know. load logged it. At logon Windows drops the balloon, so
+    // des-k's own note follows at your first input.
+    if ws::pause::paused() {
+        tray::started_paused();
+        ws::pause::remind_at_input();
+    }
     install::cleanup();
     // Read at start only; written the moment it opens, so a crash can never make it loop
     // (spec 0017 AC-9).
@@ -263,6 +272,16 @@ fn main() -> windows::core::Result<()> {
     backdrop_check(&mut shown);
     let mut msg = MSG::default();
     while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
+        // Paused: no switch, send, follow, rule, swipe or mark acts, and none logs (spec 0039 AC-3,
+        // AC-4). The hook posts no key while paused; these can still be queued from before.
+        if ws::pause::paused()
+            && matches!(
+                msg.message,
+                WM_APP | keys::WM_SEND | keys::WM_JUMP | keys::WM_BACK | keys::WM_SEND_TO | keys::WM_PIN | keys::WM_HINTS | keys::WM_FINDER | keys::WM_OVERVIEW | touchpad::WM_GESTURE | apps::WM_UNCLOAKED | indicator::WM_ATTENTION
+            )
+        {
+            continue;
+        }
         // Any switch, jump, back, send, pin, hints key or screen change closes the finder, the
         // overview and the tray menu first, focus back (specs 0007, 0010, 0017, 0024).
         if matches!(msg.message, WM_APP | indicator::WM_DISPLAY_CHANGED | keys::WM_SEND | keys::WM_JUMP | keys::WM_BACK | keys::WM_SEND_TO | keys::WM_PIN | keys::WM_HINTS) {
@@ -270,7 +289,7 @@ fn main() -> windows::core::Result<()> {
             overview::close(true);
         }
         // The tray menu also closes for a gesture, a follow, the finder and the overview (AC-TRY-9).
-        if matches!(msg.message, WM_APP | indicator::WM_DISPLAY_CHANGED | keys::WM_SEND | keys::WM_JUMP | keys::WM_BACK | keys::WM_SEND_TO | keys::WM_PIN | keys::WM_HINTS | keys::WM_FINDER | keys::WM_OVERVIEW | touchpad::WM_GESTURE | WM_FOLLOW) {
+        if matches!(msg.message, WM_APP | indicator::WM_DISPLAY_CHANGED | keys::WM_SEND | keys::WM_JUMP | keys::WM_BACK | keys::WM_SEND_TO | keys::WM_PIN | keys::WM_HINTS | keys::WM_PAUSE | keys::WM_FINDER | keys::WM_OVERVIEW | touchpad::WM_GESTURE | WM_FOLLOW) {
             tray_menu::close(msg.message != WM_FOLLOW); // a follow already moved focus
         }
         match msg.message {
@@ -290,7 +309,7 @@ fn main() -> windows::core::Result<()> {
             WM_FOLLOW => {
                 let h = HWND(msg.wParam.0 as *mut _);
                 finder::used(h);
-                if settings::get().follow_activation {
+                if settings::get().follow_activation && !ws::pause::paused() {
                     ws::switch::follow(h);
                 }
             }
@@ -299,6 +318,12 @@ fn main() -> windows::core::Result<()> {
             keys::WM_BACK => ws::switch::back(ws::switch::Source::Keys),
             keys::WM_SEND_TO => ws::moves::send(ws::moves::To::Index(msg.wParam.0), msg.lParam.0 != 0),
             keys::WM_PIN => ws::moves::pin(),
+            keys::WM_PAUSE => ws::pause::toggle(),
+            // Paused: a new window stays where Windows put it, and counts as shown, so its rule is
+            // never applied after the fact (spec 0039 AC-6).
+            apps::WM_OPENED if ws::pause::paused() => {
+                ws::rules::first_show(HWND(msg.wParam.0 as *mut _));
+            }
             apps::WM_OPENED => {
                 apps::opened(HWND(msg.wParam.0 as *mut _), msg.lParam.0 as u32);
                 timer_on(&mut settle_timer, ws::rules::settling(), 250);
@@ -375,6 +400,8 @@ fn main() -> windows::core::Result<()> {
                 settings::store::watch();
                 ws::screens::check_screens(true);
                 ws::restore::resync();
+                ws::pause::tick();
+                ws::pause::remind();
                 tray::warn_if_broken();
                 if ws::store::cant_save_due() {
                     tray::cant_save();

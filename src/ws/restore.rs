@@ -43,25 +43,32 @@ pub fn restore_all() {
 pub(super) fn restore_in(s: &mut State) {
     let shell = shell_for_exit();
     let mut left = 0;
+    // Paused (spec 0039 AC-9): the next start comes up paused, so the held windows, their
+    // fingerprints and each screen's shown workspace are kept.
+    let paused = s.paused;
     for m in s.monitors.values_mut() {
-        for list in &mut m.hidden {
+        for (ws, list) in m.hidden.iter_mut().enumerate() {
             // No shell: every window still exists and stays hidden, so every one is kept.
-            let (_, stuck) = show_all(std::mem::take(list), |raw| match &shell {
+            let (shown, stuck) = show_all(std::mem::take(list), |raw| match &shell {
                 Some(sh) => uncloak(sh, raw),
                 None => win::is_window(Some(HWND(raw as *mut _))).as_bool().then_some(false),
             });
             left += stuck.len();
             *list = stuck;
+            // One a pause could not show until now keeps its workspace like the rest.
+            if paused && let Some(held) = m.held.get_mut(ws) {
+                held.extend(shown.into_iter().map(|raw| (raw, pid_of(HWND(raw as *mut _)))));
+            }
         }
         // A remembered screen keeps the workspace it showed, for its windows' return (spec 0016 AC-5).
-        if m.device.is_some() {
+        if m.device.is_some() && !paused {
             m.active = 0;
         }
     }
     if left > 0 {
         error!("{left} window(s) could not be shown: state.txt keeps them, the next start shows or adopts them");
     }
-    if let Err(e) = save_lines(s, left > 0) {
+    if let Err(e) = save_lines(s, left > 0 || paused) {
         error!("state.txt not saved: {e}");
     }
 }
@@ -112,9 +119,11 @@ pub fn load() -> Restoring {
     let away_raws: HashSet<isize> = lines.iter().filter_map(|l| if let Line::A { raw, .. } = l { (*raw != 0).then_some(*raw) } else { None }).collect();
     let (mut saved_logon, mut adopt, mut hidden, mut visible, mut pins) = (None, Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let (mut pinned, mut aways, mut adopt_away) = (Vec::new(), Vec::new(), Vec::new());
+    let ((paused, held_lines), mut adopt_held) = (held_in(&lines), Vec::new());
     for line in lines {
         match line {
             Line::L(id, time) => saved_logon = Some((id, time)),
+            Line::Z | Line::H { .. } => {}
             Line::M { id, active, area, name } => {
                 let here = present.contains(&id);
                 let m = mon_mut(s, &id);
@@ -157,6 +166,18 @@ pub fn load() -> Restoring {
             Line::A { .. } => {}
         }
     }
+    // A held window: an entry a restore holds, like a W line's (spec 0039 AC-10).
+    for (id, ws, raw, pid, spot, fp) in held_lines {
+        if !away_raws.contains(&raw) {
+            hidden.push((Entry { dev: id.clone(), ws: Some(ws), pin: false, away: false, spot, fp: fp.clone() }, raw == 0));
+        }
+        if raw != 0 {
+            if let Some(spot) = spot {
+                s.spots.insert(raw, (id.clone(), spot));
+            }
+            adopt_held.push((id, ws, raw, pid, fp));
+        }
+    }
 
     let new_sign_in = saved_logon.is_some() && s.logon.is_some() && saved_logon != s.logon;
     let cut_short = hidden.iter().chain(&aways).any(|(_, cut)| *cut);
@@ -175,16 +196,30 @@ pub fn load() -> Restoring {
         let same = |&(raw, pid): &(isize, u32)| win::is_window(Some(HWND(raw as *mut _))).as_bool() && pid_of(HWND(raw as *mut _)) == pid;
         s.pinned.extend(pins.iter().filter(|p| same(p)).map(|&(raw, _)| raw));
         // Still that window, still open: it still waits for its screen (spec 0016 AC-8).
-        for (raw, a, fp) in adopt_away {
+        let it = |raw: isize, pid: u32, fp: &Fp| {
             let h = HWND(raw as *mut _);
-            let it = same(&(raw, a.pid)) && crate::restore::app(h, a.pid) == fp.app && crate::restore::clean(&class_name(h)) == fp.class;
-            if it && s.monitors.contains_key(&a.home) {
+            same(&(raw, pid)) && crate::restore::app(h, pid) == fp.app && crate::restore::clean(&class_name(h)) == fp.class
+        };
+        for (raw, a, fp) in adopt_away {
+            if it(raw, a.pid, &fp) && s.monitors.contains_key(&a.home) {
                 if a.pinned {
                     s.pinned.insert(raw);
                 }
                 s.away.insert(raw, a);
             }
         }
+        // Still held, under its screen even while that one is missing (spec 0039 AC-10).
+        for (id, ws, raw, pid, fp) in adopt_held {
+            if it(raw, pid, &fp) {
+                mon_mut(s, &id).held[ws.min(count - 1)].push((raw, pid));
+            }
+        }
+    }
+    if paused {
+        set_paused(s, true);
+        show_held_cloaked(s);
+        let n: usize = s.monitors.values().map(|m| m.held.iter().map(Vec::len).sum::<usize>()).sum();
+        info!("starting paused: {n} window(s) kept on their workspaces");
     }
     if restoring != Restoring::No {
         // A new sign in: every saved handle is dead. A resume: only the cut entries are left.
@@ -279,6 +314,8 @@ pub fn load() -> Restoring {
 pub fn restore_tick() -> bool {
     let mut guard = state();
     let s = &mut *guard;
+    // Paused: a matched window is held on its workspace instead of hidden (spec 0039 AC-10).
+    let hold = !hiding_allowed(s);
     let Some(r) = s.restore.as_mut() else { return false };
     // A restore only hides, so on a layout des-k does not know it ends here (spec 0030 AC-6).
     if Instant::now() >= r.deadline || r.pending.is_empty() || crate::cloak::unknown() {
@@ -351,7 +388,8 @@ pub fn restore_tick() -> bool {
                 }
                 s.away.insert(raw, Away { home: e.dev.clone(), ws, spot, pinned: e.pin, pid: key.1 });
                 r.pending.retain(|&p| p != i);
-                if here.is_none()
+                if !hold
+                    && here.is_none()
                     && !(e.pin || e.ws.is_none() || ws == home_active)
                     && let Some(main) = main
                 {
@@ -392,6 +430,14 @@ pub fn restore_tick() -> bool {
                 _ if m.active == ws => use_up(r, &format!("{dev} already shows workspace {}", ws + 1)),
                 // Apps often open on the main screen and move a moment later.
                 _ if device_name(win::monitor_from_window(h, MONITOR_DEFAULTTONEAREST)) != p.device => {}
+                _ if hold => {
+                    r.pending.retain(|&p| p != i);
+                    r.resolved.insert(key);
+                    r.hidden += 1;
+                    m.held[ws].push((raw, key.1));
+                    changed = true;
+                    info!("restore: {} held for {dev} workspace {}/{count} while paused", fp.app, ws + 1);
+                }
                 _ => {
                     r.pending.retain(|&p| p != i);
                     plan.push(Hide { h, key, i, app: fp.app.clone(), to: (dev.clone(), ws), then: After::Home { was_fg: win::get_foreground_window() == h } });
@@ -526,6 +572,11 @@ pub fn resync() {
         return;
     }
     RESYNC.store(tries - 1, Ordering::Relaxed);
+    // Paused: nothing is hidden again, not even a window a pause could not show (spec 0039).
+    if !hiding_allowed(&state()) {
+        RESYNC.store(0, Ordering::Relaxed);
+        return;
+    }
     // Nothing to hide again on a layout des-k does not know; the listed stay listed (spec 0030 AC-6).
     if crate::cloak::unknown() {
         RESYNC.store(0, Ordering::Relaxed);

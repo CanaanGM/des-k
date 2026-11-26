@@ -84,6 +84,10 @@ taskbar app"). You can change any shortcut in Settings. Forgot one? Tray → **S
   its workspace keeps a dot until you go there.
 - **Settings** (tray → **Settings**): the number of workspaces (2 to 9), names, wallpapers, app
   rules, every shortcut, the indicator, colors and gestures. Changes apply at once.
+- **Pause** (tray â†’ **Pause des-k**, or a key you set in Settings): every hidden window comes back
+  and Windows gets its own shortcuts back, for a game or to see Windows on its own. **Resume
+  des-k** puts each window back on its workspace. Swipes do nothing until you resume, and the
+  tray icon turns gray. A restart while paused starts paused.
 - **Screens**: unplug one and its windows move to the main display. Plug it back in and they go
   back to their workspace, place and size.
 - Windows on other workspaces leave the taskbar and Alt+Tab (Store apps like Calculator keep

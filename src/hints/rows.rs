@@ -126,7 +126,7 @@ pub(super) fn pad(st: &State, back: Option<GaveBack>) -> Pad {
 pub(super) fn read(s: &Settings, st: &State, back: Option<GaveBack>) -> View {
     let row = |title: &str, keys| KeyRow { title: title.into(), keys };
     let mut around = pair(&s.previous, &s.next, ("Switch workspace", "Previous workspace", "Next workspace"));
-    around.extend([row("Go to workspace 1–9", digits(s.jump)), row("Back to the last workspace", list(&s.back)), row("Open overview", list(&s.overview)), row("Find a window", list(&s.finder))]);
+    around.extend([row("Go to workspace 1–9", digits(s.jump)), row("Back to the last workspace", list(&s.back)), row("Open overview", list(&s.overview)), row("Find a window", list(&s.finder)), row("Pause des-k", list(&s.pause))]);
     let mut windows = pair(&s.send_previous, &s.send_next, ("Send window to next or previous", "Send window to previous workspace", "Send window to next workspace"));
     windows.extend(pair(&s.send_previous_stay, &s.send_next_stay, ("Send window to next or previous and stay", "Send window to previous workspace and stay", "Send window to next workspace and stay")));
     windows.extend([row("Send window to 1–9", digits(s.send_to)), row("Send window to 1–9 and stay", digits(s.send_to_stay)), row("Pin window to all workspaces", list(&s.pin))]);
@@ -211,6 +211,7 @@ pub(super) fn owner_name(list: &str) -> (&'static str, &'static str) {
         "finder" => ("Find a window", "shortcuts.finder"),
         "overview" => ("Open overview", "shortcuts.overview"),
         "pin" => ("Pin window to all workspaces", "shortcuts.pin"),
+        "pause" => ("Pause des-k", "shortcuts.pause"),
         "jump" => ("Go to workspace 1–9", "shortcuts.jump"),
         "back" => ("Back to the last workspace", "shortcuts.back"),
         "send_to" => ("Send window to 1–9", "shortcuts.send_to"),

@@ -50,6 +50,10 @@ pub fn place_new(h: HWND, rule: &settings::Rule, name: String, shown: Option<u32
 pub(super) fn place_in(s: &mut State, h: HWND, rule: &settings::Rule, name: String, shown: Option<u32>) -> Option<(HMONITOR, Card)> {
     let count = settings::get().workspaces;
     let (app, k, raw) = (who(h), rule.workspace, h.0 as isize);
+    // Paused: a new window opens where Windows puts it, and nothing logs per window (spec 0039 AC-4).
+    if !hiding_allowed(s) {
+        return None;
+    }
     if crate::cloak::unknown() {
         info!("apps: {app} opened where Windows put it: hiding is off on this Windows");
         return None;
@@ -92,7 +96,7 @@ pub(super) fn place_in(s: &mut State, h: HWND, rule: &settings::Rule, name: Stri
         if list_then_save(s, &[(land.id.clone(), k, raw)]).is_err() {
             return None;
         }
-        match hide_new(&shell, h) {
+        match hide_new(s, &shell, h) {
             Ok(retries) => {
                 how = match shown {
                     Some(t) => format!("hidden {} ms after it showed, {retries} retries", win::get_tick_count().wrapping_sub(t)),
@@ -159,6 +163,9 @@ pub fn recloak(h: HWND) {
     }
     let mut guard = state();
     let s = &mut *guard;
+    if !hiding_allowed(s) {
+        return;
+    }
     let raw = h.0 as isize;
     let Some(r) = s.ruled.get(&raw) else { return };
     if r.at.elapsed() >= HOLD_FOR || !win::is_window(Some(h)).as_bool() || cloaked(h) != 0 {
@@ -168,7 +175,7 @@ pub fn recloak(h: HWND) {
     let (recloaks, from, app) = (r.recloaks, r.from.clone(), who(h));
     let held = recloaks < RECLOAKS
         && match Shell::new() {
-            Ok(shell) => hide_new(&shell, h).inspect_err(|e| warn!("apps: could not hide {app} again: {e}")).is_ok(),
+            Ok(shell) => hide_new(s, &shell, h).inspect_err(|e| warn!("apps: could not hide {app} again: {e}")).is_ok(),
             Err(e) => {
                 warn!("apps: could not hide {app} again: {e}");
                 false
@@ -203,9 +210,12 @@ pub fn recloak(h: HWND) {
 }
 
 /// Cloaks a window that just showed, retrying every `NEW_RETRY` while the shell has no view for
-/// it yet (AGENTS.md gotcha). Returns how many retries it took.
-pub(super) fn hide_new(shell: &Shell, h: HWND) -> windows::core::Result<u32> {
+/// it yet (AGENTS.md gotcha). Returns how many retries it took. Refuses while paused (spec 0039).
+pub(super) fn hide_new(s: &State, shell: &Shell, h: HWND) -> windows::core::Result<u32> {
     const NO_VIEW: windows::core::HRESULT = windows::core::HRESULT(0x8002802Bu32 as i32);
+    if !hiding_allowed(s) {
+        return Err(windows::Win32::Foundation::E_ABORT.into());
+    }
     let mut retries = 0;
     loop {
         match shell.hide(h, true) {
@@ -234,6 +244,11 @@ pub fn settling() -> bool {
 pub fn settle_tick() -> bool {
     let mut guard = state();
     let s = &mut *guard;
+    // Paused: no rule acts, so its timer stops (spec 0039 AC-4).
+    if !hiding_allowed(s) {
+        s.settle.clear();
+        return false;
+    }
     let raws: Vec<isize> = s.settle.keys().copied().collect();
     for raw in raws {
         let h = HWND(raw as *mut _);

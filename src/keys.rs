@@ -10,6 +10,8 @@
 // - The pin shortcut: posted as WM_PIN, once per press (spec 0014).
 // - The hints shortcut: posted as WM_HINTS, once per press (spec 0017).
 // - The back shortcut: posted as WM_BACK, once per press (spec 0024).
+// - The pause shortcut: posted as WM_PAUSE, once per press (spec 0039). While paused it is the
+//   only shortcut taken: every other key reaches Windows as if des-k were not running.
 // - Copilot key (sends LWin, LShift, F23): turned into Right Ctrl, unless settings turn it off.
 // - The keys and clicks touchpad gestures type (spec 0011).
 // - Recording for the settings page or the hints window: while on, every key is swallowed and
@@ -56,9 +58,23 @@ pub const WM_HINTS: u32 = WM_APP + 14;
 /// Thread message: flip the screen under the mouse to the workspace it showed before (spec 0024).
 /// 17 and 18 are taken by `apps` (spec 0027).
 pub const WM_BACK: u32 = WM_APP + 19;
+/// Thread message: pause des-k, or resume it while paused (spec 0039).
+pub const WM_PAUSE: u32 = WM_APP + 20;
 
 static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
 static RECORDING: AtomicBool = AtomicBool::new(false);
+/// Paused (spec 0039): mirrors `ws::State.paused`, written only by the main thread under the ws lock.
+static PAUSED: AtomicBool = AtomicBool::new(false);
+
+/// ws sets it with its own paused flag. Main thread.
+pub fn set_paused(on: bool) {
+    PAUSED.store(on, Ordering::Relaxed);
+}
+
+/// Whether des-k is paused, readable from any thread without the ws lock.
+pub fn paused() -> bool {
+    PAUSED.load(Ordering::Relaxed)
+}
 /// The window recording, which main sends WM_RECORDED on to; 0 while none is. Main thread.
 static OWNER: AtomicIsize = AtomicIsize::new(0);
 
@@ -260,7 +276,7 @@ fn digit(vk: u16) -> Option<usize> {
 /// list holding one of a set's digits keeps it (spec 0012 AC-8). Modifiers must match exactly.
 fn decide(st: &settings::Settings, combo: Combo) -> Option<(u32, isize, isize)> {
     // (list, message, wparam direction, lparam follow)
-    let all: [(&[Combo], u32, isize, isize); 11] = [
+    let all: [(&[Combo], u32, isize, isize); 12] = [
         (&st.previous, WM_APP, -1, 0),
         (&st.next, WM_APP, 1, 0),
         (&st.back, WM_BACK, 0, 0),
@@ -272,6 +288,7 @@ fn decide(st: &settings::Settings, combo: Combo) -> Option<(u32, isize, isize)> 
         (&st.overview, WM_OVERVIEW, 0, 0),
         (&st.pin, WM_PIN, 0, 0),
         (&st.hints, WM_HINTS, 0, 0),
+        (&st.pause, WM_PAUSE, 0, 0),
     ];
     let sets = [(st.jump, WM_JUMP, 0), (st.send_to, WM_SEND_TO, 1), (st.send_to_stay, WM_SEND_TO, 0)];
     all.iter().find(|(list, ..)| list.contains(&combo)).map(|&(_, msg, dir, follow)| (msg, dir, follow)).or_else(|| {
@@ -302,14 +319,17 @@ fn shortcut(vk: u16, up: bool, st: &settings::Settings) -> bool {
     let Some((msg, wparam, follow)) = decide(st, combo) else {
         return false;
     };
+    if !taken(msg, PAUSED.load(Ordering::Relaxed)) {
+        return false;
+    }
     if !up {
         // Releasing Win alone opens Start, Alt alone opens an app's menu bar.
         if combo.mods & (WIN | ALT) != 0 {
             send(&[(VK_MASK, false), (VK_MASK, true)]);
         }
-        // A held finder, overview, pin or hints key would toggle it over and over, and a held back
-        // key would flicker the screen between two workspaces (spec 0024 AC-5).
-        if matches!(msg, WM_SEND | WM_SEND_TO | WM_FINDER | WM_OVERVIEW | WM_PIN | WM_HINTS | WM_BACK) {
+        // A held finder, overview, pin, hints or pause key would toggle it over and over, and a
+        // held back key would flicker the screen between two workspaces (spec 0024 AC-5).
+        if matches!(msg, WM_SEND | WM_SEND_TO | WM_FINDER | WM_OVERVIEW | WM_PIN | WM_HINTS | WM_BACK | WM_PAUSE) {
             SEND_HELD.set(Some(vk));
         }
         unsafe {
@@ -317,6 +337,12 @@ fn shortcut(vk: u16, up: bool, st: &settings::Settings) -> bool {
         }
     }
     true
+}
+
+/// Whether des-k takes a shortcut that decided on `msg`: always, but while paused only the pause
+/// key, so Windows gets its own shortcuts back (spec 0039 AC-3).
+fn taken(msg: u32, paused: bool) -> bool {
+    !paused || msg == WM_PAUSE
 }
 
 /// true = swallow the event.
@@ -587,6 +613,20 @@ mod tests {
         assert_eq!(decide(&Settings::default(), c(WIN | CTRL, b'H' as u16)), None);
         let s = Settings { hints: vec![c(WIN | CTRL, b'H' as u16)], ..Settings::default() };
         assert_eq!(decide(&s, c(WIN | CTRL, b'H' as u16)), Some((WM_HINTS, 0, 0)));
+    }
+
+    // Spec 0039 AC-3, AC-13: the pause key is des-k's only once you set it, and it is the one
+    // shortcut the hook still takes while paused, so it can resume.
+    #[test]
+    fn the_pause_key_fires_only_once_set() {
+        assert_eq!(decide(&Settings::default(), c(WIN | CTRL, b'P' as u16)), None);
+        let s = Settings { pause: vec![c(WIN | CTRL, b'P' as u16)], ..Settings::default() };
+        assert_eq!(decide(&s, c(WIN | CTRL, b'P' as u16)), Some((WM_PAUSE, 0, 0)));
+        assert!(taken(WM_PAUSE, true), "it resumes");
+        for msg in [WM_APP, WM_SEND, WM_JUMP, WM_SEND_TO, WM_FINDER, WM_OVERVIEW, WM_PIN, WM_HINTS, WM_BACK] {
+            assert!(!taken(msg, true), "{msg:#x} reaches Windows while paused");
+            assert!(taken(msg, false), "{msg:#x} is des-k's while running");
+        }
     }
 
     // Two windows record keys: a key pressed for one must never land in the other, and the
