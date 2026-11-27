@@ -28,28 +28,28 @@ pub fn run(gesture: usize) {
     match action {
         Action::Switch(dir) => {
             close();
-            ws::switch(dir);
+            ws::switch::switch(dir, ws::switch::Source::Pointer);
             crate::welcome::tried(crate::welcome::Try::Switch);
         }
         Action::Back => {
             close();
-            ws::back();
+            ws::switch::back(ws::switch::Source::Pointer);
         }
         Action::Send(dir, follow) => {
             close();
-            ws::send(ws::To::Step(dir), follow);
+            ws::moves::send(ws::moves::To::Step(dir), follow);
         }
         Action::Jump(i) => {
             close();
-            ws::jump(i);
+            ws::switch::jump(i, ws::switch::Source::Pointer);
         }
         Action::SendTo(i, follow) => {
             close();
-            ws::send(ws::To::Index(i), follow);
+            ws::moves::send(ws::moves::To::Index(i), follow);
         }
         Action::Finder => {
             overview::close(true);
-            finder::toggle();
+            finder::toggle(ws::switch::Source::Pointer);
         }
         Action::Overview if overview::is_open() => {}
         Action::Overview => {
@@ -59,18 +59,18 @@ pub fn run(gesture: usize) {
         }
         // With the finder or overview open, it only closes them.
         Action::ShowDesktop if finder::is_open() || overview::is_open() => close(),
-        Action::ShowDesktop => ws::show_desktop(),
+        Action::ShowDesktop => ws::focus::show_desktop(),
         Action::AppNext => {
             close();
-            ws::app_next();
+            ws::focus::app_next();
         }
         Action::AppPrevious => {
             close();
-            ws::app_previous();
+            ws::focus::app_previous();
         }
         Action::Pin => {
             close();
-            ws::pin();
+            ws::moves::pin();
         }
         Action::Keys(vks) => keys::tap(vks),
         Action::MiddleClick => keys::middle_click(),

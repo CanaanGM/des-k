@@ -57,15 +57,23 @@ pub fn clean(text: &str) -> String {
     text.replace(['\t', '\r', '\n'], " ")
 }
 
-/// The window's program: the lowercased exe path, or the app id for a Store app (whose
+/// The window's program: the lowercased exe file name, or the app id for a Store app (whose
 /// exe is always applicationframehost.exe). Empty when the process cannot be opened.
 pub fn app(hwnd: HWND, pid: u32) -> String {
     let Some(exe) = exe_path(pid) else { return String::new() };
-    let exe = clean(&exe.to_lowercase());
-    if exe.ends_with("\\applicationframehost.exe") {
+    let exe = program(&clean(&exe));
+    if exe == "applicationframehost.exe" {
         return app_id(hwnd).unwrap_or(exe);
     }
     exe
+}
+
+/// A program as state.txt keeps it: the exe file name, lowercased, never its folder (spec 0033).
+/// A folder would show your user name, and apps that update into a new `app-x.y.z` folder would
+/// stop matching after a reboot. A Store app id has no `\` and stays as it is; so does a line an
+/// older des-k wrote with a full path, once read through here.
+pub fn program(app: &str) -> String {
+    app.rsplit('\\').next().unwrap_or_default().to_lowercase()
 }
 
 /// The full exe path of a process, as Windows spells it; None when it cannot be opened.
@@ -78,7 +86,8 @@ pub fn exe_path(pid: u32) -> Option<String> {
     ok.then(|| String::from_utf16_lossy(&buf[..len as usize]))
 }
 
-fn app_id(hwnd: HWND) -> Option<String> {
+/// A Store app frame window's app id, lowercased and cleaned; None until it can be read.
+pub fn app_id(hwnd: HWND) -> Option<String> {
     unsafe {
         let store: IPropertyStore = SHGetPropertyStoreForWindow(hwnd).ok()?;
         let mut v = store.GetValue(&PKEY_AppUserModel_ID).ok()?;
@@ -260,6 +269,17 @@ mod tests {
     }
     const EDGE: &str = r"c:\edge\msedge.exe";
     const WIN: &str = "Chrome_WidgetWin_1";
+
+    // state.txt keeps no folder (spec 0033 AC-1): it would show your user name, and an app that
+    // updates into a new versioned folder must keep one name across a reboot.
+    #[test]
+    fn a_program_is_kept_by_its_file_name() {
+        let before = program(r"C:\Users\x\AppData\Local\slack\app-4.41.97\slack.exe");
+        assert_eq!(before, "slack.exe");
+        assert_eq!(program(r"c:\users\x\appdata\local\slack\app-4.42.0\slack.exe"), before);
+        assert_eq!(program("microsoft.windowsterminal_8wekyb3d8bbwe!app"), "microsoft.windowsterminal_8wekyb3d8bbwe!app");
+        assert_eq!(program("code.exe"), "code.exe");
+    }
 
     // An app with one saved window: its title often changes across a reboot (a new tab,
     // an unsaved marker), and there is no other place it could belong.

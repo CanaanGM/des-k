@@ -3,6 +3,27 @@
 What changed in each release, newest first. Downloads are on
 [Releases](https://github.com/CanaanGM/des-k/releases).
 
+## 0.10.0 (2026-11-24)
+
+- **Updates prove they come from des-k's publisher.** Each release's checksum file is now signed
+  with the publisher's own key, on the publisher's own PC. **Install X.Y.Z** in the tray runs an
+  update only when that signature is good, was made for that version, and the setup matches it,
+  so taking over des-k's GitHub account is no longer enough to run a program on your PC. A
+  release that fails the check is refused with a warning and never installed. Updating to 0.10.0
+  itself from an older des-k still uses the checksum alone; every update after it is checked.
+  [RELEASING.md](RELEASING.md) shows how to check a download by hand.
+- **Ready for a Windows that changed.** des-k hides windows through a part of Windows that has no
+  public documentation. It now checks that part's fixed id before calling anything in it. On a
+  Windows where the id changed, des-k calls nothing there, keeps switching workspaces without
+  hiding windows, and the tray tells you why and offers to check for an update.
+- **Ending des-k at any moment loses no window.** des-k now writes a window into its layout file
+  before it hides it, not after. If des-k is ended halfway through a switch (Task Manager, a
+  crash), `des-k --quit` or the next start still finds every window it hid. If it can't write that
+  file, on a full disk for example, it hides nothing and says so on screen and in the tray.
+  Each release is now tested this way before it ships ([RELEASING.md](RELEASING.md)).
+- [SECURITY.md](SECURITY.md) now says what runs as admin, each file des-k reads from your data
+  folder, and why no setting can name a program or a path.
+
 ## 0.9.0 (2026-11-22)
 
 - **A picture for each workspace.** Put pictures in des-k's wallpapers folder (Settings →

@@ -1,9 +1,11 @@
 // Install a newer release from the tray (spec 0018), only in the installed copy running as
-// admin. A worker thread downloads the release's SHA256SUMS.txt and setup into the admin only
+// admin. A worker thread downloads the release's SHA256SUMS.txt, checks its minisign signature
+// against the keys built in here (spec 0031), downloads the setup into the admin only
 // <Program Files>\des-k\update\, checks the setup's SHA-256, and runs it silently through its
 // own one shot task `des-k update`: a child of des-k would sit in the des-k task's job and die
 // with it. The setup stops des-k, installs and starts it again; the next des-k says how it went.
 use crate::update::{self, Fail, Handle, Version, fail};
+use minisign_verify::{PublicKey, Signature};
 use std::convert::Infallible;
 use std::ffi::OsString;
 use std::io::Write;
@@ -43,7 +45,16 @@ pub const WM_INSTALL: u32 = WM_APP + 15;
 const _: () = assert!(size_of::<isize>() == 8, "des-k builds for x64 only");
 
 const SUMS_CAP: u64 = 64 * 1024;
+const SIG_CAP: u64 = 4 * 1024; // a real signature is about 300 bytes
 const SETUP_CAP: u64 = 64 * 1024 * 1024;
+
+/// The minisign public keys a release must be signed with, either one (spec 0031): the second
+/// line of each `.pub` file. Key ids F1C51A322A7CBAE1 (main) and 383EB8633678DAD9 (backup);
+/// RELEASING.md says where each private key lives and what to do when one is lost.
+const KEYS: [(&str, &str); 2] = [
+    ("main", "RWThunwqMhrF8Ty7LmKeLKoczPJyRjIQoPDPAYyEyLpGhgPnHDr8nBkJ"),
+    ("backup", "RWTZ2ng2Y7g+OCJHvqDtAUchdqToYuz2sd4zArQdh/UCryBUNv+USVkz"),
+];
 const TASK: &str = "des-k update";
 const XML: &str = "des-k-update.xml";
 const LOG: &str = "setup.log";
@@ -64,6 +75,9 @@ pub enum Phase {
 static PHASE: AtomicU64 = AtomicU64::new(0);
 /// The start up cleanup still runs: an install now could lose its files or task to it.
 static CLEANING: AtomicBool = AtomicBool::new(false);
+/// The release refused this run, packed by `pack_refused`; 0 for none. Never cleared, so no
+/// click can install it until des-k restarts.
+static REFUSED: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InstallFail {
@@ -77,21 +91,30 @@ pub enum InstallFail {
     SetupStopped,
     Slow,
     Crashed,
+    Unsigned,
+    BadSignature,
 }
 
 impl InstallFail {
-    /// The "Could not install" balloon's sentence; `SetupStopped` and `Slow` have their own balloon.
+    /// The balloon's sentence: "Could not install" for most, the refused balloon's for a
+    /// `refused` kind; `SetupStopped` and `Slow` have their own balloon.
     pub fn reason(self) -> String {
         match self {
             InstallFail::Net(f) => f.reason(),
             InstallFail::Missing => "This release has no setup or checksum file.".into(),
             InstallFail::NoLine => "The checksum file does not list the setup.".into(),
             InstallFail::TooBig => "The setup is larger than expected.".into(),
-            InstallFail::Mismatch => "The download does not match its checksum.".into(),
+            InstallFail::Mismatch => "The download does not match its signed checksum, so des-k did not run it. Do not install it by hand.".into(),
             InstallFail::Folder => "The update folder could not be used.".into(),
             InstallFail::Task => "Windows did not start the setup.".into(),
             InstallFail::SetupStopped | InstallFail::Slow | InstallFail::Crashed => "The install stopped with an error (the log has it).".into(),
+            InstallFail::Unsigned | InstallFail::BadSignature => "This release is not signed by des-k's publisher, so des-k did not run it. Do not install it by hand.".into(),
         }
+    }
+
+    /// The release itself failed the publisher's proof (spec 0031): never linked, never retried.
+    pub fn refused(self) -> bool {
+        matches!(self, InstallFail::Unsigned | InstallFail::BadSignature | InstallFail::Mismatch)
     }
 
     fn code(self) -> usize {
@@ -106,7 +129,27 @@ impl InstallFail {
             InstallFail::SetupStopped => 7,
             InstallFail::Slow => 8,
             InstallFail::Crashed => 9,
+            InstallFail::Unsigned => 10,
+            InstallFail::BadSignature => 11,
         }
+    }
+
+    /// Every kind but `Net`, from its `code`.
+    fn from_code(c: usize) -> Option<InstallFail> {
+        Some(match c {
+            1 => InstallFail::Missing,
+            2 => InstallFail::NoLine,
+            3 => InstallFail::TooBig,
+            4 => InstallFail::Mismatch,
+            5 => InstallFail::Folder,
+            6 => InstallFail::Task,
+            7 => InstallFail::SetupStopped,
+            8 => InstallFail::Slow,
+            9 => InstallFail::Crashed,
+            10 => InstallFail::Unsigned,
+            11 => InstallFail::BadSignature,
+            _ => return None,
+        })
     }
 }
 
@@ -156,6 +199,22 @@ fn set_phase(p: Phase) {
     PHASE.store(pack_phase(p), Ordering::SeqCst);
 }
 
+/// Like `pack_phase`: the kind's `code() + 1` in the top 16 bits, the version in the low 48.
+fn pack_refused(v: Version, f: InstallFail) -> u64 {
+    ((f.code() as u64) + 1) << 48 | v48(v)
+}
+
+fn unpack_refused(n: u64) -> Option<(Version, InstallFail)> {
+    let c = (n >> 48) as usize;
+    let f = InstallFail::from_code(c.checked_sub(1)?)?;
+    Some((from48(n & 0xFFFF_FFFF_FFFF), f))
+}
+
+/// The version and kind refused this run, if any: the tray never offers or installs it again.
+pub fn refused() -> Option<(Version, InstallFail)> {
+    unpack_refused(REFUSED.load(Ordering::SeqCst))
+}
+
 /// wParam: kind (0 started, 1 failed) | fail code << 8 | the network failure's code << 16 |
 /// its number (the HTTP status) << 24. lParam: the version's 48 bits.
 pub fn pack(m: Msg, v: Version) -> (WPARAM, LPARAM) {
@@ -173,16 +232,7 @@ pub fn unpack(wp: WPARAM, lp: LPARAM) -> Option<(Msg, Version)> {
     let v = from48(lp.0 as u64 & 0xFFFF_FFFF_FFFF);
     let f = match (wp.0 >> 8) & 0xFF {
         0 => InstallFail::Net(Fail::from_code((wp.0 >> 16) & 0xFF, (wp.0 >> 24) as u16)?),
-        1 => InstallFail::Missing,
-        2 => InstallFail::NoLine,
-        3 => InstallFail::TooBig,
-        4 => InstallFail::Mismatch,
-        5 => InstallFail::Folder,
-        6 => InstallFail::Task,
-        7 => InstallFail::SetupStopped,
-        8 => InstallFail::Slow,
-        9 => InstallFail::Crashed,
-        _ => return None,
+        c => InstallFail::from_code(c)?,
     };
     match wp.0 & 0xFF {
         0 => Some((Msg::Started, v)),
@@ -231,6 +281,46 @@ pub fn sums_line(text: &str, name: &str) -> Result<[u8; 32], InstallFail> {
         warn!("install: SHA256SUMS.txt has no line for {name}");
         InstallFail::NoLine
     })
+}
+
+/// Which of `KEYS` signed `sums` (the checksum file's bytes as downloaded) for exactly version
+/// `v`, or `BadSignature` with the reason logged. Pure: no disk, no network.
+fn check_sums(sums: &[u8], sig: &[u8], v: Version) -> Result<&'static str, InstallFail> {
+    check_with(&KEYS, sums, sig, v)
+}
+
+fn check_with(keys: &[(&'static str, &str)], sums: &[u8], sig: &[u8], v: Version) -> Result<&'static str, InstallFail> {
+    let bad = |why: String| {
+        warn!("install: the signature of des-k {v}'s SHA256SUMS.txt is refused: {why}");
+        InstallFail::BadSignature
+    };
+    let text = std::str::from_utf8(sig).map_err(|_| bad("it is not UTF-8".into()))?;
+    let sig = Signature::decode(text).map_err(|e| bad(format!("it cannot be read: {e}")))?;
+    let mut why = "signed by a key des-k does not have".to_string();
+    for &(name, b64) in keys {
+        // allow_legacy false: only a prehashed signature passes.
+        match PublicKey::from_base64(b64).and_then(|k| k.verify(sums, &sig, false)) {
+            Ok(()) => {
+                // Authenticated only now, so only now worth comparing.
+                let want = format!("des-k {v}");
+                let got = sig.trusted_comment();
+                return if got == want { Ok(name) } else { Err(bad(format!("its signed comment is {got:?}, not {want:?}"))) };
+            }
+            Err(minisign_verify::Error::UnexpectedKeyId) => {}
+            Err(e) => why = format!("the {name} key: {e}"),
+        }
+    }
+    Err(bad(why))
+}
+
+/// The signature download's failures: no signature is `Unsigned`, an oversized one is a bad
+/// one; a network failure stays one, never shown as an attack.
+fn sig_fail(f: InstallFail) -> InstallFail {
+    match f {
+        InstallFail::Missing => InstallFail::Unsigned,
+        InstallFail::TooBig => InstallFail::BadSignature,
+        f => f,
+    }
 }
 
 fn hex(h: &[u8]) -> String {
@@ -521,6 +611,10 @@ pub fn start(tray: HWND, v: Version) {
         warn!("install: the last update's files are still being cleared, this click is ignored");
         return;
     }
+    if refused().is_some_and(|(r, _)| r == v) {
+        warn!("install: des-k {v} was refused earlier in this run, this click is ignored");
+        return;
+    }
     if update::RUNNING.swap(true, Ordering::SeqCst) {
         warn!("install: a check or an install is already running, this click is ignored");
         return;
@@ -558,7 +652,13 @@ impl Guard {
 
     fn fail(&mut self, f: InstallFail) {
         self.done = true;
-        warn!("install of des-k {} failed: {f:?}", self.v);
+        if f.refused() {
+            // Before the post, so the tray's answer already sees it.
+            REFUSED.store(pack_refused(self.v, f), Ordering::SeqCst);
+            error!("install: des-k {} refused: {f:?}", self.v);
+        } else {
+            warn!("install of des-k {} failed: {f:?}", self.v);
+        }
         if let Some(dir) = &self.dir
             && let Err(why) = clear(dir)
         {
@@ -679,6 +779,14 @@ fn steps(g: &mut Guard) -> Result<Infallible, InstallFail> {
         Ok(())
     })?;
     info!("install: SHA256SUMS.txt downloaded, {n} bytes");
+    let mut sig = Vec::new();
+    download(&release_path(v, "SHA256SUMS.txt.minisig"), SIG_CAP, |b| {
+        sig.extend_from_slice(b);
+        Ok(())
+    })
+    .map_err(sig_fail)?;
+    let key = check_sums(&sums, &sig, v)?;
+    info!("install: signature good ({key} key)");
     let text = std::str::from_utf8(&sums).map_err(|_| {
         warn!("install: SHA256SUMS.txt is not UTF-8");
         InstallFail::NoLine
@@ -823,131 +931,4 @@ fn sweep(dir: &Path) {
 
 #[cfg(test)]
 #[allow(clippy::disallowed_macros)] // live_release prints what it checked (spec 0019 exception)
-mod tests {
-    use super::*;
-
-    const NAME: &str = "des-k-v0.4.2-setup.exe";
-    const H: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
-
-    #[test]
-    fn the_checksum_comes_from_the_one_exact_line() {
-        // Why: this hash decides whether an admin des-k runs a downloaded program; any line
-        // that is not exactly the setup's own must never be taken for it.
-        let sums = format!("\u{FEFF}{}  des-k-v0.4.2.zip\r\n{H}  {NAME}\r\n{}  des-k-v0.4.2-setup.exe.bak\r\n", "0".repeat(64), "1".repeat(64));
-        assert_eq!(hex(&sums_line(&sums, NAME).unwrap()), H);
-        let upper = format!("{}  {NAME}\n", H.to_uppercase());
-        assert_eq!(hex(&sums_line(&upper, NAME).unwrap()), H);
-        for bad in [
-            format!("{H}  des-k-v0.4.1-setup.exe\n"),
-            format!("{H}  {NAME}.bak\n"),
-            format!("{}  {NAME}\n", &H[1..]),
-            format!("{H}0  {NAME}\n"),
-            format!("{H} {NAME}\n"),
-            format!("{}g  {NAME}\n", &H[1..]),
-            format!("{H}  {NAME}\n{H}  {NAME}\n"),
-            format!("{H}\n"),
-            String::new(),
-        ] {
-            assert_eq!(sums_line(&bad, NAME), Err(InstallFail::NoLine), "{bad:?}");
-        }
-    }
-
-    #[test]
-    fn sha256_is_the_standard_one() {
-        // Why: a wrong hash would refuse every good setup, or worse, agree with a bad one.
-        assert_eq!(hex(&sha256(b"abc").unwrap()), H);
-    }
-
-    #[test]
-    fn downloads_are_built_from_the_numbers() {
-        // Why: the response never names what des-k fetches or runs (AC-4).
-        let v = Version(0, 4, 2);
-        assert_eq!(release_path(v, &setup_name(v)), "/CanaanGM/des-k/releases/download/v0.4.2/des-k-v0.4.2-setup.exe");
-        assert_eq!(release_path(v, "SHA256SUMS.txt"), "/CanaanGM/des-k/releases/download/v0.4.2/SHA256SUMS.txt");
-    }
-
-    #[test]
-    fn the_task_runs_the_setup_then_des_k() {
-        // Why: schtasks rejects UTF-8 and an <?xml?> line; the second action must follow the
-        // setup on every path, which a time limit would cut (AC-6).
-        let xml = task_xml("S-1-5-21-1-2-3-1001", Path::new(r"C:\Program Files\des-k\update\des-k-v0.4.2-setup.exe"), Path::new(r"C:\Program Files\des-k\update\setup.log"), Path::new(r"C:\WINDOWS\system32\schtasks.exe"));
-        assert!(xml.is_ascii() && !xml.contains("<?xml"));
-        assert!(xml.contains(r#"/LOG="C:\Program Files\des-k\update\setup.log""#));
-        assert!(xml.contains(r"<UserId>S-1-5-21-1-2-3-1001</UserId>") && xml.contains("<RunLevel>HighestAvailable</RunLevel>"));
-        assert!(xml.contains("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>") && !xml.contains("<Triggers>"));
-        let setup = xml.find(r"<Command>C:\Program Files\des-k\update\des-k-v0.4.2-setup.exe</Command>").expect("setup action");
-        let again = xml.find(r"<Command>C:\WINDOWS\system32\schtasks.exe</Command><Arguments>/run /tn des-k</Arguments>").expect("restart action");
-        assert!(setup < again && xml.matches("<Exec>").count() == 2);
-        assert!(task_xml("é&", Path::new("a"), Path::new("b"), Path::new("c")).contains("<UserId>&#233;&amp;</UserId>"));
-    }
-
-    #[test]
-    fn the_outcome_compares_versions_only() {
-        // Why: whether des-k was updated is the version now running, never the setup's exit code (AC-8).
-        let ours = Version(0, 4, 2);
-        assert_eq!(rule(Some(Version(0, 4, 2)), ours), Outcome::Updated(ours));
-        assert_eq!(rule(Some(Version(0, 5, 0)), ours), Outcome::NotUpdated(Version(0, 5, 0)));
-        assert_eq!(rule(Some(Version(0, 4, 1)), ours), Outcome::Nothing);
-        assert_eq!(rule(None, ours), Outcome::Nothing);
-        assert_eq!(setup_version(NAME), Some(ours));
-        // Why: a shown outcome is renamed so it shows once; a download in flight is no outcome.
-        assert_eq!(setup_version("des-k-v0.4.2-setup.exe.done"), None);
-        assert_eq!(setup_version("des-k-v0.4.2-setup.exe.part"), None);
-    }
-
-    /// Downloads a real release's checksum file and setup into memory, runs nothing:
-    /// `cargo test live_release -- --ignored --nocapture`.
-    #[test]
-    #[ignore]
-    fn live_release_matches_its_checksum() {
-        let v = Version(0, 4, 1);
-        let mut sums = Vec::new();
-        download(&release_path(v, "SHA256SUMS.txt"), SUMS_CAP, |b| {
-            sums.extend_from_slice(b);
-            Ok(())
-        })
-        .expect("SHA256SUMS.txt");
-        let want = sums_line(std::str::from_utf8(&sums).unwrap(), &setup_name(v)).expect("its line");
-        let mut sha = Sha::new().unwrap();
-        let n = download(&release_path(v, &setup_name(v)), SETUP_CAP, |b| sha.add(b)).expect("the setup");
-        let got = sha.finish().unwrap();
-        println!("{n} bytes, {} vs {}", hex(&got), hex(&want));
-        assert_eq!(got, want);
-        assert_eq!(download(&release_path(v, "nope.exe"), SUMS_CAP, |_| Ok(())), Err(InstallFail::Missing));
-    }
-
-    #[test]
-    fn every_install_message_survives() {
-        // Why: the outcome crosses threads only in wParam and lParam; a lossy pack shows the
-        // wrong version or the wrong reason (AC-3, AC-5, AC-6).
-        let big = Version(65535, 65535, 65535);
-        let mut all = vec![Msg::Started];
-        for f in [
-            InstallFail::Net(Fail::NoConnection),
-            InstallFail::Net(Fail::Timeout),
-            InstallFail::Net(Fail::Certificate),
-            InstallFail::Net(Fail::ProxyLogin),
-            InstallFail::Net(Fail::Status(65535)),
-            InstallFail::Missing,
-            InstallFail::NoLine,
-            InstallFail::TooBig,
-            InstallFail::Mismatch,
-            InstallFail::Folder,
-            InstallFail::Task,
-            InstallFail::SetupStopped,
-            InstallFail::Slow,
-            InstallFail::Crashed,
-        ] {
-            all.push(Msg::Failed(f));
-        }
-        for m in all {
-            for v in [big, Version(0, 4, 2), Version(0, 0, 0)] {
-                let (wp, lp) = pack(m, v);
-                assert_eq!(unpack(wp, lp), Some((m, v)), "{m:?} {v}");
-            }
-        }
-        for p in [Phase::Idle, Phase::Downloading(big), Phase::Installing(big), Phase::Downloading(Version(0, 0, 1))] {
-            assert_eq!(unpack_phase(pack_phase(p)), p);
-        }
-    }
-}
+mod tests;

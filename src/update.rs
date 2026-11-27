@@ -281,6 +281,13 @@ pub(crate) fn fail(e: windows::core::Error, what: &str) -> Fail {
     }
 }
 
+/// The newest release, asked the way a tray check asks; for the live tests only.
+#[cfg(test)]
+pub(crate) fn newest() -> Result<Version, Fail> {
+    let (status, loc) = fetch()?;
+    redirect(status, loc.as_deref())
+}
+
 /// One GET with redirects off; the body is never read. The HTTP status and `Location`.
 fn fetch() -> Result<(u16, Option<String>), Fail> {
     unsafe {

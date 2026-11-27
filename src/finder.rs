@@ -34,9 +34,17 @@ use windows::Win32::{
 use windows::core::{HSTRING, PCWSTR, PWSTR, w};
 
 use crate::restore;
-use crate::ui::{self, Canvas, F, alpha, mix, op};
+use crate::ui::{self, canvas::Canvas, color::{alpha, mix, op}, fonts::F};
 use crate::uia::{self, Node, Tree};
-use crate::ws::{self, Miss};
+use crate::ws::{self, moves::Miss};
+
+mod draw;
+pub(crate) mod names;
+mod rank;
+
+use draw::paint;
+use names::{icon, program};
+use rank::{first_pick, rank, recency_rank};
 
 const CLASS: PCWSTR = w!("des-k-finder");
 const CLOSING_TIMER: usize = 1;
@@ -147,10 +155,6 @@ thread_local! {
     static BRUSH: Cell<Option<(HBRUSH, u32)>> = const { Cell::new(None) }; // the text box's, and its color
     // Root owner window -> last time it came to the front. Memory only (spec 0007).
     static RECENT: RefCell<HashMap<isize, Instant>> = RefCell::default();
-    // Window -> its icon, asked for once (see `icon`). Borrowed handles, never destroyed.
-    static ICONS: RefCell<HashMap<isize, HICON>> = RefCell::default();
-    // Exe path -> the app's name, read once while des-k runs (AC-FND-4).
-    static NAMES: RefCell<HashMap<String, Option<String>>> = RefCell::default();
     static SESSION: RefCell<Option<Session>> = const { RefCell::new(None) };
     static TREE: Tree = Tree::default();
 }
@@ -374,62 +378,6 @@ impl Session {
     }
 }
 
-/// AC-4: windows used since start, most recent first; then unused ones on screen, front to
-/// back; then unused hidden ones by screen, workspace and saved order. `rows` come in
-/// `ws::windows()` order, which breaks the remaining ties.
-fn recency_rank(rows: &mut [Row]) {
-    let mut order: Vec<usize> = (0..rows.len()).collect();
-    order.sort_by(|&a, &b| {
-        let (ra, rb) = (&rows[a], &rows[b]);
-        rb.used
-            .cmp(&ra.used)
-            .then(rb.on_screen.cmp(&ra.on_screen))
-            .then_with(|| if ra.on_screen { std::cmp::Ordering::Equal } else { (ra.screen, ra.workspace).cmp(&(rb.screen, rb.workspace)) })
-            .then(a.cmp(&b))
-    });
-    for (rank, i) in order.into_iter().enumerate() {
-        rows[i].rank = rank;
-    }
-}
-
-/// AC-5: the matching rows, best score first, equal scores in the AC-4 order. Then the rows
-/// that match only by their workspace's name (`by_name`), in the AC-4 order, so a window you
-/// typed the title of always comes first (spec 0023 AC-9).
-fn rank(rows: &[Row], scores: &[Option<u32>], by_name: &[bool]) -> Vec<(usize, u32)> {
-    let mut shown: Vec<(usize, u32)> = scores.iter().enumerate().filter_map(|(i, s)| Some((i, (*s)?))).collect();
-    shown.sort_by(|a, b| b.1.cmp(&a.1).then(rows[a.0].rank.cmp(&rows[b.0].rank)));
-    let mut named: Vec<(usize, u32)> = (0..rows.len()).filter(|&i| by_name.get(i) == Some(&true) && scores[i].is_none()).map(|i| (i, 0)).collect();
-    named.sort_by_key(|&(i, _)| rows[i].rank);
-    shown.extend(named);
-    shown
-}
-
-/// With nothing typed the second row, so Win+F then Enter flips back like Alt+Tab.
-fn first_pick(query: &str, shown: usize) -> usize {
-    if query.trim().is_empty() && shown >= 2 { 1 } else { 0 }
-}
-
-/// A row's matched letters split back into its two columns, as char indexes (AC-FND-6). nucleo
-/// counts a letter with combining marks as one; a column where that happened gets none.
-fn split_marks(r: &Row) -> (Vec<usize>, Vec<usize>) {
-    let mut buf = Vec::new();
-    let plen = Utf32Str::new(&r.program, &mut buf).len();
-    let tlen = Utf32Str::new(&r.title, &mut buf).len();
-    let (pok, tok) = (plen == r.program.chars().count(), tlen == r.title.chars().count());
-    let (mut p, mut t) = (vec![], vec![]);
-    for &i in &r.marks {
-        let i = i as usize;
-        if i < plen {
-            if pok {
-                p.push(i);
-            }
-        } else if i > plen && i - plen - 1 < tlen && tok {
-            t.push(i - plen - 1);
-        }
-    }
-    (p, t)
-}
-
 /// Ctrl+Backspace: where the word before the caret starts. Spaces before the caret go
 /// with it; a word is a run of letters and digits, or a run of other symbols.
 fn delete_word(before: &[u16]) -> usize {
@@ -449,181 +397,13 @@ fn delete_word(before: &[u16]) -> usize {
     i
 }
 
-fn stem(exe: &str) -> String {
-    Path::new(exe).file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned())
-}
-
-/// The app's name (AC-FND-4): its exe's file description, else the exe name without .exe. A
-/// Store app's frame names the hosted app's package, else shows the window title. Read once per
-/// exe while des-k runs.
-pub(crate) fn program(hwnd: HWND) -> String {
-    let (name, frame) = app(hwnd);
-    name.unwrap_or_else(|| if frame { ws::title(hwnd) } else { String::new() })
-}
-
-/// `program` without the title: for words des-k shows unasked, where a title could carry a
-/// message's text (spec 0022 AC-9). None when no name can be read.
-pub(crate) fn app_name(hwnd: HWND) -> Option<String> {
-    app(hwnd).0.filter(|n| !n.trim().is_empty())
-}
-
-/// The app's name if one can be read, and whether `hwnd` is a Store app's frame.
-fn app(hwnd: HWND) -> (Option<String>, bool) {
-    let exe = |h: HWND| {
-        let mut pid = 0;
-        unsafe { GetWindowThreadProcessId(h, Some(&mut pid)) };
-        restore::exe_path(pid).map(|p| (p, pid))
-    };
-    let Some((path, _)) = exe(hwnd) else { return (None, false) };
-    if stem(&path).eq_ignore_ascii_case("ApplicationFrameHost") {
-        // The hosted app lives in a CoreWindow child while it runs (not while suspended).
-        let core = unsafe { FindWindowExW(Some(hwnd), None, w!("Windows.UI.Core.CoreWindow"), None) }.ok().and_then(exe);
-        return (core.and_then(|(path, pid)| named(&path, || package_name(pid))), true);
-    }
-    (named(&path, || Some(describe(&path).unwrap_or_else(|| stem(&path)))), false)
-}
-
-fn named(exe: &str, find: impl FnOnce() -> Option<String>) -> Option<String> {
-    if let Some(n) = NAMES.with_borrow(|m| m.get(exe).cloned()) {
-        return n;
-    }
-    let n = find();
-    NAMES.with_borrow_mut(|m| m.insert(exe.to_string(), n.clone()));
-    n
-}
-
-/// The FileDescription in an exe's version info: in its own language first, then US English.
-fn describe(exe: &str) -> Option<String> {
-    let path = HSTRING::from(exe);
-    unsafe {
-        let size = GetFileVersionInfoSizeW(&path, None);
-        if size == 0 {
-            return None;
-        }
-        let mut data = vec![0u8; size as usize];
-        GetFileVersionInfoW(&path, None, size, data.as_mut_ptr().cast()).ok()?;
-        let query = |sub: &str| {
-            let (mut p, mut len) = (std::ptr::null_mut(), 0u32);
-            VerQueryValueW(data.as_ptr().cast(), &HSTRING::from(sub), &mut p, &mut len).as_bool().then_some((p as *const u16, len as usize))
-        };
-        let mut langs: Vec<(u16, u16)> = match query(r"\VarFileInfo\Translation") {
-            Some((p, bytes)) => std::slice::from_raw_parts(p, bytes / 2).as_chunks::<2>().0.iter().map(|c| (c[0], c[1])).collect(),
-            None => vec![],
-        };
-        langs.push((0x0409, 0x04B0));
-        langs.into_iter().find_map(|(lang, cp)| {
-            let (p, chars) = query(&format!(r"\StringFileInfo\{lang:04x}{cp:04x}\FileDescription"))?;
-            let s = String::from_utf16_lossy(std::slice::from_raw_parts(p, chars));
-            let s = no_exe(s.trim_end_matches('\0').trim());
-            (!s.is_empty()).then(|| s.to_string())
-        })
-    }
-}
-
-/// A description that is only a file name (Windows 11's Notepad says `Notepad.exe`) without its `.exe`.
-fn no_exe(s: &str) -> &str {
-    match s.len().checked_sub(4).and_then(|i| s.get(i..).map(|e| (i, e))) {
-        Some((i, e)) if e.eq_ignore_ascii_case(".exe") => &s[..i],
-        _ => s,
-    }
-}
-
-/// A Store app's name, as its package gives it.
-fn package_name(pid: u32) -> Option<String> {
-    let full = unsafe {
-        let proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
-        let mut buf = [0u16; 256];
-        let mut len = buf.len() as u32;
-        let e = GetPackageFullName(proc, &mut len, Some(PWSTR(buf.as_mut_ptr())));
-        let _ = CloseHandle(proc);
-        if e != ERROR_SUCCESS {
-            return None;
-        }
-        String::from_utf16_lossy(&buf[..(len as usize).saturating_sub(1)])
-    };
-    display_name(&full)
-}
-
-/// A Store app's name from its app id (`family!app`), for when its window can't say: a hidden
-/// Store app is suspended and has no CoreWindow to ask (spec 0027 AC-13).
-pub(crate) fn store_name(app_id: &str) -> Option<String> {
-    let (family, _) = app_id.split_once('!')?;
-    named(app_id, || {
-        let family = HSTRING::from(family);
-        let (mut count, mut len) = (0u32, 0u32);
-        // The first call only sizes the lists.
-        let _ = unsafe { FindPackagesByPackageFamily(&family, PACKAGE_FILTER_HEAD, &mut count, None, &mut len, None, None) };
-        if count == 0 {
-            return None;
-        }
-        let mut names = vec![PWSTR::null(); count as usize];
-        let mut buf = vec![0u16; len as usize];
-        let e = unsafe { FindPackagesByPackageFamily(&family, PACKAGE_FILTER_HEAD, &mut count, Some(names.as_mut_ptr()), &mut len, Some(PWSTR(buf.as_mut_ptr())), None) };
-        if e != ERROR_SUCCESS {
-            return None;
-        }
-        let full = unsafe { names.first()?.to_string() }.ok()?;
-        display_name(&full)
-    })
-}
-
-/// A package's display name, by its full name.
-fn display_name(full: &str) -> Option<String> {
-    // An empty user means the user des-k runs as.
-    let name = PackageManager::new().and_then(|m| m.FindPackageByUserSecurityIdPackageFullName(&HSTRING::new(), &HSTRING::from(full))).and_then(|p| p.DisplayName());
-    match name {
-        Ok(n) if !n.is_empty() => Some(n.to_string()),
-        Ok(_) => None,
-        Err(e) => {
-            warn!("finder: no name for the package {full}: {e}");
-            None
-        }
-    }
-}
-
-/// A window's icon, asked for once while des-k runs: WM_GETICON waits on the app (a busy one
-/// can take the whole ICON_WAIT_MS), and the finder and the overview want every window's
-/// icon each time they open. The app's or the class's icon: borrowed, never destroyed.
-pub(crate) fn icon(hwnd: HWND) -> HICON {
-    if let Some(i) = ICONS.with_borrow(|c| c.get(&(hwnd.0 as isize)).copied()) {
-        return i;
-    }
-    let i = ask_icon(hwnd);
-    ICONS.with_borrow_mut(|c| {
-        // A window new to the cache is the time to forget the ones that closed.
-        c.retain(|&h, _| unsafe { IsWindow(Some(HWND(h as *mut _))) }.as_bool());
-        c.insert(hwnd.0 as isize, i);
-    });
-    i
-}
-
-fn ask_icon(hwnd: HWND) -> HICON {
-    for kind in [ICON_SMALL2, ICON_SMALL, ICON_BIG] {
-        let mut out = 0usize;
-        let ok = unsafe { SendMessageTimeoutW(hwnd, WM_GETICON, WPARAM(kind as usize), LPARAM(0), SMTO_ABORTIFHUNG, ICON_WAIT_MS, Some(&mut out)) };
-        if ok.0 == 0 {
-            break; // hung or slow: don't wait on it twice more
-        }
-        if out != 0 {
-            return HICON(out as *mut _);
-        }
-    }
-    for index in [GCLP_HICONSM, GCLP_HICON] {
-        let h = unsafe { GetClassLongPtrW(hwnd, index) };
-        if h != 0 {
-            return HICON(h as *mut _);
-        }
-    }
-    unsafe { LoadIconW(None, IDI_APPLICATION) }.unwrap_or_default()
-}
-
 fn snapshot() -> Vec<Row> {
-    let order = ws::screen_order();
+    let order = ws::views::screen_order();
     let mut rows: Vec<Row> = RECENT.with_borrow(|recent| {
-        ws::windows()
+        ws::views::windows()
             .into_iter()
             .map(|p| Row {
-                title: ws::title(p.hwnd),
+                title: ws::views::title(p.hwnd),
                 program: program(p.hwnd),
                 icon: icon(p.hwnd),
                 screen: order.iter().position(|d| *d == p.device).map_or(0, |i| i + 1),
@@ -658,25 +438,25 @@ pub fn is_open() -> bool {
     SESSION.with_borrow(Option::is_some)
 }
 
-/// Win+F: open on the screen under the mouse, or close if open.
-pub fn toggle() {
+/// Win+F: open on the screen `ws::switch::target` picks for `from` (spec 0038), or close if open.
+pub fn toggle(from: ws::switch::Source) {
     if SESSION.with_borrow(Option::is_some) {
         close(true);
     } else {
-        open();
+        open(from);
     }
 }
 
-fn open() {
+fn open(from: ws::switch::Source) {
     let Some((popup, edit)) = window() else { return warn!("finder: window not created") };
-    ui::gdiplus();
-    let (mon, device) = ws::under_mouse();
+    ui::canvas::gdiplus();
+    let (mon, device) = ws::switch::target(from);
     let came_from = unsafe { GetForegroundWindow() };
     used(came_from);
     RECENT.with_borrow_mut(|r| r.retain(|&h, _| unsafe { IsWindow(Some(HWND(h as *mut _))) }.as_bool()));
     let (mut dpi, mut dy) = (96u32, 96u32);
     unsafe { let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dpi, &mut dy); }
-    let (screens, main) = ws::present();
+    let (screens, main) = ws::views::present();
     let s = Session::new(snapshot(), came_from, device.clone(), screens, main, dpi as f32 / 96.0);
     let (n, w, h, scale) = (s.rows.len(), s.px(WIDTH), s.px(s.height()), s.scale);
     unsafe {
@@ -689,7 +469,7 @@ fn open() {
         ui::border(popup, ui::theme().b.edge);
         // Placed first: moving to another screen can change the popup's dpi, then the font matches it.
         let _ = SetWindowPos(popup, Some(HWND_TOPMOST), x, y, w, h, SWP_NOACTIVATE);
-        SendMessageW(edit, WM_SETFONT, Some(WPARAM(ui::fonts(scale).get(F::Body).0 as usize)), Some(LPARAM(0)));
+        SendMessageW(edit, WM_SETFONT, Some(WPARAM(ui::fonts::fonts(scale).get(F::Body).0 as usize)), Some(LPARAM(0)));
         refresh();
         let _ = ShowWindow(popup, SW_SHOW);
         let _ = SetForegroundWindow(popup);
@@ -787,8 +567,8 @@ fn act(how: Act) {
         return;
     };
     let done = match how {
-        Act::Go => ws::go_to(h),
-        Act::Bring => ws::bring(h, &screen),
+        Act::Go => ws::moves::go_to(h),
+        Act::Bring => ws::moves::bring(h, &screen),
         Act::Close => return close_window(h),
     };
     match done {
@@ -801,12 +581,12 @@ fn act(how: Act) {
             }
         }
         Err(Miss::Gone) => {
-            info!("finder: {} is gone", ws::who(h));
+            info!("finder: {} is gone", ws::views::who(h));
             drop_row(h, Some(Note::Gone));
         }
         Err(Miss::CantMove) => set_note(Note::CantMove),
         Err(Miss::Unplugged) => {
-            info!("finder: {} waits for its unplugged screen to fold", ws::who(h));
+            info!("finder: {} waits for its unplugged screen to fold", ws::views::who(h));
             set_note(Note::Unplugged);
         }
     }
@@ -815,7 +595,7 @@ fn act(how: Act) {
 /// Ctrl+W: ask it to close as its X button would, then watch for it to go.
 fn close_window(h: HWND) {
     if !unsafe { IsWindow(Some(h)) }.as_bool() {
-        info!("finder: {} is gone", ws::who(h));
+        info!("finder: {} is gone", ws::views::who(h));
         return drop_row(h, Some(Note::Gone));
     }
     match unsafe { PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0)) } {
@@ -831,10 +611,10 @@ fn close_window(h: HWND) {
             refresh();
         }
         Err(e) if e.code() == ERROR_ACCESS_DENIED.to_hresult() => {
-            warn!("finder: can't close {}, it runs as admin", ws::who(h));
+            warn!("finder: can't close {}, it runs as admin", ws::views::who(h));
             set_note(Note::CantClose);
         }
-        Err(e) => warn!("finder: can't close {}: {e}", ws::who(h)),
+        Err(e) => warn!("finder: can't close {}: {e}", ws::views::who(h)),
     }
 }
 
@@ -845,7 +625,7 @@ fn closing_tick() {
             .closing
             .iter()
             .filter(|&&h| unsafe { !IsWindow(Some(h)).as_bool() || !IsWindowVisible(h).as_bool() })
-            .map(|&h| (h, ws::who(h)))
+            .map(|&h| (h, ws::views::who(h)))
             .collect();
         s.closing.retain(|h| !gone.iter().any(|(g, _)| g == h));
         (gone, s.closing.is_empty())
@@ -955,274 +735,11 @@ pub(crate) fn edit_brush(color: u32) -> HBRUSH {
     {
         return b;
     }
-    let b = unsafe { CreateSolidBrush(ui::cref(color)) };
+    let b = unsafe { CreateSolidBrush(ui::color::cref(color)) };
     if let Some((old, _)) = BRUSH.replace(Some((b, color))) {
         unsafe { let _ = DeleteObject(old.into()); }
     }
     b
-}
-
-/// One column of a row: `text` with the letters at `marks` in 600 and `mark` color, cut with …
-/// to `w` (DT_END_ELLIPSIS works on one font only).
-#[allow(clippy::too_many_arguments)]
-fn column(c: &Canvas, x: f32, y: f32, w: f32, text: &str, marks: &[usize], color: u32, mark: u32) {
-    let mut runs: Vec<(String, bool)> = vec![];
-    for (i, ch) in text.chars().enumerate() {
-        let on = marks.binary_search(&i).is_ok();
-        match runs.last_mut() {
-            Some((t, b)) if *b == on => t.push(ch),
-            _ => runs.push((ch.to_string(), on)),
-        }
-    }
-    let font = |on: bool| if on { F::Bold } else { F::Body };
-    let total: f32 = runs.iter().map(|(t, on)| c.width(t, font(*on))).sum();
-    let room = if total <= w { w } else { w - c.width("…", F::Body) };
-    let mut cx = x;
-    for (t, on) in &runs {
-        let (f, ink) = (font(*on), if *on { mark } else { color });
-        let tw = c.width(t, f);
-        if cx + tw <= x + room {
-            c.text(cx, y, ROW, t, f, ink);
-            cx += tw;
-            continue;
-        }
-        // The cut falls in this run: as many letters as fit, then the ….
-        let chars: Vec<char> = t.chars().collect();
-        let part = |n: usize| chars[..n].iter().collect::<String>();
-        let (mut lo, mut hi) = (0, chars.len());
-        while lo < hi {
-            let mid = (lo + hi).div_ceil(2);
-            if cx + c.width(&part(mid), f) <= x + room { lo = mid } else { hi = mid - 1 }
-        }
-        let kept = part(lo);
-        let kept = kept.trim_end();
-        c.text(cx, y, ROW, kept, f, ink);
-        c.text(cx + c.width(kept, f), y, ROW, "…", F::Body, color);
-        return;
-    }
-}
-
-/// A screen's name and `then` cut to `w`: a twin's " #n" stays (AC-FND-3).
-fn fit_place(c: &Canvas, name: &str, then: &str, w: f32) -> String {
-    let whole = format!("{name}{then}");
-    if c.width(&whole, F::Small) <= w {
-        return whole;
-    }
-    let (base, end) = match name.rsplit_once(" #") {
-        Some((base, n)) if !n.is_empty() && n.chars().all(|d| d.is_ascii_digit()) => (base, format!(" #{n}{then}")),
-        _ => (name, then.to_string()),
-    };
-    c.fit(base, F::Small, w - c.width(&end, F::Small)) + &end
-}
-
-/// A screen's name cut as `fit_place` cuts it, or nothing when fewer than 4 of its letters
-/// would show: a stub names no screen (spec 0023 handoff fitScreen).
-fn fit_screen(c: &Canvas, screen: &str, w: f32) -> String {
-    let cut = fit_place(c, screen, "", w);
-    match cut.find('…') {
-        Some(i) if cut != screen && cut[..i].chars().count() < 4 => String::new(),
-        _ => cut,
-    }
-}
-
-/// A named row's place column (spec 0023 AC-8): its workspace's name, then the rest,
-/// " · <screen>" when a screen is shown and " · unplugged" for one that left. Too wide: the
-/// screen is cut, then dropped, then the name is cut; " · unplugged" always stays.
-fn named_place(c: &Canvas, name: &str, screen: Option<&str>, unplugged: bool, w: f32) -> (String, String) {
-    let tail = if unplugged { " · unplugged" } else { "" };
-    if let Some(screen) = screen {
-        let rest = format!(" · {screen}{tail}");
-        if c.width(name, F::Small) + c.width(&rest, F::Small) <= w {
-            return (name.to_string(), rest);
-        }
-        let screen = fit_screen(c, screen, w - c.width(&format!("{name} · "), F::Small) - c.width(tail, F::Small));
-        if !screen.is_empty() {
-            return (name.to_string(), format!(" · {screen}{tail}"));
-        }
-    }
-    (c.fit_name(name, F::Small, w - c.width(tail, F::Small)), tail.to_string())
-}
-
-/// A row's workspace chip, its right edge at CHIP_RIGHT: full when the window is not hidden,
-/// soft (40%) when des-k hid it, a pin when pinned, a grey outline when its screen just left.
-fn chip(c: &Canvas, r: &Row, y: f32, chosen: bool, bg: u32) {
-    let (b, hc) = (c.t.b, c.t.hc);
-    let wi = (r.workspace.max(1) - 1).min(8);
-    let color = b.ws[wi];
-    let (label, f) = if r.pinned { ("\u{E718}".to_string(), F::IconSmall) } else { (r.workspace.to_string(), F::SmallBold) };
-    let tw = c.width(&label, f);
-    let w = (tw + 10.0).max(20.0);
-    let at = (CHIP_RIGHT - w, y + (ROW - 18.0) / 2.0, w, 18.0);
-    let full = r.on_screen && !r.unplugged;
-    let soft = !r.on_screen && !r.unplugged;
-    let (fill, edge, ink) = match (hc, chosen) {
-        // High contrast: a full chip in Highlight, a soft one outlined; on the chosen row both
-        // turn to HighlightText, and an unplugged one is filled like a full one.
-        (true, true) if soft => (bg, Some(b.on_acc), b.on_acc),
-        (true, true) => (b.on_acc, None, b.acc),
-        (true, false) if full => (color, None, b.on_ws[wi]),
-        (true, false) if soft => (bg, Some(b.tx), b.tx),
-        (true, false) => (bg, Some(b.tx3), b.tx2),
-        _ if full => (color, (b.ws_edge > 0.0).then(|| mix(color, 0, b.ws_edge)), b.on_ws[wi]),
-        _ if soft => (mix(b.card, color, 0.4), Some(mix(b.card, color, 0.7)), b.tx),
-        _ => (bg, Some(b.tx3), b.tx2),
-    };
-    c.boxed(at, 4.0, fill, edge);
-    c.text(at.0 + (w - tw) / 2.0, at.1, 18.0, &label, f, ink);
-}
-
-fn row(c: &Canvas, s: &Session, r: &Row, y: f32, chosen: bool, hover: bool) {
-    let (b, hc) = (c.t.b, c.t.hc);
-    let closing = s.closing.contains(&r.hwnd);
-    let at = (ROW_X, y, ROW_W, ROW);
-    let bg = match () {
-        _ if chosen && hc => b.acc,
-        _ if chosen => mix(b.card, b.acc, 0.10),
-        _ if hover && !hc => b.track,
-        _ => b.card,
-    };
-    if hover && hc && !chosen {
-        c.boxed(at, 6.0, bg, Some(b.acc));
-    } else if bg != b.card {
-        c.fill_rr(at, 6.0, op(bg));
-    }
-    if chosen {
-        // The settings side list's bar.
-        c.fill_rr((ROW_X, y + 10.0, 3.0, 16.0), 1.5, op(if hc { b.on_acc } else { b.acc }));
-    }
-    let ink = |color: u32| if hc && chosen { b.on_acc } else { color };
-    // A window Ctrl+W was sent to fades until it goes.
-    let fade = |color: u32| if closing { mix(bg, color, 0.45) } else { color };
-    let icon_y = y + (ROW - ICON) / 2.0;
-    c.icon(ROW_X + ROW_PAD, icon_y, ICON, r.icon);
-    if closing {
-        c.fill_rr((ROW_X + ROW_PAD, icon_y, ICON, ICON), 0.0, alpha(bg, 0.55));
-    }
-    let (pm, tm) = split_marks(r);
-    column(c, PROGRAM_X, y, PROGRAM_W, &r.program, &pm, fade(ink(b.tx2)), fade(ink(b.tx)));
-    column(c, TITLE_X, y, TITLE_W, &r.title, &tm, fade(ink(b.tx)), fade(ink(b.tx)));
-    // The workspace's name in the text color, the rest grey, right aligned together.
-    let (name, place) = match () {
-        _ if closing => (String::new(), "Closing…".to_string()),
-        _ if !r.ws_name.is_empty() => named_place(c, &r.ws_name, (r.unplugged || s.screens > 1).then_some(r.place.as_str()), r.unplugged, SCREEN_W),
-        _ if r.unplugged => (String::new(), fit_place(c, &r.place, " · unplugged", SCREEN_W)),
-        _ if s.screens > 1 => (String::new(), fit_place(c, &r.place, "", SCREEN_W)),
-        _ => (String::new(), String::new()),
-    };
-    let place_x = SCREEN_RIGHT - c.width(&place, F::Small);
-    c.text(place_x - c.width(&name, F::Small), y, ROW, &name, F::Small, ink(b.tx));
-    c.text(place_x, y, ROW, &place, F::Small, ink(b.tx2));
-    if !closing {
-        chip(c, r, y, chosen, bg);
-    }
-}
-
-/// A key line item: its key caps, then what it does. Returns where it ends.
-fn key_item(c: &Canvas, x: f32, y: f32, keys: &[&str], label: &str, grey: bool) -> f32 {
-    let b = c.t.b;
-    let fade = |color: u32| if grey { mix(b.band, color, 0.45) } else { color };
-    let ky = y + (FOOT - 20.0) / 2.0;
-    let mut x = x;
-    for (i, k) in keys.iter().enumerate() {
-        if i > 0 {
-            x += 4.0;
-        }
-        let tw = c.width(k, F::Small);
-        let w = (tw + 12.0).max(20.0);
-        c.fill_rr((x, ky + 1.0, w, 20.0), 4.0, op(fade(b.key_edge))); // its 1 px shadow below
-        c.boxed((x, ky, w, 20.0), 4.0, fade(b.key), Some(fade(b.key_edge)));
-        c.text(x + (w - tw) / 2.0, ky, 20.0, k, F::Small, fade(b.tx));
-        x += w;
-    }
-    x += 8.0;
-    c.text(x, y, FOOT, label, F::Small, fade(b.tx2));
-    x + c.width(label, F::Small)
-}
-
-/// The whole finder at 0, 0. `typed` paints the search text and caret as the EDIT would, for
-/// the render tests; on screen the EDIT draws them itself.
-fn draw(c: &Canvas, s: &Session, typed: Option<&str>) {
-    let (b, hc) = (c.t.b, c.t.hc);
-    let height = s.height();
-    c.fill_rr((0.0, 0.0, WIDTH, height), 0.0, op(b.card));
-    // The search box.
-    c.text(SIDE, 0.0, BOX - 1.0, "\u{E721}", F::Icon, b.tx2);
-    if let Some(n) = s.count() {
-        c.text(WIDTH - SIDE - c.width(&n, F::Small), 0.0, BOX - 1.0, &n, F::Small, b.tx2);
-    }
-    if let Some(q) = typed {
-        let y = (BOX - 1.0 - TEXT_H) / 2.0;
-        let caret = if q.is_empty() {
-            c.text(TEXT_X + 1.0, y, TEXT_H, PLACEHOLDER, F::Body, b.tx2);
-            TEXT_X
-        } else {
-            c.text(TEXT_X, y, TEXT_H, q, F::Body, b.tx);
-            TEXT_X + c.width(q, F::Body) + 1.0
-        };
-        c.fill_rr((caret, y, 1.0, TEXT_H), 0.0, op(b.tx));
-    }
-    c.rule(0.0, BOX - 1.0, WIDTH, op(b.line));
-    // The list.
-    let top = BOX + LIST_PAD;
-    match s.empty_text() {
-        Some("No match") => {
-            c.text(ROW_X + 40.0, top + 8.0, 20.0, "No match", F::Body, b.tx2);
-            c.text(ROW_X + 40.0, top + 28.0, 16.0, "Windows on Windows' own desktops and paused Store apps aren't listed.", F::Small, b.tx2);
-        }
-        Some(e) => c.text(ROW_X + 40.0, top, ROW, e, F::Body, b.tx2),
-        None => {}
-    }
-    for (k, &(i, _)) in s.shown.iter().enumerate().skip(s.scroll).take(ROWS) {
-        row(c, s, &s.rows[i], top + (k - s.scroll) as f32 * ROW, k == s.selected, s.hover == Some(k));
-    }
-    let n = s.shown.len();
-    if n > ROWS {
-        let track = ROWS as f32 * ROW - 12.0;
-        let h = track * ROWS as f32 / n as f32;
-        let y = top + (track - h) * s.scroll as f32 / (n - ROWS) as f32;
-        c.fill_rr((WIDTH - 6.0, y, 3.0, h), 1.5, op(b.tx3));
-    }
-    // The note.
-    if let Some(note) = s.note {
-        let (icon, line, under, warn) = note.words(&s.main);
-        let y = BOX + s.list_h();
-        c.boxed((8.0, y, WIDTH - 16.0, s.note_h() - 8.0), 6.0, b.bg, Some(b.line));
-        c.text(20.0, y + 8.0, 20.0, icon, F::Icon, if warn { b.warn } else { b.tx2 });
-        c.text(48.0, y + 8.0, 20.0, line, F::Bold, b.tx);
-        if let Some(u) = under {
-            c.text(48.0, y + 28.0, 16.0, &c.fit(&u, F::Small, WIDTH - 16.0 - 52.0), F::Small, b.tx2);
-        }
-    }
-    // The key line; with no rows only Esc does anything.
-    let y = height - FOOT;
-    c.fill_rr((0.0, y, WIDTH, FOOT), 0.0, op(if hc { b.card } else { b.band }));
-    c.rule(0.0, y, WIDTH, op(b.line));
-    let none = s.shown.is_empty();
-    let mut x = SIDE;
-    for (keys, label) in [(&["Enter"][..], "Go to"), (&["Shift", "Enter"][..], "Bring here"), (&["Ctrl", "W"][..], "Close window")] {
-        x = key_item(c, x, y, keys, label, none) + 20.0;
-    }
-    let esc = key_item(&c.measuring(), 0.0, y, &["Esc"], "Cancel", false);
-    key_item(c, WIDTH - SIDE - esc, y, &["Esc"], "Cancel", false);
-}
-
-fn paint(hwnd: HWND) {
-    unsafe {
-        let mut ps = PAINTSTRUCT::default();
-        let hdc = BeginPaint(hwnd, &mut ps);
-        let mut rc = RECT::default();
-        let _ = GetClientRect(hwnd, &mut rc);
-        // Drawn off screen first: the list repaints on every key, and would flicker otherwise.
-        ui::buffered(hdc, 0, 0, rc.right, rc.bottom, |mem| {
-            SESSION.with_borrow(|s| {
-                if let Some(s) = s {
-                    let fonts = ui::fonts(s.scale);
-                    draw(&Canvas::new(mem, true, s.scale, ui::theme(), &fonts), s, None);
-                }
-            });
-        });
-        let _ = EndPaint(hwnd, &ps);
-    }
 }
 
 /// "Find a window" in grey while the text box is empty: an EDIT without common controls 6 has
@@ -1232,7 +749,7 @@ unsafe fn placeholder(edit: HWND) {
         let dc = GetDC(Some(edit));
         let font = HFONT(SendMessageW(edit, WM_GETFONT, None, None).0 as *mut _);
         let old = SelectObject(dc, font.into());
-        SetTextColor(dc, ui::cref(ui::theme().b.tx2));
+        SetTextColor(dc, ui::color::cref(ui::theme().b.tx2));
         SetBkMode(dc, TRANSPARENT);
         let left = (SendMessageW(edit, EM_GETMARGINS, None, None).0 & 0xFFFF) as i32;
         let one = (GetDpiForWindow(edit) as i32 + 95) / 96; // after the caret
@@ -1272,8 +789,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             WM_ERASEBKGND => LRESULT(1),
             WM_CTLCOLOREDIT => {
                 let (dc, b) = (HDC(wp.0 as *mut _), ui::theme().b);
-                SetTextColor(dc, ui::cref(b.tx));
-                SetBkColor(dc, ui::cref(b.card));
+                SetTextColor(dc, ui::color::cref(b.tx));
+                SetBkColor(dc, ui::color::cref(b.card));
                 LRESULT(edit_brush(b.card).0 as isize)
             }
             WM_COMMAND if (wp.0 >> 16) as u32 == EN_CHANGE => {
@@ -1342,364 +859,4 @@ fn window() -> Option<(HWND, HWND)> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ui::{DARK, Fonts, LIGHT, Theme};
-    use std::time::Duration;
-
-    fn row(on_screen: bool, screen: usize, workspace: usize, used: Option<Instant>) -> Row {
-        Row {
-            hwnd: HWND::default(),
-            title: String::new(),
-            program: String::new(),
-            icon: HICON::default(),
-            screen,
-            place: String::new(),
-            workspace,
-            on_screen,
-            pinned: false,
-            unplugged: false,
-            ws_name: String::new(),
-            used,
-            rank: 0,
-            gone: false,
-            marks: vec![],
-        }
-    }
-
-    fn ranks(rows: &[Row]) -> Vec<usize> {
-        rows.iter().map(|r| r.rank).collect()
-    }
-
-    // AC-4: what you used last comes first (that is what makes Win+F, Enter flip back), then
-    // what you can see, then hidden windows in a fixed screen and workspace order.
-    #[test]
-    fn recency_beats_screen_order_and_hidden_windows_follow_screen_then_workspace() {
-        let t = Instant::now();
-        let mut rows = vec![
-            row(true, 1, 1, None),
-            row(false, 2, 3, None),
-            row(false, 1, 2, Some(t)),
-            row(false, 2, 1, None),
-            row(true, 3, 1, Some(t + Duration::from_secs(1))),
-            row(false, 1, 4, None),
-        ];
-        recency_rank(&mut rows);
-        assert_eq!(ranks(&rows), [2, 5, 1, 4, 0, 3]);
-    }
-
-    // An app's name is shown to you in notes and the finder, so a file name as description must
-    // read as the app, while a name that only ends in letters like "exe" stays whole.
-    #[test]
-    fn a_description_that_is_a_file_name_loses_its_exe() {
-        assert_eq!(no_exe("Notepad.exe"), "Notepad");
-        assert_eq!(no_exe("PAINT.EXE"), "PAINT");
-        assert_eq!(no_exe("Microsoft Edge"), "Microsoft Edge");
-        assert_eq!(no_exe("Flexe"), "Flexe");
-        assert_eq!(no_exe(".exe"), "");
-        assert_eq!(no_exe("Ünï"), "Ünï");
-    }
-
-    // Spec 0027 AC-13: a hidden Store app is suspended, so its name must come from the rule
-    // key alone, which des-k holds lowercased. Needs Calculator installed: run with --ignored.
-    #[test]
-    #[ignore]
-    fn store_name_reads_a_lowercased_app_id() {
-        assert_eq!(store_name("microsoft.windowscalculator_8wekyb3d8bbwe!app").as_deref(), Some("Windows Calculator"));
-        assert_eq!(store_name("no.such.package_0000000000000!app"), None);
-        assert_eq!(store_name("notepad.exe"), None);
-    }
-
-    // AC-5: a better match must win over recency, or typing would not find the window you mean;
-    // only equal scores fall back to the AC-4 order. Non matches are not listed at all.
-    #[test]
-    fn rank_puts_score_first_then_recency_order() {
-        let mut rows = vec![row(true, 1, 1, None), row(true, 1, 1, None), row(true, 1, 1, None)];
-        rows[0].rank = 2;
-        rows[1].rank = 0;
-        rows[2].rank = 1;
-        assert_eq!(rank(&rows, &[Some(50), Some(20), Some(50)], &[]), [(2, 50), (0, 50), (1, 20)]);
-        assert_eq!(rank(&rows, &[None, Some(1), None], &[]), [(1, 1)]);
-    }
-
-    // Win+F then Enter must land on the window you were in before, not the one you are in.
-    #[test]
-    fn empty_query_selects_the_second_row() {
-        assert_eq!(first_pick("", 5), 1);
-        assert_eq!(first_pick("  ", 2), 1);
-        assert_eq!(first_pick("", 1), 0);
-        assert_eq!(first_pick("code", 5), 0);
-    }
-
-    fn named(program: &str, title: &str, rank: usize) -> Row {
-        Row { program: program.into(), title: title.into(), rank, ..row(true, 1, 1, None) }
-    }
-
-    fn session(rows: Vec<Row>) -> Session {
-        Session::new(rows, HWND::default(), String::new(), 2, "Built-in display".into(), 1.0)
-    }
-
-    fn filter(s: &mut Session, q: &str) {
-        s.query = q.into();
-        s.refilter(false);
-    }
-
-    // AC-5: each typed word must appear, letters in order, any case, in "program title"; the
-    // best match is selected, and an empty result says why.
-    #[test]
-    fn refilter_matches_every_word_fuzzily_and_selects_the_best() {
-        let mut s = session(vec![named("explorer", "Downloads", 0), named("Code", "finder.rs - pdesk - Visual Studio Code", 1), named("chrome", "pdesk issues", 2)]);
-        let firsts = |s: &mut Session, q: &str| {
-            filter(s, q);
-            (s.shown.iter().map(|&(i, _)| i).collect::<Vec<_>>(), s.selected, s.empty_text())
-        };
-        assert_eq!(firsts(&mut s, "vsc"), (vec![1], 0, None));
-        assert_eq!(firsts(&mut s, "PDESK visual").0, [1]);
-        assert_eq!(firsts(&mut s, "pdesk").0.len(), 2);
-        assert_eq!(firsts(&mut s, "zzzq"), (vec![], 0, Some("No match")));
-        assert_eq!(s.count().as_deref(), Some("0 of 3"));
-        s.rows.iter_mut().for_each(|r| r.gone = true);
-        assert_eq!(firsts(&mut s, "").2, Some("No windows"));
-        assert_eq!(s.count(), None);
-    }
-
-    // AC-FND-6: the bold letters must be the ones that matched, each in the column it sits in;
-    // an index off by one would bold the letter next to it, or one in the other column.
-    #[test]
-    fn matched_letters_split_into_the_program_and_title_columns() {
-        let mut s = session(vec![named("Google Chrome", "des-k issues", 0), named("Code", "notes", 1)]);
-        filter(&mut s, "chrome");
-        let (p, t) = split_marks(&s.rows[0]);
-        assert_eq!((p, t), (vec![7, 8, 9, 10, 11, 12], vec![]));
-        filter(&mut s, "code des");
-        let (p, t) = split_marks(&s.rows[0]);
-        let pick = |text: &str, at: &[usize]| at.iter().map(|&i| text.chars().nth(i).unwrap()).collect::<String>();
-        assert_eq!(pick("Google Chrome", &p).to_lowercase().chars().filter(|c| "code".contains(*c)).count(), p.len());
-        assert_eq!(pick("des-k issues", &t), "des");
-        // A row the query no longer matches keeps no bold letters.
-        filter(&mut s, "");
-        assert!(s.rows.iter().all(|r| r.marks.is_empty()));
-    }
-
-    // Ctrl+Backspace removes one word, like everywhere else in Windows, not the whole query or one letter.
-    #[test]
-    fn delete_word_stops_at_a_space_or_punctuation_boundary() {
-        let cut = |s: &str| {
-            let w: Vec<u16> = s.encode_utf16().collect();
-            String::from_utf16(&w[..delete_word(&w)]).unwrap()
-        };
-        assert_eq!(cut("code pdesk"), "code ");
-        assert_eq!(cut("code pdesk  "), "code ");
-        assert_eq!(cut("main.rs"), "main.");
-        assert_eq!(cut("main."), "main");
-        assert_eq!(cut("word"), "");
-        assert_eq!(cut(""), "");
-    }
-
-    // AC-FND-9: Narrator hears the same words the row paints, plus where the window is; and it
-    // hears each change once, not again on every repaint.
-    #[test]
-    fn narrator_reads_the_chosen_row_once_per_change() {
-        let mut rows = vec![named("Google Chrome", "des-k issues", 0), named("Notepad", "notes.txt", 1)];
-        rows[0].place = "DELL U2720Q".into();
-        rows[0].hwnd = HWND(10 as *mut _);
-        rows[1].hwnd = HWND(11 as *mut _);
-        rows[1].on_screen = false;
-        rows[1].workspace = 3;
-        rows[1].place = "Built-in display".into();
-        let mut s = session(rows);
-        assert_eq!(s.speech(), Some(("2 windows, notes.txt, Notepad, Built-in display, workspace 3, hidden".into(), true)));
-        assert_eq!(s.speech(), None);
-        s.selected = 0;
-        assert_eq!(s.speech(), Some(("des-k issues, Google Chrome, DELL U2720Q, workspace 1, shown".into(), false)));
-        s.note = Some(Note::Unplugged);
-        assert_eq!(s.speech().unwrap().0, "Its screen was just unplugged. In a moment it moves to Built-in display; try again then.");
-        let tree = s.tree();
-        let list = tree.kids.iter().find(|n| n.role == UIA_ListControlTypeId).unwrap();
-        assert_eq!(list.kids.iter().map(|k| k.selected).collect::<Vec<_>>(), [Some(true), Some(false)]);
-    }
-
-    // Spec 0023 AC-9: typing a workspace's name finds its windows, but never above a window
-    // whose own title or app matches; name only rows keep the AC-4 order, with no bold letters,
-    // and a pinned window (on every workspace) matches no name.
-    #[test]
-    fn a_workspace_name_matches_after_every_title_and_app() {
-        let on = |program: &str, title: &str, rank: usize, ws_name: &str| Row { ws_name: ws_name.into(), ..named(program, title, rank) };
-        let mut rows = vec![on("Notepad", "todo.txt", 1, "Mail"), on("Outlook", "Mail", 2, ""), on("Code", "main.rs", 0, "Mail"), on("Teams", "Chat", 3, "")];
-        rows[3].pinned = true;
-        rows[3].ws_name = "Mail".into();
-        let mut s = session(rows);
-        filter(&mut s, "mail");
-        assert_eq!(s.shown.iter().map(|&(i, _)| i).collect::<Vec<_>>(), [1, 2, 0]);
-        assert!(s.rows[0].marks.is_empty() && s.rows[2].marks.is_empty() && !s.rows[1].marks.is_empty());
-        filter(&mut s, "post");
-        assert!(s.shown.is_empty());
-    }
-
-    // Spec 0023 AC-8, AC-15: a row on a named workspace reads its name before its screen, as the
-    // place column paints them.
-    #[test]
-    fn narrator_reads_a_rows_workspace_name_before_its_screen() {
-        let mut r = named("Notepad", "notes.txt", 0);
-        (r.place, r.ws_name, r.workspace, r.on_screen) = ("DELL U2720Q".into(), "Mail".into(), 2, false);
-        let s = session(vec![r]);
-        assert_eq!(s.words(0), "notes.txt, Notepad, Mail, DELL U2720Q, workspace 2, hidden");
-    }
-
-    /// A window list like the design's: [icon, program, title, screen, workspace, flag].
-    fn design_rows(set: &str) -> Vec<Row> {
-        const DELL: &str = "DELL U2720Q";
-        const BUILT: &str = "Built-in display";
-        let all: Vec<(&str, &str, &str, usize, &str)> = match set {
-            // Spec 0023 handoff f2: names and screens that do not fit the place column.
-            "cut" => vec![
-                ("Excel", "Budget 2026.xlsx - Excel", "DELL U2720Q #2", 2, "shown"),
-                ("Word", "Plan.docx - Word", "DELL U2720Q #2", 2, ""),
-                ("Zotero", "My Library - Zotero", BUILT, 3, "away"),
-                ("Edge", "Papers - Microsoft Edge", BUILT, 3, "away"),
-                ("Notepad", "todo.txt - Notepad", "Studio monitor above the desk 32", 1, "shown"),
-            ],
-            "long" => vec![
-                ("Visual Studio Code", "settings_page.rs - des-k - a very long workspace folder name that goes on - Visual Studio Code", "LG ULTRAGEAR 27GR95QE OLED Gaming Monitor #1", 9, ""),
-                ("Microsoft Edge WebView2", "A web page title that is far too long to fit in the row at all", "LG ULTRAGEAR 27GR95QE OLED Gaming Monitor #2", 7, "shown"),
-                ("Windows Terminal", "Administrator: PowerShell", BUILT, 6, ""),
-            ],
-            _ => vec![
-                ("Visual Studio Code", "finder.rs - des-k - Visual Studio Code", DELL, 2, "shown"),
-                ("Google Chrome", "des-k issues · GitHub - Google Chrome", DELL, 3, if set == "closing" { "closing" } else if set == "away" { "away" } else { "" }),
-                ("File Explorer", "Downloads", BUILT, 1, "shown"),
-                ("Windows Terminal", "PowerShell", DELL, 1, ""),
-                ("Notepad", "notes.txt - Notepad", BUILT, 3, if set == "away" { "away" } else { "" }),
-                ("Microsoft Teams", "Chat | Microsoft Teams", BUILT, 1, "pin"),
-                ("Outlook", "Inbox - Outlook", DELL, 4, ""),
-                ("Settings", "Display", BUILT, 2, ""),
-                ("Paint", "Untitled - Paint", DELL, 2, "shown"),
-                ("Google Chrome", "Pull requests · des-k - Google Chrome", BUILT, 4, ""),
-                ("Spotify", "Spotify Premium", BUILT, 2, ""),
-                ("File Explorer", "des-k", DELL, 4, ""),
-            ],
-        };
-        let app = unsafe { LoadIconW(None, IDI_APPLICATION) }.unwrap_or_default();
-        all.into_iter()
-            .enumerate()
-            .map(|(i, (program, title, place, ws, flag))| Row {
-                hwnd: HWND((i + 1) as *mut _),
-                place: if flag == "away" { "LG HDR 4K".into() } else { place.into() },
-                on_screen: matches!(flag, "shown" | "pin"),
-                pinned: flag == "pin",
-                unplugged: flag == "away",
-                icon: app,
-                workspace: ws,
-                ..named(program, title, i)
-            })
-            .collect()
-    }
-
-    /// Workspace N's name is `names[N - 1]` on every row that is not pinned, as `ws` fills
-    /// `Place.ws_name`; the search runs again, since a name can match it (spec 0023 AC-9).
-    fn name_rows(s: &mut Session, names: &[&str]) {
-        for r in s.rows.iter_mut().filter(|r| !r.pinned) {
-            r.ws_name = names.get(r.workspace - 1).copied().unwrap_or_default().into();
-        }
-        s.refilter(true);
-    }
-
-    // Spec 0023 AC-8: the place column cuts the screen first, keeping a twin's " #n", drops it
-    // before the name is cut, and never cuts " · unplugged"; one screen shows the name alone.
-    #[test]
-    fn a_place_keeps_the_name_whole_while_it_fits_alone() {
-        let fonts = Fonts::new(1.0);
-        let dc = unsafe { GetDC(None) };
-        let c = Canvas::new(dc, false, 1.0, LIGHT, &fonts);
-        let fits = |(a, b): &(String, String)| c.width(a, F::Small) + c.width(b, F::Small) <= SCREEN_W;
-        let place = |name, screen, unplugged| named_place(&c, name, screen, unplugged, SCREEN_W);
-        assert_eq!(place("Mail", Some("DELL U2720Q"), false), ("Mail".into(), " · DELL U2720Q".into()));
-        assert_eq!(place("Mail", None, false), ("Mail".into(), String::new()));
-        let twin = place("Mail", Some("LG ULTRAGEAR 27GR95QE OLED Gaming Monitor #2"), false);
-        assert!(twin.0 == "Mail" && twin.1.starts_with(" · LG ULTRA") && twin.1.ends_with("… #2") && fits(&twin), "{twin:?}");
-        let dropped = place("Reading list", Some("Built-in display"), true);
-        assert_eq!(dropped, ("Reading list".into(), " · unplugged".into()));
-        let cut = place("Reading list and papers to file", Some("Built-in display"), true);
-        assert!(cut.0.starts_with("Reading list") && cut.0.ends_with('…') && cut.1 == " · unplugged" && fits(&cut), "{cut:?}");
-        let alone = place("Quarterly planning and budget 26 and more", None, false);
-        assert!(alone.0.ends_with('…') && alone.1.is_empty() && fits(&alone), "{alone:?}");
-        unsafe { ReleaseDC(None, dc) };
-    }
-
-    /// Draws every state the design shows to target/finder/ PNGs, to compare by eye with
-    /// pdesk-design/restart/captures/fdr3-* (spec 0017 AC-1, AC-FND-1 to AC-FND-7).
-    #[test]
-    #[ignore]
-    fn render() {
-        ui::gdiplus();
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("finder");
-        std::fs::create_dir_all(&dir).unwrap();
-        type Setup = fn(&mut Session);
-        let states: Vec<(&str, &str, &str, Setup)> = vec![
-            ("opened", "all", "", |_| {}),
-            ("chrome", "all", "chrome", |_| {}),
-            ("two-words", "all", "code des", |_| {}),
-            ("no-match", "all", "zzzq", |_| {}),
-            ("no-windows", "none", "", |_| {}),
-            ("scrolled", "all", "", |s| {
-                s.selected = 11;
-                s.scroll_to_selection();
-            }),
-            ("one-screen", "all", "", |s| s.screens = 1),
-            ("hover", "all", "", |s| s.hover = Some(4)),
-            ("long", "long", "", |s| s.selected = 0),
-            ("closing", "closing", "", |s| s.closing.push(HWND(2 as *mut _))),
-            ("closed", "all", "", |s| {
-                s.rows[1].gone = true;
-                s.refilter(true);
-            }),
-            ("cant-move", "long", "", |s| {
-                s.selected = 2;
-                s.note = Some(Note::CantMove);
-            }),
-            ("cant-close", "long", "", |s| {
-                s.selected = 2;
-                s.note = Some(Note::CantClose);
-            }),
-            ("gone", "all", "", |s| {
-                s.rows[1].gone = true;
-                s.refilter(true);
-                s.note = Some(Note::Gone);
-            }),
-            ("unplugged", "away", "", |_| {}),
-            ("unplugged-note", "away", "", |s| s.note = Some(Note::Unplugged)),
-            // Spec 0023: the handoff's f1 rows, f2 cut, f3 search, f4 one screen.
-            ("names", "away", "", |s| name_rows(s, &["Mail", "Code", "Research", "بريد"])),
-            ("names-cut", "cut", "", |s| {
-                name_rows(s, &["", "Quarterly planning", "Reading list"]);
-                (s.rows[1].ws_name, s.rows[3].ws_name) = ("Quarterly planning and budget 26".into(), "Reading list and papers to file".into());
-                s.selected = 1;
-            }),
-            ("names-search", "all", "mail", |s| name_rows(s, &["Mail", "Code", "Research", "Music"])),
-            ("names-one-screen", "all", "", |s| {
-                name_rows(s, &["Mail", "Code", "", "Quarterly planning and budget 26"]);
-                s.screens = 1;
-            }),
-        ];
-        let aquatic = ui::high_contrast([0x202020, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);
-        let desert = ui::high_contrast([0xFFFAEF, 0x3D3D3D, 0x903909, 0xFFF5E3, 0x6D6D6D]);
-        let themes: [(&str, Theme, f32); 5] = [("light", LIGHT, 1.0), ("dark", DARK, 1.0), ("hc", aquatic, 1.0), ("desert", desert, 1.0), ("light-150", LIGHT, 1.5)];
-        for (tname, t, scale) in themes {
-            let fonts = Fonts::new(scale);
-            for (name, set, query, setup) in &states {
-                let rows = if *set == "none" { vec![] } else { design_rows(set) };
-                let mut s = Session::new(rows, HWND::default(), String::new(), 2, "Built-in display".into(), scale);
-                filter(&mut s, query);
-                setup(&mut s);
-                let (w, h) = (s.px(WIDTH), s.px(s.height()));
-                let path = dir.join(format!("{name}-{tname}.png"));
-                ui::tests::save_png(w, h, &path, |dc| {
-                    let c = Canvas::new(dc, true, scale, t, &fonts);
-                    draw(&c, &s, Some(query));
-                    // Windows' 1 px edge, as ui::border asks for it.
-                    c.stroke_rr((0.5 / scale, 0.5 / scale, WIDTH - 1.0 / scale, s.height() - 1.0 / scale), 8.0, 1.0 / scale, op(t.b.edge));
-                });
-            }
-        }
-    }
-}
+mod tests;
