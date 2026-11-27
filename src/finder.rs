@@ -18,7 +18,7 @@ use windows::Win32::{
     Graphics::Gdi::*,
     Storage::{
         FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW},
-        Packaging::Appx::GetPackageFullName,
+        Packaging::Appx::{FindPackagesByPackageFamily, GetPackageFullName, PACKAGE_FILTER_HEAD},
     },
     System::{
         LibraryLoader::GetModuleHandleW,
@@ -514,9 +514,17 @@ fn describe(exe: &str) -> Option<String> {
         langs.into_iter().find_map(|(lang, cp)| {
             let (p, chars) = query(&format!(r"\StringFileInfo\{lang:04x}{cp:04x}\FileDescription"))?;
             let s = String::from_utf16_lossy(std::slice::from_raw_parts(p, chars));
-            let s = s.trim_end_matches('\0').trim();
+            let s = no_exe(s.trim_end_matches('\0').trim());
             (!s.is_empty()).then(|| s.to_string())
         })
+    }
+}
+
+/// A description that is only a file name (Windows 11's Notepad says `Notepad.exe`) without its `.exe`.
+fn no_exe(s: &str) -> &str {
+    match s.len().checked_sub(4).and_then(|i| s.get(i..).map(|e| (i, e))) {
+        Some((i, e)) if e.eq_ignore_ascii_case(".exe") => &s[..i],
+        _ => s,
     }
 }
 
@@ -533,8 +541,36 @@ fn package_name(pid: u32) -> Option<String> {
         }
         String::from_utf16_lossy(&buf[..(len as usize).saturating_sub(1)])
     };
+    display_name(&full)
+}
+
+/// A Store app's name from its app id (`family!app`), for when its window can't say: a hidden
+/// Store app is suspended and has no CoreWindow to ask (spec 0027 AC-13).
+pub(crate) fn store_name(app_id: &str) -> Option<String> {
+    let (family, _) = app_id.split_once('!')?;
+    named(app_id, || {
+        let family = HSTRING::from(family);
+        let (mut count, mut len) = (0u32, 0u32);
+        // The first call only sizes the lists.
+        let _ = unsafe { FindPackagesByPackageFamily(&family, PACKAGE_FILTER_HEAD, &mut count, None, &mut len, None, None) };
+        if count == 0 {
+            return None;
+        }
+        let mut names = vec![PWSTR::null(); count as usize];
+        let mut buf = vec![0u16; len as usize];
+        let e = unsafe { FindPackagesByPackageFamily(&family, PACKAGE_FILTER_HEAD, &mut count, Some(names.as_mut_ptr()), &mut len, Some(PWSTR(buf.as_mut_ptr())), None) };
+        if e != ERROR_SUCCESS {
+            return None;
+        }
+        let full = unsafe { names.first()?.to_string() }.ok()?;
+        display_name(&full)
+    })
+}
+
+/// A package's display name, by its full name.
+fn display_name(full: &str) -> Option<String> {
     // An empty user means the user des-k runs as.
-    let name = PackageManager::new().and_then(|m| m.FindPackageByUserSecurityIdPackageFullName(&HSTRING::new(), &HSTRING::from(&full))).and_then(|p| p.DisplayName());
+    let name = PackageManager::new().and_then(|m| m.FindPackageByUserSecurityIdPackageFullName(&HSTRING::new(), &HSTRING::from(full))).and_then(|p| p.DisplayName());
     match name {
         Ok(n) if !n.is_empty() => Some(n.to_string()),
         Ok(_) => None,
@@ -1350,6 +1386,28 @@ mod tests {
         ];
         recency_rank(&mut rows);
         assert_eq!(ranks(&rows), [2, 5, 1, 4, 0, 3]);
+    }
+
+    // An app's name is shown to you in notes and the finder, so a file name as description must
+    // read as the app, while a name that only ends in letters like "exe" stays whole.
+    #[test]
+    fn a_description_that_is_a_file_name_loses_its_exe() {
+        assert_eq!(no_exe("Notepad.exe"), "Notepad");
+        assert_eq!(no_exe("PAINT.EXE"), "PAINT");
+        assert_eq!(no_exe("Microsoft Edge"), "Microsoft Edge");
+        assert_eq!(no_exe("Flexe"), "Flexe");
+        assert_eq!(no_exe(".exe"), "");
+        assert_eq!(no_exe("Ünï"), "Ünï");
+    }
+
+    // Spec 0027 AC-13: a hidden Store app is suspended, so its name must come from the rule
+    // key alone, which des-k holds lowercased. Needs Calculator installed: run with --ignored.
+    #[test]
+    #[ignore]
+    fn store_name_reads_a_lowercased_app_id() {
+        assert_eq!(store_name("microsoft.windowscalculator_8wekyb3d8bbwe!app").as_deref(), Some("Windows Calculator"));
+        assert_eq!(store_name("no.such.package_0000000000000!app"), None);
+        assert_eq!(store_name("notepad.exe"), None);
     }
 
     // AC-5: a better match must win over recency, or typing would not find the window you mean;

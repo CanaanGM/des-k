@@ -3,6 +3,39 @@
 What changed in each release, newest first. Downloads are on
 [Releases](https://github.com/CanaanGM/des-k/releases).
 
+## 0.9.0 (2026-11-22)
+
+- **A picture for each workspace.** Put pictures in des-k's wallpapers folder (Settings →
+  Workspaces → Wallpaper → **Open folder**) and pick one per workspace, on every screen or on one.
+  Switching a screen changes only that screen's picture. Your Windows wallpaper is never changed:
+  a workspace with no picture, a quit or a crash simply shows it again. Fill, fit, stretch or
+  center; an instant change or a short fade; and **Dim**, which darkens pictures so white icon
+  labels stay readable.
+- **Slideshows.** A workspace's picture can be a folder, or a few pictures you tick, shown one
+  after another. Each workspace can have its own pace, and **Shuffle** picks a random order. A
+  slideshow only moves while you can see it, so you come back to the picture you left.
+- **Open apps in their place.** In Settings → **Apps**, give an app a workspace (and a screen if
+  you like). Its new windows land there the moment they open, hidden if that workspace isn't
+  showing, with a short note. Your screens never switch for it. des-k only matches apps; it never
+  starts one.
+- **Names.** Call a workspace "Mail" or "Code" on every screen, or differently on one screen, and
+  rename a screen ("Left"). The names show beside the numbers on the indicator, the overview, the
+  finder and the tray menu.
+- **Go back.** `Win+Backspace` takes the screen under the mouse back to the workspace it showed
+  before, and again returns you. `Win+N` on the workspace you're already on does the same, and a
+  gesture can too (`do = "back"`).
+- **A hidden window that wants you.** When a window on a workspace you aren't looking at flashes
+  for attention, its screen shows a note in your own words ("Slack misses you"), and that
+  workspace keeps a dot until you go there. Change the words in Settings → **Attention**.
+- **What's new.** After an update, des-k shows once what the release added, with a button that
+  opens each setting. It never opens with the first run, and Settings → **What's new** shows it
+  again any time.
+- A maximized window that goes back to a screen with a different scaling keeps its normal size;
+  before, each trip shrank it.
+- Store apps (Calculator, say) and Windows 11's Notepad show their real names.
+- Starting des-k before the taskbar is up no longer logs an error for the tray icon; it waits for
+  the taskbar and says so.
+
 ## 0.8.0 (2026-11-17)
 
 - Pick a workspace's color or your accent without typing a hex value: click a tile under

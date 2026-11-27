@@ -610,7 +610,9 @@ pub fn show(mon: HMONITOR, card: Card) {
         ui::border(h, theme.b.edge);
         let _ = SetLayeredWindowAttributes(h, COLORREF(0), full, LWA_ALPHA);
         let _ = SetWindowPos(h, Some(HWND_TOPMOST), x, y, w, ht, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-        let _ = InvalidateRect(Some(h), None, false);
+        // Painted now, not when the loop is next idle: a card shown again kept the previous
+        // card's picture for a frame (a 60 fps recording, 2026-11-22). The paint reads only SHOWN.
+        let _ = RedrawWindow(Some(h), None, None, RDW_INVALIDATE | RDW_UPDATENOW);
         SetTimer(Some(h), FADE_TIMER, hold, None);
     }
     crate::uia::notify(h, &text, "des-k indicator", false);
