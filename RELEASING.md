@@ -85,7 +85,7 @@ The result is one of three:
 
 Ctrl+C stops it early. It puts `twice_ms` back to 300, closes its windows and leaves des-k running.
 
-Keep each result block on your PC, never in the repo, since it names your hardware. Compare it with the last minor release's block from the same PC: a p95 more than 1.5 times the last one is worth looking into before you tag, but doesn't block, because timing on one PC moves with whatever else Windows is doing. A new PC starts a new comparison.
+Keep each full result block on your PC, never in the repo. Only its summary is published: replace that PC's row in **How fast is it?** on the how it works page (`site/how-it-works-content.html`, copied into `site/how-it-works.html`) with the date and short commit, the Windows build, the CPU, the RAM in whole GB, the screens and windows, the switch p50, p95 and max, the idle CPU, and handles and private memory from warm to end. Never a serial number, a PC name or a user name. If the newest p95, rounded to 10 ms, changes, change the README's "about 40 ms" line too. Compare it with the last minor release's block from the same PC: a p95 more than 1.5 times the last one is worth looking into before you tag, but doesn't block, because timing on one PC moves with whatever else Windows is doing. A new PC starts a new comparison.
 
 After changing the script, `drill.ps1 stress -Steps 40` checks it in about 7 minutes.
 

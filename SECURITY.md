@@ -25,7 +25,7 @@ Only the newest release gets fixes. Update from the tray (**Check for updates**)
   downloads only the release's `SHA256SUMS.txt`, its signature and the setup, from URLs built
   from version numbers, into the admin only `Program Files\des-k\update\`, and runs the setup
   only if the publisher's key signed `SHA256SUMS.txt` for that version and the setup's SHA-256
-  matches its line ([RELEASING.md](RELEASING.md) shows how to check a download yourself).
+  matches its line ([Check a download](README.md#check-a-download) shows how to check one yourself).
 - Nothing in `%LOCALAPPDATA%\des-k` (settings, layout, log) can name a program to run or code to
   load, since anything running as you can write there. des-k never writes through a link there.
 - des-k only shows again the windows it hid itself.
