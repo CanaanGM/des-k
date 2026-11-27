@@ -69,5 +69,9 @@ jobs:
           Download ``des-k-$tag-setup.exe``, run it, and say Yes to the admin prompt. Uninstall it
           from Settings, Apps. The zip holds the same des-k.exe with install.ps1, for those who
           prefer a script. The guide: https://canaangm.github.io/des-k/
+
+          ``SHA256SUMS.txt.minisig`` is the publisher's signature over the checksums in
+          ``SHA256SUMS.txt``. The README shows how to check both:
+          https://github.com/CanaanGM/des-k#check-a-download
           "@
           gh release create $tag (Get-ChildItem dist).FullName --title "des-k $tag" --notes $notes --generate-notes --draft

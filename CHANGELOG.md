@@ -3,15 +3,31 @@
 What changed in each release, newest first. Downloads are on
 [Releases](https://github.com/CanaanGM/des-k/releases).
 
-## 0.10.0 (2026-11-24)
+## 0.10.0 (2026-11-27)
 
+- **Pause des-k.** Tray → **Pause des-k**, or a key you set: every hidden window comes back and
+  Windows gets its own shortcuts back, for a game or to see Windows on its own. **Resume des-k**
+  puts each window back on its workspace. A restart while paused starts paused.
+- **Workspaces per screen.** Each screen can have its own number of workspaces, say two on the
+  laptop and six on the big screen: each screen's row in Settings, or `[workspaces_per_screen]`
+  in `settings.toml`.
+- **Apps des-k leaves alone.** Pick **Leave alone** for an app that breaks when hidden or keeps
+  grabbing focus. des-k then never hides, follows, places or restores its windows.
+- **Keys can follow your focus.** Settings → Workspaces → **Keys act on** makes shortcuts act on
+  the focused window's screen instead of the one under the mouse. When a window comes forward on
+  another workspace, the indicator names its app. The first run lists each Windows shortcut des-k
+  takes over, and a new install leaves the Copilot key to Windows until you choose des-k.
+- **`state.txt` keeps less.** It names each app by its file name, never its folder, and keeps
+  window titles only while Restore is on. The README says what it holds and how to clear it.
 - **Updates prove they come from des-k's publisher.** Each release's checksum file is now signed
   with the publisher's own key, on the publisher's own PC. **Install X.Y.Z** in the tray runs an
   update only when that signature is good, was made for that version, and the setup matches it,
-  so taking over des-k's GitHub account is no longer enough to run a program on your PC. A
+  so taking over des-k's GitHub account is no longer enough to run a program on your PC through
+  an update. A
   release that fails the check is refused with a warning and never installed. Updating to 0.10.0
   itself from an older des-k still uses the checksum alone; every update after it is checked.
-  [RELEASING.md](RELEASING.md) shows how to check a download by hand.
+  [Check a download](README.md#check-a-download) shows how to check one by hand, and what each
+  check proves.
 - **Ready for a Windows that changed.** des-k hides windows through a part of Windows that has no
   public documentation. It now checks that part's fixed id before calling anything in it. On a
   Windows where the id changed, des-k calls nothing there, keeps switching workspaces without
@@ -21,6 +37,8 @@ What changed in each release, newest first. Downloads are on
   crash), `des-k --quit` or the next start still finds every window it hid. If it can't write that
   file, on a full disk for example, it hides nothing and says so on screen and in the tray.
   Each release is now tested this way before it ships ([RELEASING.md](RELEASING.md)).
+- A settings reload now frees the copy it replaced, so des-k's memory no longer grows with each
+  change.
 - [SECURITY.md](SECURITY.md) now says what runs as admin, each file des-k reads from your data
   folder, and why no setting can name a program or a path.
 

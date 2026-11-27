@@ -1,5 +1,8 @@
 # des-k
 
+[![build](https://github.com/CanaanGM/des-k/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/CanaanGM/des-k/actions/workflows/build.yml)
+[![latest release](https://img.shields.io/github/v/release/CanaanGM/des-k)](https://github.com/CanaanGM/des-k/releases/latest)
+
 Virtual desktops **per monitor** for Windows 11.
 
 Windows' own virtual desktops switch every screen at once. des-k gives each screen its own
@@ -7,22 +10,26 @@ workspaces: you switch the screen under your mouse, and the other screens stay w
 like on macOS or GNOME.
 
 des-k is not a tiling window manager like [komorebi](https://github.com/LGUG2Z/komorebi).
-Windows stay floating; des-k only hides and shows them.
+Windows stay floating; des-k only hides and shows them. A switch takes about 40 ms
+([how fast is it?](https://canaangm.github.io/des-k/how-it-works.html#how-fast-is-it)).
 
 **The full guide, with pictures: <https://canaangm.github.io/des-k/>**
 
-How it works inside, for developers: <https://canaangm.github.io/des-k/how-it-works.html>
+How it works inside, for developers: <https://canaangm.github.io/des-k/how-it-works.html>, with
+[where each part's code is](https://canaangm.github.io/des-k/how-it-works.html#where-is-the-code).
 
 ## Install
 
 1. Download the newest `des-k-…-setup.exe` from
    [Releases](https://github.com/CanaanGM/des-k/releases/latest) and run it.
-2. des-k isn't signed yet, so Windows may say "Windows protected your PC". Click
-   **More info**, then **Run anyway**.
+2. The setup has no Windows code signature yet (what SmartScreen looks for), so Windows may say
+   "Windows protected your PC". Click **More info**, then **Run anyway**. From 0.10.0 on, its
+   checksum file carries the publisher's signature instead: see [Check a download](#check-a-download).
 3. Say **Yes** to the admin prompt. A des-k icon shows up in the tray.
 
 To update, click **Check for updates** in the tray menu, then **Install X.Y.Z**. des-k downloads
-the setup, checks it against the release's `SHA256SUMS.txt` and runs it. Your workspaces are kept.
+the setup and runs it only when the publisher's signature on the release's `SHA256SUMS.txt` checks
+out for that version and the setup matches its line there. Your workspaces are kept.
 
 > Why admin? When an admin window (like Task Manager) has focus, Windows stops normal programs
 > from hearing the keyboard. Running des-k as admin keeps the shortcuts working everywhere.
@@ -43,6 +50,53 @@ the setup, checks it against the release's `SHA256SUMS.txt` and runs it. Your wo
   it again after pulling new code to update.
 
 </details>
+
+### Check a download
+
+Three different questions, and what answers each:
+
+- **Is the file the one in the release?** Its SHA-256 matches its line in the release's
+  `SHA256SUMS.txt`. Alone, that proves nothing about who made it: whoever controls the release
+  controls both files.
+- **Does it come from des-k's publisher?** `SHA256SUMS.txt.minisig` checks out with the
+  publisher's key below, with the trusted comment `des-k X.Y.Z` for that version. Releases from
+  0.10.0 on carry this signature; 0.9.0 and older don't.
+- **Is it safe?** No check proves that. What there is: the code is public, CI builds each release
+  from its tagged commit, and the publisher signs only when the tag, `main` and that CI build name
+  the same commit. That still doesn't prove the code does only what it says, since nothing checks
+  what the code does.
+
+To check a download yourself:
+
+1. Install minisign 0.10 or newer: `winget install jedisct1.minisign`.
+2. From the same release, download the setup (or the zip), `SHA256SUMS.txt` and
+   `SHA256SUMS.txt.minisig` into one folder, and open a terminal there.
+3. Check the signature with the main key:
+
+   ```powershell
+   minisign -Vm SHA256SUMS.txt -P RWThunwqMhrF8Ty7LmKeLKoczPJyRjIQoPDPAYyEyLpGhgPnHDr8nBkJ
+   ```
+
+   If it says the key ids differ, run it again with the backup key. It must print
+   `Signature and comment signature verified` and `Trusted comment: des-k X.Y.Z`, with the version
+   you downloaded.
+4. Hash the file and compare it with its line in `SHA256SUMS.txt`, ignoring case (`Get-FileHash`
+   prints capitals, the file has small letters):
+
+   ```powershell
+   Get-FileHash des-k-vX.Y.Z-setup.exe
+   ```
+
+If any step fails, don't run the file, and please [open an issue](https://github.com/CanaanGM/des-k/issues).
+
+| Key | Key id | Public key |
+|---|---|---|
+| main | `F1C51A322A7CBAE1` | `RWThunwqMhrF8Ty7LmKeLKoczPJyRjIQoPDPAYyEyLpGhgPnHDr8nBkJ` |
+| backup | `383EB8633678DAD9` | `RWTZ2ng2Y7g+OCJHvqDtAUchdqToYuz2sd4zArQdh/UCryBUNv+USVkz` |
+
+An update from the tray does this check for you, with the keys built into the des-k you already
+have, which a takeover of des-k's GitHub account can't change. A check of a first download is only
+as strong as the page you read the key from, and this page lives on that same account.
 
 ## Shortcuts
 
@@ -166,8 +220,10 @@ Your settings and log stay in `%LOCALAPPDATA%\des-k`; delete that folder too if 
   `& "$env:ProgramFiles\des-k\des-k.exe" --quit`. It shows every window des-k hid. Then start
   **des-k** from the Start menu.
 - **Defender calls des-k a trojan** (like `Trojan:Win32/Bearfoos.A!ml`): `!ml` is a machine
-  learning guess, common for new unsigned programs. Check the file against the release's
-  `SHA256SUMS.txt`, update Defender, then restore des-k from Windows Security → Protection history.
+  learning guess, common for new programs without a Windows code signature. Check the signature
+  by hand ([Check a download](#check-a-download)), and report the file to Microsoft as a false
+  positive at <https://www.microsoft.com/en-us/wdsi/filesubmission>. Restoring it from Windows Security → Protection history
+  is your own decision, since no check proves a program is safe.
 - **To see why**: tray → **Open log**. `des-k.old.log` beside it holds the run before.
 
 ## Windows builds it was tried on
@@ -177,7 +233,7 @@ on. This list names each Windows build des-k was tried on, and each release adds
 
 | Windows 11 | Build | Releases tried on it |
 |---|---|---|
-| 25H2 | 26200 | 0.1.0 to 0.9.0 |
+| 25H2 | 26200 | 0.1.0 to 0.10.0 |
 
 Another Windows 11 build may work too. A big Windows update could change that undocumented part.
 If it does, the tray shows a warning and switching hides nothing until des-k is updated.

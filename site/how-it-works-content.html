@@ -2,9 +2,9 @@ title: How des-k Works
 eyebrow: des-k · how it works inside
 headline: How des-k <em>hides</em> windows on one screen only
 lede: des-k uses the same Windows feature as Windows' own virtual desktops, but for one screen at a time. This page shows each part and where it lives in the code.
-pills: For <b>developers</b> | Written in <b>Rust</b> | Plain <b>Win32</b>, no framework | Checked against <b>0.9.0</b>
+pills: For <b>developers</b> | Written in <b>Rust</b> | Plain <b>Win32</b>, no framework | Checked against <b>0.10.0</b>
 status: draft
-updated: 2026-11-24
+updated: 2026-11-27
 related: <a href="https://canaangm.github.io/des-k/">The user guide</a> | <a href="https://github.com/CanaanGM/des-k">The code on GitHub</a> | <a href="https://github.com/CanaanGM/des-k/blob/main/SECURITY.md">SECURITY.md</a> | <a href="https://github.com/CanaanGM/des-k/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a>
 link: https://canaangm.github.io/des-k/how-it-works.html
 footnote: des-k is free software by CanaanGM, under the <a href="https://github.com/CanaanGM/des-k/blob/main/LICENSE">GNU GPL 3.0 or later</a>. Copyright (C) 2026 CanaanGM.
@@ -385,7 +385,7 @@ footnote: des-k is free software by CanaanGM, under the <a href="https://github.
   <p>A program that runs as admin and hears every key must be careful. des-k keeps these rules:</p>
   <ul>
     <li><strong>No network on its own.</strong> des-k goes online only when you click <strong>Check for updates</strong> or <strong>Install</strong> in the tray.</li>
-    <li><strong>An update must match its checksum.</strong> des-k runs a downloaded setup only if its SHA-256 matches the release's <code>SHA256SUMS.txt</code>.</li>
+    <li><strong>An update must carry the publisher's signature.</strong> des-k runs a downloaded setup only if the release's <code>SHA256SUMS.txt</code> carries a minisign signature made for that version by a key built into des-k, and the setup's SHA-256 matches its line there.</li>
     <li><strong>Settings can never start a program.</strong> Any program running as you can write to <code>%LOCALAPPDATA%\des-k</code>. So nothing there may name a program to run or code to load.</li>
     <li><strong>The log is safe to share.</strong> It names a window by its program. It never holds a window title or a workspace name.</li>
   </ul>
@@ -415,7 +415,7 @@ footnote: des-k is free software by CanaanGM, under the <a href="https://github.
   <div class="table-wrap"><table>
     <thead><tr><th>What</th><th>Value</th><th>Where it is set</th></tr></thead>
     <tbody>
-      <tr><td>Workspaces on each screen</td><td>4, from 2 to 9</td><td><code>workspaces</code> in <code>settings.toml</code></td></tr>
+      <tr><td>Workspaces on each screen</td><td>4, from 2 to 9, for every screen or one screen at a time</td><td><code>workspaces</code> and <code>[workspaces_per_screen]</code> in <code>settings.toml</code></td></tr>
       <tr><td>Retry to cloak a brand new window</td><td>every 15 ms, 66 times (about 1 s)</td><td><code>NEW_RETRY</code>, <code>NEW_TRIES</code> in <code>ws.rs</code></td></tr>
       <tr><td>Wait between two follows on one screen</td><td>1000 ms</td><td><code>FOLLOW_COOLDOWN_MS</code> in <code>ws.rs</code></td></tr>
       <tr><td>Screen check</td><td>once a second</td><td>the timer in <code>main.rs</code></td></tr>
@@ -427,7 +427,7 @@ footnote: des-k is free software by CanaanGM, under the <a href="https://github.
       <tr><td>Cloak again a window that a rule hid and the shell showed</td><td>3 times, within 10 s</td><td><code>RECLOAKS</code>, <code>HOLD_FOR</code> in <code>ws.rs</code></td></tr>
       <tr><td>Keyboard hook check</td><td>every 5 s</td><td><code>WATCH_MS</code> in <code>keys.rs</code></td></tr>
       <tr><td>Settings file check</td><td>once a second</td><td>the timer in <code>main.rs</code></td></tr>
-      <tr><td>Wait for the shell at exit</td><td>20 tries, 250 ms apart (5 s)</td><td><code>shell_for_exit</code> in <code>ws.rs</code></td></tr>
+      <tr><td>Wait for the shell at exit</td><td>20 tries, 250 ms apart (5 s)</td><td><code>shell_for_exit</code> in <code>ws/restore.rs</code></td></tr>
       <tr><td>Log size before it starts fresh</td><td>5 MB</td><td><code>log.rs</code></td></tr>
     </tbody>
   </table></div>
@@ -435,24 +435,48 @@ footnote: des-k is free software by CanaanGM, under the <a href="https://github.
 
 <section class="card">
   <p class="kicker">Reference</p>
+  <h2>How fast is it?</h2>
+  <p>Before each minor release, a stress run switches a screen between two workspaces 10,000 times and reloads <code>settings.toml</code> 10,000 times, on a PC nobody touches. It times each switch from the moment des-k's main thread takes the key's message until every window is hidden or shown. It runs on the stress build: the release's code plus that timing, built like a release, never shipped. Each PC shows its newest run.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Run</th><th>Windows</th><th>CPU</th><th>RAM, whole GB</th><th>Screens, windows</th><th>Switch p50, p95, max</th><th>Idle CPU</th><th>Warm to end</th></tr></thead>
+    <tbody>
+      <tr><td>2026-11-25, <code>29fb1c4</code></td><td>25H2, build 26200.9711</td><td>Intel Core 7 240H</td><td>32</td><td>1 screen, 20 windows</td><td>37.7, 43.3, 79.4 ms</td><td>0.12 % of one core</td><td>handles &minus;2, private memory +0.7 MB</td></tr>
+    </tbody>
+  </table></div>
+  <p>Idle CPU is des-k's share of one core over 5 idle minutes. Warm is after the first 500 switches; the end is 60 s after the last. A run passes only when handles grow by 20 or fewer and private memory by 2 MB or less.</p>
+</section>
+
+<section class="card">
+  <p class="kicker">Reference</p>
   <h2>Where is the code?</h2>
-  <p>About 38,000 lines of Rust in <a href="https://github.com/CanaanGM/des-k/tree/main/src"><code>src/</code></a>. Each file opens with a short comment that says what it owns.</p>
+  <p>About 43,000 lines of Rust in <a href="https://github.com/CanaanGM/des-k/tree/main/src"><code>src/</code></a>, tests included. Each file opens with a short comment that says what it owns, its tests sit beside it, and no file passes 1,000 lines.</p>
   <div class="table-wrap"><table>
     <thead><tr><th>File</th><th>What it owns</th></tr></thead>
     <tbody>
       <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/main.rs"><code>main.rs</code></a></td><td>Start, the message loop, the timers, every way out.</td></tr>
-      <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/ws.rs"><code>ws.rs</code></a></td><td>The workspaces: the lists, switch, send, pin, follow, the screens, <code>state.txt</code>.</td></tr>
+      <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/ws.rs"><code>ws.rs</code></a></td><td>The lists every other part reads: each screen, its workspaces and the windows they hid. The rest of the workspaces' code is split by job in <a href="https://github.com/CanaanGM/des-k/tree/main/src/ws"><code>ws/</code></a>, below.</td></tr>
+      <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/ws/switch.rs"><code>ws/switch.rs</code></a>, <a href="https://github.com/CanaanGM/des-k/blob/main/src/ws/moves.rs"><code>ws/moves.rs</code></a></td><td>Switch, jump, back and follow; send, pin, go to and bring.</td></tr>
+      <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/ws/screens.rs"><code>ws/screens.rs</code></a></td><td>The screen check once a second: a screen gone, folded onto the main display, back and settled.</td></tr>
+      <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/ws/store.rs"><code>ws/store.rs</code></a>, <a href="https://github.com/CanaanGM/des-k/blob/main/src/ws/restore.rs"><code>ws/restore.rs</code></a></td><td>Where des-k may write and <code>state.txt</code>; loading it at start, putting windows back after a reboot, showing every window at exit.</td></tr>
+      <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/ws/rules.rs"><code>ws/rules.rs</code></a>, <a href="https://github.com/CanaanGM/des-k/blob/main/src/ws/alone.rs"><code>ws/alone.rs</code></a></td><td>App rules placing a new window, and the apps des-k leaves alone.</td></tr>
+      <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/ws/pause.rs"><code>ws/pause.rs</code></a></td><td>Pause: every hidden window shown, each keeping its workspace for Resume.</td></tr>
+      <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/ws/views.rs"><code>ws/views.rs</code></a>, <a href="https://github.com/CanaanGM/des-k/blob/main/src/ws/focus.rs"><code>ws/focus.rs</code></a></td><td>Which windows count, what the finder and the overview list, and focus.</td></tr>
+      <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/ws/win.rs"><code>ws/win.rs</code></a></td><td>Every Windows call the workspaces make, each behind a safe wrapper. No other file in <code>ws/</code> has <code>unsafe</code>.</td></tr>
       <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/cloak.rs"><code>cloak.rs</code></a></td><td>Cloak and show one window. The only file that calls the undocumented interface.</td></tr>
       <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/keys.rs"><code>keys.rs</code></a></td><td>The keyboard hook and its watch.</td></tr>
-      <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/touchpad.rs"><code>touchpad.rs</code></a>, <a href="https://github.com/CanaanGM/des-k/blob/main/src/gestures.rs"><code>gestures.rs</code></a></td><td>Reading the touchpad, and what each gesture does.</td></tr>
+      <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/touchpad.rs"><code>touchpad.rs</code></a>, <a href="https://github.com/CanaanGM/des-k/blob/main/src/gestures.rs"><code>gestures.rs</code></a>, <a href="https://github.com/CanaanGM/des-k/blob/main/src/setup.rs"><code>setup.rs</code></a></td><td>Reading the touchpad, what each gesture does, and Windows' own touchpad gestures.</td></tr>
       <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/restore.rs"><code>restore.rs</code></a></td><td>Knowing a window again after a reboot, and reading a monitor's EDID.</td></tr>
       <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/apps.rs"><code>apps.rs</code></a></td><td>App rules: matching a new window to a rule.</td></tr>
-      <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/backdrop.rs"><code>backdrop.rs</code></a></td><td>The picture behind your icons, and the slideshows.</td></tr>
-      <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/settings.rs"><code>settings.rs</code></a></td><td>Reading and writing <code>settings.toml</code>.</td></tr>
-      <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/indicator.rs"><code>indicator.rs</code></a>, <a href="https://github.com/CanaanGM/des-k/blob/main/src/finder.rs"><code>finder.rs</code></a>, <a href="https://github.com/CanaanGM/des-k/blob/main/src/overview.rs"><code>overview.rs</code></a></td><td>The workspace indicator, the window finder and the overview.</td></tr>
-      <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/tray.rs"><code>tray.rs</code></a>, <a href="https://github.com/CanaanGM/des-k/blob/main/src/settings_page.rs"><code>settings_page.rs</code></a>, <a href="https://github.com/CanaanGM/des-k/blob/main/src/ui.rs"><code>ui.rs</code></a></td><td>The tray icon and menu, the settings page, and the drawing code they share.</td></tr>
+      <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/backdrop.rs"><code>backdrop.rs</code></a>, <a href="https://github.com/CanaanGM/des-k/tree/main/src/backdrop"><code>backdrop/</code></a></td><td>The picture behind your icons, and the slideshows.</td></tr>
+      <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/settings.rs"><code>settings.rs</code></a>, <a href="https://github.com/CanaanGM/des-k/tree/main/src/settings"><code>settings/</code></a></td><td><code>settings.toml</code>: <code>parse.rs</code> reads it, <code>store.rs</code> holds it and reloads it on a change, <code>edit.rs</code> writes one value back and keeps your comments.</td></tr>
+      <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/indicator.rs"><code>indicator.rs</code></a>, <a href="https://github.com/CanaanGM/des-k/blob/main/src/finder.rs"><code>finder.rs</code></a>, <a href="https://github.com/CanaanGM/des-k/blob/main/src/overview.rs"><code>overview.rs</code></a></td><td>The workspace indicator, the window finder and the overview, each with a folder of the same name for its drawing and layout.</td></tr>
+      <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/settings_page.rs"><code>settings_page.rs</code></a>, <a href="https://github.com/CanaanGM/des-k/tree/main/src/settings_page"><code>settings_page/</code></a></td><td>The settings page: one file per card in <code>cards/</code>, the color picker, the menus, the keys and the text box.</td></tr>
+      <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/tray.rs"><code>tray.rs</code></a>, <a href="https://github.com/CanaanGM/des-k/blob/main/src/tray_menu.rs"><code>tray_menu.rs</code></a></td><td>The tray icon and its menu.</td></tr>
+      <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/welcome.rs"><code>welcome.rs</code></a>, <a href="https://github.com/CanaanGM/des-k/blob/main/src/whats_new.rs"><code>whats_new.rs</code></a>, <a href="https://github.com/CanaanGM/des-k/blob/main/src/hints.rs"><code>hints.rs</code></a></td><td>The first run, What's new and the shortcut hints window.</td></tr>
+      <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/ui.rs"><code>ui.rs</code></a>, <a href="https://github.com/CanaanGM/des-k/tree/main/src/ui"><code>ui/</code></a>, <a href="https://github.com/CanaanGM/des-k/blob/main/src/controls.rs"><code>controls.rs</code></a>, <a href="https://github.com/CanaanGM/des-k/blob/main/src/uia.rs"><code>uia.rs</code></a></td><td>The drawing des-k's own windows share: theme, colors, fonts, canvas, the shared buttons and fields, and what Narrator hears.</td></tr>
       <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/update.rs"><code>update.rs</code></a>, <a href="https://github.com/CanaanGM/des-k/blob/main/src/install.rs"><code>install.rs</code></a></td><td>The update check and the install, both only on your click.</td></tr>
       <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/log.rs"><code>log.rs</code></a></td><td>The log.</td></tr>
+      <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/drill.rs"><code>drill.rs</code></a></td><td>The drill and stress build's stop points and timing. Never in a release build.</td></tr>
     </tbody>
   </table></div>
   <p>To build and run it, see <a href="https://canaangm.github.io/des-k/#build-and-run-from-the-code">Build and run from the code</a> in the guide. <a href="https://github.com/CanaanGM/des-k/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a> has the rules for a change.</p>
