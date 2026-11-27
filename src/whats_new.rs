@@ -99,9 +99,9 @@ const V0_9_0: [Card; 5] = [
     Card { pic: Pic::Note, title: "A hidden window that wants you", text: Text::Attention, button: "Change the words", to: (Section::Attention, None) },
 ];
 
-/// 0.11.0's cards (spec 0038 AC-18, spec 0039 AC-16). Nothing about the Copilot key: an upgrader
-/// keeps theirs.
-const V0_11_0: [Card; 2] = [
+/// 0.11.0's cards (spec 0038 AC-18, spec 0039 AC-16, spec 0041 AC-13). Nothing about the Copilot
+/// key: an upgrader keeps theirs.
+const V0_11_0: [Card; 4] = [
     Card {
         pic: Pic::Screens,
         title: "Keys can follow your focus",
@@ -115,6 +115,20 @@ const V0_11_0: [Card; 2] = [
         text: Text::Plain("Pick Pause des-k in the tray for a game or to try Windows on its own: every window comes back and Windows gets its keys back. Resume puts each window back on its workspace."),
         button: "Set a key",
         to: (Section::Shortcuts, None),
+    },
+    Card {
+        pic: Pic::Screens,
+        title: "Workspaces per screen",
+        text: Text::Plain("Each screen can have its own number of workspaces, say two on the laptop and six on the big screen. Each screen's row has its own + and ×."),
+        button: "Choose",
+        to: (Section::Workspaces, None),
+    },
+    Card {
+        pic: Pic::Lands,
+        title: "Apps des-k leaves alone",
+        text: Text::Plain("Pick Leave alone for an app that breaks when hidden or keeps grabbing focus. Its windows then stay in view on every workspace, and des-k never moves them."),
+        button: "Pick an app",
+        to: (Section::Apps, None),
     },
 ];
 

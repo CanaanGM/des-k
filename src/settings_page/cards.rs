@@ -9,7 +9,7 @@ pub(super) mod names;
 mod overview;
 pub(super) mod place;
 mod restore;
-mod screens;
+pub(super) mod screens;
 mod shortcuts;
 mod side;
 mod touchpad;
@@ -35,6 +35,10 @@ pub(super) fn changed(key: &str, was: &str, now: &str) -> String {
     // The Apps section shows the rules themselves; the fallback below would read them as keys.
     if key == "apps" {
         return "App rules: changed".into();
+    }
+    // The tile rows show each screen's own count (spec 0040).
+    if key == "workspaces_per_screen" {
+        return "Workspaces per screen: changed".into();
     }
     // A workspace's own time per picture, or "default" (spec 0028 AC-12).
     if let Some(n) = key.strip_prefix("wallpaper.intervals.ws") {

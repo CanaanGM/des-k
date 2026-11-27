@@ -308,3 +308,56 @@ fn each_way_home_follows_from_where_it_is_and_where_it_goes() {
     assert_eq!(way_home(false, true, unread), Way::MoveRelist);
     assert_eq!(way_home(false, false, unread), Way::HideMove);
 }
+
+fn state_with(monitors: Vec<(&str, Monitor)>) -> State {
+    State { monitors: monitors.into_iter().map(|(id, m)| (id.to_string(), m)).collect(), ..State::default() }
+}
+
+// Spec 0040 AC-3: lowering one screen's count moves only that screen's windows, held ones too,
+// and only the away records whose home it is; the other screen and its records don't move.
+#[test]
+fn a_per_screen_resize_leaves_other_screens_alone() {
+    let mut big = with_hidden(0, &[&[], &[1], &[2], &[3], &[4], &[5]]);
+    big.held[5].push((50, 9));
+    let laptop = with_hidden(1, &[&[7], &[]]);
+    let mut s = state_with(vec![("DEL-1", big), ("internal", laptop)]);
+    s.away.insert(60, Away { home: "DEL-1".into(), ws: 5, spot: spot(0, 'n'), pinned: false, pid: 1 });
+    s.away.insert(61, Away { home: "GSM-2".into(), ws: 5, spot: spot(0, 'n'), pinned: false, pid: 1 });
+    let done = resize_lists(&mut s, |id| if id == "DEL-1" { 4 } else { 2 });
+    assert_eq!(done.iter().map(|r| (r.id.as_str(), r.old, r.new)).collect::<Vec<_>>(), [("DEL-1", 6, 4)], "the laptop already has 2");
+    let big = &s.monitors["DEL-1"];
+    assert_eq!(big.hidden, vec![vec![], vec![1], vec![2], vec![3, 4, 5]]);
+    assert_eq!(big.held[3], vec![(50, 9)], "held windows move like hidden ones");
+    assert_eq!(s.monitors["internal"].hidden, vec![vec![7], vec![]]);
+    assert_eq!((s.away[&60].ws, s.away[&61].ws), (3, 5), "only records whose home shrank");
+}
+
+// AC-7: a big screen with six folds onto a laptop with two. A window from workspace 5 waits on
+// the laptop's last one, and its away record keeps 5, so it goes home to 5; if the big screen's
+// own count dropped to 3 meanwhile, it goes to that screen's last.
+#[test]
+fn a_fold_onto_fewer_workspaces_keeps_the_home_workspace() {
+    assert_eq!(fold_ws(4, 2), 1);
+    assert_eq!(fold_ws(1, 2), 1);
+    assert_eq!(fold_to(4, 2, 0), FoldTo::Hide(1));
+    assert_eq!(fold_to(4, 2, 1), FoldTo::Show(1), "in view when the laptop shows its last");
+    assert_eq!(home_ws(4, 6), 4);
+    assert_eq!(home_ws(4, 3), 2);
+    assert_eq!(goes_in_view(&away(4, false), 6, 0, false), (4, false));
+}
+
+// AC-7, spec 0039 AC-12: a held window on a screen that folds keeps its own workspace in its
+// away record, even past the main display's count, and a count change while paused moves held
+// lists like hidden ones.
+#[test]
+fn a_held_window_on_a_folding_screen_keeps_its_workspace() {
+    let held = vec![vec![], vec![], vec![], vec![], vec![(10, 1)]];
+    let out = held_aways("DEL-1", held, |_, _| true, |raw| spot(raw as i32, 'n'));
+    assert_eq!(out.iter().map(|(raw, a)| (*raw, a.ws)).collect::<Vec<_>>(), [(10, 4)]);
+    let mut m = with_hidden(0, &[&[], &[], &[], &[], &[]]);
+    m.held[4].push((10, 1));
+    let mut s = state_with(vec![("DEL-1", m)]);
+    s.paused = true;
+    resize_lists(&mut s, |_| 2);
+    assert_eq!(s.monitors["DEL-1"].held, vec![vec![], vec![(10, 1)]]);
+}

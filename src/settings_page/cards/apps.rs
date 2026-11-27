@@ -3,6 +3,7 @@
 use super::*;
 use crate::settings_page::choosers::{Choice, Mark};
 use super::workspaces::ws_label;
+use super::screens::screen_called;
 
 const APP_WS_W: f32 = 184.0; // an Apps rule's workspace menu (spec 0027)
 const APP_SCREEN_W: f32 = 204.0; // and its screen menu
@@ -29,7 +30,7 @@ impl Ctx<'_, '_> {
 
     pub(super) fn app_rules(&mut self, y: f32) -> f32 {
         let b = self.cx.c.t.b;
-        let n = self.s.apps.len();
+        let n = app_rows(self.s).len();
         self.header(y, "Rules", Some(n.min(99) as u8), "");
         let (plain, bold) = ("New windows only · ", "your screens stay");
         let rw = self.cx.c.width(plain, F::Small) + self.cx.c.width(bold, F::SmallBold);
@@ -50,15 +51,16 @@ impl Ctx<'_, '_> {
         h
     }
 
-    /// One rule: the app's icon and name while it runs, else its key; under the name its note,
-    /// or its key, or Not running; then its workspace and screen menus and remove.
+    /// One row: the app's icon and name while it runs, else its key; under the name its note,
+    /// or its key, or Not running; then its workspace and screen menus and remove. An app left
+    /// alone has no screen menu and no note (spec 0041 AC-11).
     fn app_row(&mut self, y: f32, i: usize) -> f32 {
         let b = self.cx.c.t.b;
-        let (key, rule) = &self.s.apps[i];
+        let (key, rule) = app_rows(self.s)[i];
         let (x, nx, nw, wx, sx) = self.app_cols();
         let seen = self.w.pics.apps.iter().find(|a| a.key == *key).cloned();
         let name = seen.as_ref().map_or_else(|| key.clone(), |a| a.name.clone());
-        let note = app_note(&self.w.pics.view, self.s, rule);
+        let note = rule.and_then(|rule| app_note(&self.w.pics.view, self.s, rule));
         let note_ink = |warn: bool| if warn { b.warn } else { b.tx2 };
         let sub_h = match &note {
             Some((text, warn)) => self.measured(|c| c.cx.c.para(nx + 18.0, 0.0, nw - 18.0, 16.0, &[(text, F::Small, note_ink(*warn))])),
@@ -91,6 +93,12 @@ impl Ctx<'_, '_> {
             }
         }
         let my = y + (h - 32.0) / 2.0;
+        let Some(rule) = rule else {
+            self.cx.say(Ctl::AppWs(i), UIA_ComboBoxControlTypeId, &format!("Workspace for {name}"), "", self.cx.ro, (None, Some(LEAVE_ALONE.into())));
+            self.app_picker(Ctl::AppWs(i), (wx, my, APP_WS_W), Mark::Glyph(I_ALONE), LEAVE_ALONE, false);
+            self.app_x(i, sx + APP_SCREEN_W + 12.0, my, &name);
+            return h;
+        };
         let (ws, grey) = ws_label(self.s, rule.screen.as_deref(), rule.workspace);
         let screen = rule.screen.as_deref().map_or_else(|| "Any screen".to_string(), |id| self.screen_called(id));
         let help = note.as_ref().map_or(String::new(), |(text, _)| text.clone());
@@ -157,7 +165,7 @@ impl Ctx<'_, '_> {
         self.cx.icon(x + (32.0 - iw) / 2.0, y, 32.0, I_X, F::IconTiny, ink);
         self.cx.ring((x, y, 32.0, 32.0), 6.0, ctl);
         self.cx.hit(ctl, (x, y, 32.0, 32.0), 1);
-        self.cx.say(ctl, UIA_ButtonControlTypeId, &format!("Remove {name}"), "Takes this app's rule out of settings.toml.", self.cx.ro, (None, None));
+        self.cx.say(ctl, UIA_ButtonControlTypeId, &format!("Remove {name}"), "Takes this app out of settings.toml.", self.cx.ro, (None, None));
     }
 
     /// No rules yet: what a rule does, and where else you can write one.
@@ -199,16 +207,44 @@ pub(in crate::settings_page) fn app_screens(v: &crate::ws::views::View, rule: &s
     out
 }
 
-/// The Add menu's apps: open now, and with no rule yet.
+/// The Add menu's apps: open now, with no rule yet and not left alone.
 pub(in crate::settings_page) fn addable<'a>(w: &'a Win, s: &Settings) -> Vec<&'a crate::apps::Seen> {
-    w.pics.apps.iter().filter(|a| !s.apps.iter().any(|(k, _)| *k == a.key)).collect()
+    w.pics.apps.iter().filter(|a| !s.apps.iter().any(|(k, _)| *k == a.key) && !s.alone.contains(&a.key)).collect()
 }
 
-/// A rule row's note, if one applies, and whether it is a warning: a rule past your count or
-/// for an unplugged screen still works; one for a screen des-k never saw is skipped (AC-7, AC-9).
+/// A row's workspace menu item, and its value, for an app des-k leaves alone (spec 0041 AC-11).
+pub(in crate::settings_page) const LEAVE_ALONE: &str = "Leave alone";
+const I_ALONE: &str = "\u{ED1A}";
+
+/// The Apps card's rows: each rule in file order, then each app left alone, by key (spec 0041
+/// AC-11). A row's rule is None for an app left alone.
+pub(in crate::settings_page) fn app_rows(s: &Settings) -> Vec<(&String, Option<&settings::Rule>)> {
+    let mut quiet: Vec<&String> = s.alone.iter().collect();
+    quiet.sort();
+    s.apps.iter().map(|(k, r)| (k, Some(r))).chain(quiet.into_iter().map(|k| (k, None))).collect()
+}
+
+/// How many workspaces a rule's chooser lists: its screen's own count, else the highest any
+/// screen has (spec 0040 AC-11).
+pub(in crate::settings_page) fn rule_count(s: &Settings, rule: &settings::Rule) -> usize {
+    rule.screen.as_deref().map_or(s.most(), |id| s.count_for(id))
+}
+
+/// A rule row's note, if one applies, and whether it is a warning: a rule past the count of the
+/// screen it lands on, or for an unplugged screen, still works; one for a screen des-k never saw
+/// is skipped (spec 0027 AC-7, AC-9; spec 0040 AC-6).
 fn app_note(v: &crate::ws::views::View, s: &Settings, rule: &settings::Rule) -> Option<(String, bool)> {
-    if rule.workspace >= s.workspaces {
-        return Some((format!("Waits: you have {} workspaces", s.workspaces), false));
+    let k = rule.workspace;
+    match rule.screen.as_deref() {
+        Some(id) if k >= s.count_for(id) => {
+            return Some((format!("Waits: {} has {} workspaces", screen_called(v, s, id), s.count_for(id)), false));
+        }
+        // Only plugged in screens: a window opens on one of those.
+        None => {
+            let short: Vec<String> = v.present.iter().filter(|p| k >= s.count_for(&p.id)).map(|p| p.name.clone()).collect();
+            return (!short.is_empty()).then(|| (format!("Waits on {}: fewer workspaces", short.join(", ")), false));
+        }
+        Some(_) => {}
     }
     let id = rule.screen.as_deref()?;
     match () {
@@ -226,6 +262,7 @@ pub(crate) enum AppChange {
     Ws(usize),
     Screen(Option<String>), // None: Any screen
     Remove,
+    Alone, // `"alone"` in place of the rule (spec 0041 AC-11)
 }
 
 pub(crate) fn app_edit(key: &str, change: AppChange) -> Edit {
@@ -244,6 +281,7 @@ pub(crate) fn app_edit(key: &str, change: AppChange) -> Edit {
         AppChange::Screen(Some(id)) => Edit::At(path(Some("screen")), id.into()),
         AppChange::Screen(None) => Edit::Remove(path(Some("screen"))),
         AppChange::Remove => Edit::Remove(path(None)),
+        AppChange::Alone => Edit::At(path(None), "alone".into()),
     }
 }
 
@@ -255,12 +293,19 @@ pub(in crate::settings_page) fn app_choice(w: &Win, s: &Settings, from: Ctl, i: 
             let screen = w.pics.view.present.iter().find(|p| p.device == a.device).map(|p| p.id.clone());
             Some(app_edit(&a.key, AppChange::Add(a.ws, screen)))
         }
+        // The workspaces, then Leave alone; a workspace on a row left alone writes a rule with no
+        // screen (spec 0041 AC-11).
         Ctl::AppWs(r) => {
-            let (key, rule) = s.apps.get(r)?;
-            (i != rule.workspace && i < s.workspaces).then(|| app_edit(&settings::edit::app_key_in_file(key), AppChange::Ws(i)))
+            let (key, rule) = *app_rows(s).get(r)?;
+            let key = settings::edit::app_key_in_file(key);
+            match rule {
+                Some(rule) if i == rule_count(s, rule) => Some(app_edit(&key, AppChange::Alone)),
+                Some(rule) => (i != rule.workspace && i < rule_count(s, rule)).then(|| app_edit(&key, AppChange::Ws(i))),
+                None => (i < s.most()).then(|| app_edit(&key, AppChange::Add(i, None))),
+            }
         }
         Ctl::AppScreen(r) => {
-            let (key, rule) = s.apps.get(r)?;
+            let (key, rule) = app_rows(s).get(r).and_then(|&(k, r)| Some((k, r?)))?;
             let id = app_screens(&w.pics.view, rule).into_iter().nth(i)?.0;
             (id != rule.screen).then(|| app_edit(&settings::edit::app_key_in_file(key), AppChange::Screen(id)))
         }

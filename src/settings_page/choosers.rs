@@ -1,7 +1,7 @@
 // The screen choosers: the screens a card can show, the open screen menu, its keys and what a
 // choice changes (spec 0020, spec 0023, spec 0026).
 use super::*;
-use crate::settings_page::cards::apps::{addable, app_choice, app_screens};
+use crate::settings_page::cards::apps::{LEAVE_ALONE, addable, app_choice, app_rows, app_screens, rule_count};
 use crate::settings_page::cards::names::names_chosen;
 use crate::settings_page::cards::wallpaper::{choose_wall, chooser_wall, tick_wall, wall_chosen, wall_dirs, wall_folder, wall_held, wall_screen, wall_show_line};
 use crate::settings_page::cards::workspaces::ws_label;
@@ -252,18 +252,22 @@ pub(super) fn chooser_lines(w: &Win, s: &Settings, from: Ctl) -> (Vec<Choice>, O
             };
             (lines, cur)
         }
+        // Its workspaces, then Leave alone (spec 0041 AC-11).
         Ctl::AppWs(r) => {
-            let Some((_, rule)) = s.apps.get(r) else { return (vec![], None) };
-            let lines = (0..s.workspaces)
+            let Some(&(_, rule)) = app_rows(s).get(r) else { return (vec![], None) };
+            let n = rule.map_or(s.most(), |rule| rule_count(s, rule));
+            let screen = rule.and_then(|rule| rule.screen.as_deref());
+            let mut lines: Vec<Choice> = (0..n)
                 .map(|k| {
-                    let (name, grey) = ws_label(s, rule.screen.as_deref(), k);
+                    let (name, grey) = ws_label(s, screen, k);
                     Choice { name, chip: Some(k), grey, ..Choice::default() }
                 })
                 .collect();
-            (lines, (rule.workspace < s.workspaces).then_some(rule.workspace))
+            lines.push(Choice::new(LEAVE_ALONE, ""));
+            (lines, rule.map_or(Some(n), |rule| (rule.workspace < n).then_some(rule.workspace)))
         }
         Ctl::AppScreen(r) => {
-            let Some((_, rule)) = s.apps.get(r) else { return (vec![], None) };
+            let Some(rule) = app_rows(s).get(r).and_then(|&(_, rule)| rule) else { return (vec![], None) };
             let list = app_screens(&w.pics.view, rule);
             let i = list.iter().position(|(id, _)| *id == rule.screen);
             (list.into_iter().map(|(_, c)| c).collect(), i)

@@ -190,7 +190,7 @@ fn outside(now: Option<u32>, file: u32, written: Option<u32>) -> bool {
 pub(super) fn must_close(w: &Win) -> bool {
     let Some(p) = &w.pick else { return false };
     let s = settings::get();
-    w.theme.hc || settings::store::parse_error().is_some() || ws_index(p.key).is_some_and(|i| i >= s.workspaces) || outside(file_color(&s, p.key), p.file, p.written)
+    w.theme.hc || settings::store::parse_error().is_some() || ws_index(p.key).is_some_and(|i| i >= s.most()) || outside(file_color(&s, p.key), p.file, p.written)
 }
 
 /// The page's theme with `color` for `key`, while the page doesn't show that color already.
@@ -219,7 +219,7 @@ pub(super) fn pick_open(key: &'static str, anchor: Anchor, from: Option<Ctl>) {
     ease_finish();
     let s = settings::get();
     let Some(color) = file_color(&s, key) else { return };
-    if ws_index(key).is_some_and(|i| i >= s.workspaces) || settings::store::parse_error().is_some() {
+    if ws_index(key).is_some_and(|i| i >= s.most()) || settings::store::parse_error().is_some() {
         return;
     }
     // What the file holds now, after any hex box save, for Esc and Cancel to put back.

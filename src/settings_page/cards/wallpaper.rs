@@ -249,7 +249,7 @@ fn wall_names(dir: &std::path::Path, files: bool, keep: fn(&str) -> bool) -> Vec
 pub(in crate::settings_page) fn wall_wanted(w: &Win, s: &Settings) -> Option<(RECT, (i32, i32), Vec<String>)> {
     let screen = wall_screen(w, s);
     let rect = wall_rect(&w.pics.view, screen.as_deref())?;
-    let mut files: Vec<String> = (0..s.workspaces).filter_map(|k| wall_shows(w, s, screen.as_deref(), k)).filter(|f| !f.is_empty()).collect();
+    let mut files: Vec<String> = (0..wall_ws_count(s, screen.as_deref())).filter_map(|k| wall_shows(w, s, screen.as_deref(), k)).filter(|f| !f.is_empty()).collect();
     files.sort();
     files.dedup();
     Some((rect, wall_px(Some(rect), w.scale), files))
@@ -309,8 +309,9 @@ impl Ctx<'_, '_> {
         }
         // While any row is a slideshow every row keeps its time's space, so the menus line up.
         let screen = wall_screen(self.w, self.s);
-        let slides = (0..self.s.workspaces).any(|k| matches!(wall_held(self.s, screen.as_deref(), k).1, Pick::Folder(_) | Pick::Set(_)));
-        for k in 0..self.s.workspaces {
+        let n = wall_ws_count(self.s, screen.as_deref());
+        let slides = (0..n).any(|k| matches!(wall_held(self.s, screen.as_deref(), k).1, Pick::Folder(_) | Pick::Set(_)));
+        for k in 0..n {
             if k > 0 || two || self.w.pics.wall_failed {
                 self.sep(y + h);
             }
@@ -328,7 +329,7 @@ impl Ctx<'_, '_> {
             None => "Pictures every screen shows, unless it has its own. They come from des-k's wallpapers folder; each row's menu opens it.".to_string(),
             Some(id) => {
                 let own = self.s.wallpaper_screens.get(id);
-                match (0..self.s.workspaces).filter(|&k| own.is_some_and(|o| o[k].is_some())).count() {
+                match (0..self.s.count_for(id)).filter(|&k| own.is_some_and(|o| o[k].is_some())).count() {
                     0 => "Every row follows all screens.".to_string(),
                     1 => "1 workspace differs on this screen. Other rows follow all screens.".to_string(),
                     n => format!("{n} workspaces differ on this screen. Other rows follow all screens."),
@@ -672,6 +673,12 @@ fn wall_two(w: &Win, s: &Settings) -> bool {
 
 /// The screen the Wallpaper card's rows write for: None for All screens, and while the card
 /// has no chooser.
+/// How many rows the Wallpaper card lists: the chosen screen's own count, else the highest any
+/// screen has (spec 0040 AC-11).
+pub(in crate::settings_page) fn wall_ws_count(s: &Settings, screen: Option<&str>) -> usize {
+    screen.map_or(s.most(), |id| s.count_for(id))
+}
+
 pub(in crate::settings_page) fn wall_screen(w: &Win, s: &Settings) -> Option<String> {
     let (list, i) = wall_chosen(w);
     if wall_two(w, s) { list[i].id.clone() } else { None }

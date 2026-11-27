@@ -48,8 +48,8 @@ fn fake_pics() -> Pics {
             ],
             removals: vec![
                 vec![
-                    crate::ws::screens::Moved { name: "Built-in display".into(), device: Some("DISPLAY1".into()), unplugged: false, windows: 0, from: vec![] },
-                    crate::ws::screens::Moved { name: "DELL U2720Q".into(), device: Some("DISPLAY2".into()), unplugged: false, windows: 1, from: vec![3] },
+                    crate::ws::screens::Moved { id: "internal".into(), name: "Built-in display".into(), device: Some("DISPLAY1".into()), unplugged: false, windows: 0, from: vec![], count: 3 },
+                    crate::ws::screens::Moved { id: "DEL-A0F5-1234".into(), name: "DELL U2720Q".into(), device: Some("DISPLAY2".into()), unplugged: false, windows: 1, from: vec![3], count: 3 },
                 ],
                 vec![],
             ],
@@ -212,7 +212,13 @@ ws3 = \"Research\"
 \"microsoft.windowscalculator_8wekyb3d8bbwe!app\" = { workspace = 4 }
 \"spotify.exe\" = { workspace = 2 }
 ";
-    let states: [(&str, Option<Section>, Setup); 71] = [
+    // Spec 0041: a rule, then an app left alone that runs and one that doesn't.
+    const APPS_ALONE: &str = "[apps]
+\"slack.exe\" = { workspace = 3 }
+\"code.exe\" = \"alone\"
+\"ms-teams.exe\" = \"alone\"
+";
+    let states: [(&str, Option<Section>, Setup); 73] = [
         ("wallpaper-alone-own", Some(Section::Workspaces), |w| {
             settings::store::use_for_test("[wallpaper]\nws1 = \"forest.jpg\"\nws2 = [\"desk.png\", \"dunes.jpg\"]\n[wallpaper.screens.internal]\nws2 = \"forest.jpg\"\n");
             w.pics.view.present.truncate(1);
@@ -377,6 +383,15 @@ ws2 = \"desk.png\"
             w.pics.view.waiting = vec![crate::ws::views::Waiting { id: "LG-2".into(), name: "LG 27UL850".into(), windows_name: "LG 27UL850".into(), windows: vec![] }];
         }),
         ("apps-empty", Some(Section::Apps), |w| fake_apps(w, false)),
+        // Spec 0041 AC-11: rows left alone, one running and one not, with the menu open on one.
+        ("apps-alone", Some(Section::Apps), |w| {
+            settings::store::use_for_test(APPS_ALONE);
+            fake_apps(w, false);
+        }),
+        ("apps-alone-ws", Some(Section::Apps), |w| {
+            settings::store::use_for_test(APPS_ALONE);
+            fake_apps(w, false);
+        }),
         ("colors", Some(Section::Colors), |_| {}),
         ("colors-own", Some(Section::Colors), |w| {
             settings::store::use_for_test("[colors]\naccent = \"#E0457B\"\nws2 = \"#FFF4B0\"\nws3 = \"blue\"\n");
@@ -396,7 +411,7 @@ ws2 = \"desk.png\"
         }),
         ("top", None, |_| {}),
         ("removing", None, |w| {
-            w.hover = Some(Ctl::TileRemove);
+            w.hover = Some(Ctl::TileRemove(0));
             w.scroll = 140.0;
         }),
         ("clash", Some(Section::Shortcuts), |w| {
@@ -592,6 +607,7 @@ enabled = false
             "apps-add" | "apps-add-none" | "apps-add-many" => Some((Ctl::AppAdd, 0)),
             "apps-ws" => Some((Ctl::AppWs(0), 1)),
             "apps-screen" => Some((Ctl::AppScreen(0), 3)),
+            "apps-alone-ws" => Some((Ctl::AppWs(1), 4)),
             "wallpaper-menu" | "wallpaper-many" => Some((Ctl::WallPick(0), 5)),
             "wallpaper-menu-screen" => Some((Ctl::WallPick(1), 1)),
             "wallpaper-empty" => Some((Ctl::WallPick(0), 1)),

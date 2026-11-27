@@ -5,6 +5,7 @@ use crate::settings_page::cards::colors::{ACCENT, WS_KEYS, path_of, reset_color,
 use crate::settings_page::cards::indicator::show;
 use crate::settings_page::cards::names::same_name;
 use crate::settings_page::cards::place::{MODE, SPOT, is_place, reset_place, same_as_all, set_mode, set_place, show_there, step_place};
+use crate::settings_page::cards::screens::{row_edit, row_id, shared_edit, tile_rows};
 use crate::settings_page::cards::wallpaper::{IV_KEYS, tick_wall, wall_interval_edit, wall_path, wall_screen, wall_use_edit};
 use crate::settings_page::choosers::{choose_screen, open_chooser};
 use crate::settings_page::menu::{choose, open_menu};
@@ -55,7 +56,7 @@ pub(super) fn act(ctl: Ctl) {
             }
         }
         Ctl::AppX(r) => {
-            if let Some((key, _)) = s.apps.get(r) {
+            if let Some((key, _)) = crate::settings_page::cards::apps::app_rows(&s).get(r) {
                 commit(app_edit(&settings::edit::app_key_in_file(key), AppChange::Remove), "Apps");
             }
         }
@@ -71,13 +72,13 @@ pub(super) fn act(ctl: Ctl) {
         Ctl::ShowThere => show_there(),
         Ctl::Minus(key) => step_key(key, false),
         Ctl::Plus(key) => step_key(key, true),
-        Ctl::Stepper(_) | Ctl::Pick(_) | Ctl::Tiles => {} // focus only: Left and Right change them
+        Ctl::Stepper(_) | Ctl::Pick(_) | Ctl::Tiles(_) => {} // focus only: Left and Right change them
         Ctl::Choice(key, i) => match find_row(key).map(|r| r.kind) {
             Some(Kind::Pair(..)) => save(key, (i == 0) as i64),
             _ if !unused(&s, key).is_empty() => {}
             _ => save(key, i as i64),
         },
-        Ctl::Reset("workspaces") => save("workspaces", DEFAULTS.workspaces as i64),
+        Ctl::Reset("workspaces") => commit(shared_edit(&s, DEFAULTS.shared_count), "Workspaces per screen"),
         Ctl::Reset(key) if shortcut(key).is_some() => reset_keys(key),
         Ctl::Reset(key) => save(key, value(&DEFAULTS, key)),
         Ctl::Link(l) => follow(l),
@@ -92,8 +93,8 @@ pub(super) fn act(ctl: Ctl) {
         Ctl::PickDone => pick_close(How::Keep(true)),
         Ctl::PickCancel => pick_close(How::Undo),
         Ctl::Ring | Ctl::Square | Ctl::PickCard => {} // the wheel acts on the press
-        Ctl::TileAdd => step_key("workspaces", true),
-        Ctl::TileRemove => step_key("workspaces", false),
+        Ctl::TileAdd(r) => row_step(r, true),
+        Ctl::TileRemove(r) => row_step(r, false),
         Ctl::Forget(i) => {
             if let Some(id) = get(|w| w.pics.view.waiting.get(i).map(|x| x.id.clone())).flatten() {
                 crate::ws::screens::forget(&id);
@@ -140,7 +141,28 @@ pub(super) fn act(ctl: Ctl) {
     }
 }
 
+/// Card row `r`'s + (`up`) or ×: its screen's own count, written as `row_write` says (spec 0040
+/// AC-9).
+pub(super) fn row_step(r: usize, up: bool) {
+    let Some((id, rows)) = get(|w| Some((row_id(w, r)?, tile_rows(w)))).flatten() else { return };
+    let s = settings::get();
+    let n = s.count_for(&id);
+    let new = if up { n + 1 } else { n - 1 };
+    if (2..=9).contains(&new) {
+        commit(row_edit(&s, rows, &id, new), "Workspaces per screen");
+    }
+}
+
 pub(super) fn step_key(key: &'static str, up: bool) {
+    // The shared count also takes out the lines that follow it (spec 0040 AC-1).
+    if key == "workspaces" {
+        let s = settings::get();
+        let new = if up { s.shared_count + 1 } else { s.shared_count - 1 };
+        if (2..=9).contains(&new) {
+            commit(shared_edit(&s, new), "Workspaces per screen");
+        }
+        return;
+    }
     if let Some(k) = IV_KEYS.iter().position(|x| *x == key) {
         if let Some(edit) = wall_interval_edit(&settings::get(), k, up) {
             commit(edit, &format!("Workspace {} time per picture", k + 1));

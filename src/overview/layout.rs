@@ -137,7 +137,8 @@ impl Screen {
         let names = ws::views::names(&self.device);
         let id = ws::views::id(&self.device);
         let s = settings::get();
-        for (i, rect) in strip(w, h, settings::get().workspaces, self.scale).into_iter().enumerate() {
+        // This screen's own count of tiles (spec 0040 AC-4).
+        for (i, rect) in strip(w, h, s.count_for(&id), self.scale).into_iter().enumerate() {
             // ws::views::windows() lists front first (on screen in z order, hidden top first), and
             // DWM draws the thumbnail registered last on top, so register back to front. A
             // pinned window is in the shown workspace's tile only.

@@ -61,7 +61,7 @@ impl Section {
 
     pub(super) fn line(self) -> &'static str {
         match self {
-            Section::Workspaces => "Every screen has its own workspaces, all the same count.",
+            Section::Workspaces => "Every screen has its own workspaces, and can have its own count of them.",
             Section::Apps => "Open an app's new windows on its own workspace and screen. Your screens stay where they are, and a note on the indicator tells you where the window went.",
             Section::Shortcuts => "Click a key to change it, × to remove it, + to add another. An action with no key is off. Choosing Windows gives that Windows key back.",
             Section::Indicator => "Shows the workspace for a moment after a switch, a send or a pin, and when a screen comes or goes.",
@@ -78,7 +78,7 @@ impl Section {
 /// Which section a problem belongs to, by its key; None: no one setting (the Notes section).
 pub(super) fn home(key: &str) -> Option<Section> {
     Some(match key.split('.').next().unwrap_or("") {
-        "workspaces" | "follow_activation" | "act_on" | "jump_back" | "names" | "wallpaper" => Section::Workspaces,
+        "workspaces" | "workspaces_per_screen" | "follow_activation" | "act_on" | "jump_back" | "names" | "wallpaper" => Section::Workspaces,
         "apps" => Section::Apps,
         "shortcuts" | "copilot_as_right_ctrl" => Section::Shortcuts,
         "indicator" => Section::Indicator,
@@ -180,7 +180,7 @@ pub(super) fn word<T: Copy + PartialEq>(list: &[(&'static str, T)], v: T) -> &'s
 pub(crate) fn value(s: &Settings, key: &str) -> i64 {
     let index = |w: &str, words: &[(&str, &str)]| words.iter().position(|(x, _)| *x == w).unwrap_or(0) as i64;
     match key {
-        "workspaces" => s.workspaces as i64,
+        "workspaces" => s.shared_count as i64,
         "follow_activation" => s.follow_activation as i64,
         "act_on" => index(word(settings::ACT_ON, s.act_on), ACT_ON_WORDS),
         "jump_back" => s.jump_back as i64,

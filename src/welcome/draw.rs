@@ -553,7 +553,7 @@ impl Ctx<'_, '_> {
     fn behavior(&mut self, y: f32) -> f32 {
         self.card(y, |c, y| {
             let s = c.s;
-            let n = s.workspaces as i64;
+            let n = s.shared_count as i64;
             let warn = n > 2 && (c.cx.focused(Ctl::Minus("workspaces")) || c.cx.hovered(Ctl::Minus("workspaces")));
             let note = warn.then(|| c.lowering());
             let cap = format!("Every screen gets workspaces 1 to {n}.");
@@ -599,7 +599,7 @@ impl Ctx<'_, '_> {
 
     /// What lowering the count moves, before you press − (as the settings page warns).
     fn lowering(&self) -> NoteSpec {
-        let n = self.s.workspaces;
+        let n = self.s.shared_count;
         let list = self.w.pics.view.removals.first().cloned().unwrap_or_default();
         let win = |k: usize| match k {
             0 => "none".to_string(),

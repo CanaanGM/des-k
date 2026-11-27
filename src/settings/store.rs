@@ -133,7 +133,7 @@ pub(super) fn reload(source: Source) -> Result<Vec<Change>, String> {
         }
     };
     PARSE_ERROR.set(None);
-    // An Arc, not a handle: it outlives the store below, through apply.
+    // An Arc, not a handle: it outlives the store below.
     let old_loaded = CURRENT.load_full();
     let old = &old_loaded.settings;
     // Only new problems are logged, so one bad value is not logged again on every save.
@@ -148,7 +148,7 @@ pub(super) fn reload(source: Source) -> Result<Vec<Change>, String> {
         #[cfg(feature = "drill")]
         crate::drill::reloaded();
     }
-    let moves = apply(old, &changes);
+    let moves = apply(&changes);
     if matches!(source, Source::File) && !changes.is_empty() {
         crate::settings_page::hand_edit(&changes, &moves);
     }
@@ -186,7 +186,7 @@ fn diff(old: &Settings, new: &Settings, source: Source) -> Vec<Change> {
 
 /// The side effects of `changes`, once the new settings are in effect. Most readers call
 /// get() each time they act and need nothing. Returns the workspace move lines (AC-6).
-fn apply(old: &Settings, changes: &[Change]) -> Vec<String> {
+fn apply(changes: &[Change]) -> Vec<String> {
     if changes.is_empty() {
         return vec![];
     }
@@ -196,12 +196,11 @@ fn apply(old: &Settings, changes: &[Change]) -> Vec<String> {
     if crate::overview::is_open() {
         crate::overview::close(true);
     }
-    let mut moves = vec![];
-    if new.workspaces != old.workspaces {
-        moves = crate::ws::screens::resize(new.workspaces);
-        for line in &moves {
-            info!("settings: workspaces {} -> {}: {line}", old.workspaces, new.workspaces);
-        }
+    // Every reload: the resize finds the screens whose count changed by their lists' length,
+    // before check_screens in the same tick (spec 0040 AC-3).
+    let moves = crate::ws::screens::resize();
+    for line in &moves {
+        info!("settings: workspaces {line}");
     }
     if has("touchpad.enabled") && new.touchpad_enabled {
         crate::touchpad::start();
@@ -250,7 +249,8 @@ impl Settings {
         let word = |w: Option<&str>| w.unwrap_or("").to_string();
         let gestures = self.gestures.iter().map(|g| format!("{g}: {}", g.action)).collect::<Vec<_>>().join(", ");
         let mut fields = vec![
-            ("workspaces", self.workspaces.to_string()),
+            ("workspaces", self.shared_count.to_string()),
+            ("workspaces_per_screen", self.count_by_screen.iter().map(|(id, n)| format!("{id} {n}")).collect::<Vec<_>>().join(", ")),
             ("copilot_as_right_ctrl", self.copilot_as_right_ctrl.to_string()),
             ("follow_activation", self.follow_activation.to_string()),
             ("act_on", word(ACT_ON.iter().find(|(_, v)| *v == self.act_on).map(|(w, _)| *w))),
@@ -329,7 +329,7 @@ impl Settings {
         let own = INTERVAL_NAMES.iter().zip(self.wallpaper_intervals).map(|(k, n)| (*k, n.map_or("default".to_string(), |n| n.to_string())));
         fields.splice(at..at, own);
         let at = fields.iter().position(|(k, _)| *k == "restore.enabled").unwrap_or(fields.len());
-        fields.insert(at, ("apps", apps_text(&self.apps)));
+        fields.insert(at, ("apps", apps_text(&self.apps, &self.alone)));
         fields
     }
 }
@@ -381,14 +381,18 @@ fn wallpaper_text(pictures: &[Pick; 9], screens: &BTreeMap<String, [Option<Pick>
     format!("[{}]", parts.join("; "))
 }
 
-/// Every rule by key, workspace and screen id, never a path (spec 0027 AC-15), like
-/// `[slack.exe: 1 on GSM-5B7F-12345, spotify.exe: 4]`.
-fn apps_text(apps: &[(String, Rule)]) -> String {
+/// Every rule by key, workspace and screen id, never a path (spec 0027 AC-15), then each app
+/// left alone by key, in name order (spec 0041 AC-12), like
+/// `[slack.exe: 1 on GSM-5B7F-12345, spotify.exe: 4, teams.exe: alone]`.
+fn apps_text(apps: &[(String, Rule)], alone: &std::collections::HashSet<String>) -> String {
     let one = |(k, r): &(String, Rule)| match &r.screen {
         Some(id) => format!("{k}: {} on {id}", r.workspace + 1),
         None => format!("{k}: {}", r.workspace + 1),
     };
-    format!("[{}]", apps.iter().map(one).collect::<Vec<_>>().join(", "))
+    let mut quiet: Vec<&String> = alone.iter().collect();
+    quiet.sort();
+    let all: Vec<String> = apps.iter().map(one).chain(quiet.into_iter().map(|k| format!("{k}: alone"))).collect();
+    format!("[{}]", all.join(", "))
 }
 
 impl fmt::Display for Settings {

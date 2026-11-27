@@ -12,8 +12,10 @@ fn default_file_is_the_defaults() {
     // parse() starts from the defaults, so also prove every key is spelled out in the file.
     let top: Table = DEFAULT_FILE.parse().unwrap();
     let (sc, ind, res) = (top["shortcuts"].as_table().unwrap(), top["indicator"].as_table().unwrap(), top["restore"].as_table().unwrap());
-    // whats_new_seen has no default to write: the first start writes the running version.
-    assert!(TOP_KEYS.iter().filter(|k| **k != "whats_new_seen").all(|k| top.contains_key(*k)));
+    // whats_new_seen has no default to write: the first start writes the running version. Nor
+    // has workspaces_per_screen: every screen follows workspaces, and the file shows an example.
+    assert!(TOP_KEYS.iter().filter(|k| !matches!(**k, "whats_new_seen" | "workspaces_per_screen")).all(|k| top.contains_key(*k)));
+    assert!(DEFAULT_FILE.contains("# [workspaces_per_screen]"));
     assert!(SHORTCUT_KEYS.iter().all(|k| sc.contains_key(*k)));
     // Screen tables and workspace colors have no default to write; the file shows an example.
     assert!(INDICATOR_KEYS.iter().filter(|k| **k != "screens").all(|k| ind.contains_key(*k)));
@@ -46,7 +48,7 @@ fn a_bad_overview_labels_only_resets_itself() {
     assert_eq!(s.overview_labels, Labels::None);
     assert!(warn.is_empty(), "{warn:?}");
     let (s, warn) = parse("workspaces = 6\n[overview]\nlabels = \"sometimes\"\n");
-    assert_eq!((s.workspaces, s.overview_labels), (6, Labels::Hover));
+    assert_eq!((s.shared_count, s.overview_labels), (6, Labels::Hover));
     assert_eq!(warn, ["overview.labels: \"sometimes\" is not one of \"hover\", \"always\", \"none\", using default \"hover\""]);
 }
 
@@ -188,7 +190,7 @@ fn a_bad_restore_minutes_only_resets_itself() {
 fn a_bad_value_only_resets_itself() {
     let text = "workspaces = 12\nfollow_activation = \"yes\"\ntypo = 1\n[shortcuts]\nprevious = [\"alt+CTRL+left\", \"Ctrl+Banana\", 7]\n[indicator]\nhold_ms = \"long\"\nfade_ms = 0\n";
     let (s, warn) = parse(text);
-    assert_eq!(s.workspaces, 4);
+    assert_eq!(s.shared_count, 4);
     // A typo must not silently switch follow off: on is the safe side, typing never goes invisible.
     assert!(s.follow_activation);
     assert_eq!(s.previous, [Combo { mods: ALT | CTRL, vk: VK_LEFT.0 }]);
@@ -225,7 +227,7 @@ fn act_on_reads_mouse_or_focus_and_falls_back_to_mouse() {
     assert_eq!((s.act_on, warn.len()), (ActOn::Mouse, 0), "{warn:?}");
     for bad in ["act_on = \"window\"\n", "act_on = true\n"] {
         let (s, warn) = parse(&format!("{bad}workspaces = 6\n"));
-        assert_eq!((s.act_on, s.workspaces), (ActOn::Mouse, 6), "only act_on resets");
+        assert_eq!((s.act_on, s.shared_count), (ActOn::Mouse, 6), "only act_on resets");
         assert_eq!(warn.len(), 1, "{warn:?}");
     }
 }
@@ -512,7 +514,7 @@ fn a_broken_file_is_an_error_on_reload_not_defaults() {
     assert!(edit_text("workspaces = \n", &Edit::Value("workspaces", toml_edit::Value::from(3))).is_err());
     let (s, warn) = parse("workspaces = \n");
     assert_eq!((s, warn.len()), (Settings::default(), 1));
-    assert_eq!(reparse("workspaces = 6\n").unwrap().0.workspaces, 6);
+    assert_eq!(reparse("workspaces = 6\n").unwrap().0.shared_count, 6);
 }
 
 // The page finds a setting's note by its key, so the key must come from the log words.
@@ -579,7 +581,52 @@ fn app_rules_stop_at_64() {
     let (s, warn) = parse(&file);
     assert_eq!(s.apps.len(), APPS_MAX);
     assert_eq!(s.apps.last().map(|(k, _)| k.as_str()), Some("app63.exe"));
-    assert_eq!(warn, vec!["apps: more than 64 rules, the last 6 ignored".to_string()]);
+    assert_eq!(warn, vec!["apps: more than 64 entries, the last 6 ignored".to_string()]);
+}
+
+// Spec 0041 AC-10: "alone" in any case lists an app; any other word, or a number, drops only
+// that entry with one line that never echoes the word (it can say anything). A key is a rule or
+// alone, never both: of two keys that differ only in case the first wins, whatever each holds.
+#[test]
+fn alone_entries_parse_beside_rules() {
+    let file = r#"[apps]
+"Teams.exe" = "Alone"
+"slack.exe" = { workspace = 2 }
+"teams.exe" = { workspace = 3 }
+"SLACK.exe" = "alone"
+"zoom.exe" = "alonee"
+"skype.exe" = "secretword"
+"calc.exe" = 1
+"C:\\x\\notepad.exe" = "alone"
+"Microsoft.Teams_8wekyb3d8bbwe!App" = "ALONE"
+"#;
+    let (s, warn) = parse(file);
+    assert_eq!(s.apps, vec![("slack.exe".to_string(), Rule { workspace: 1, screen: None })]);
+    let mut alone: Vec<&str> = s.alone.iter().map(String::as_str).collect();
+    alone.sort();
+    assert_eq!(alone, vec!["microsoft.teams_8wekyb3d8bbwe!app", "teams.exe"]);
+    assert_eq!(warn.len(), 6, "{warn:?}");
+    assert!(warn.iter().all(|w| !w.contains("secretword") && !w.contains("alonee") && !w.contains("C:")), "{warn:?}");
+    assert!(warn.iter().any(|w| w.contains("\"teams.exe\" differs from an earlier key only in case")), "{warn:?}");
+    assert!(warn.iter().any(|w| w.contains("\"SLACK.exe\" differs from an earlier key only in case")), "{warn:?}");
+}
+
+// Spec 0041 AC-10: valid alone entries count toward the 64 entry cap like rules, and a bad
+// entry doesn't, so the 64 kept are the first 64 good ones in file order.
+#[test]
+fn alone_entries_count_toward_the_cap() {
+    let mut file = "[apps]\n\"bad.exe\" = \"nope\"\n".to_string();
+    for i in 0..40 {
+        file += &format!("\"rule{i}.exe\" = {{ workspace = 1 }}\n");
+    }
+    for i in 0..30 {
+        file += &format!("\"quiet{i}.exe\" = \"alone\"\n");
+    }
+    let (s, warn) = parse(&file);
+    assert_eq!((s.apps.len(), s.alone.len()), (40, 24));
+    assert!(s.alone.contains("quiet23.exe") && !s.alone.contains("quiet24.exe"));
+    assert_eq!(warn.len(), 2, "{warn:?}");
+    assert!(warn.contains(&"apps: more than 64 entries, the last 6 ignored".to_string()), "{warn:?}");
 }
 
 // Spec 0023 AC-2, AC-15: a bad name resets only its own key, and the warn line names the key

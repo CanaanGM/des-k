@@ -78,13 +78,35 @@ taskbar app"). You can change any shortcut in Settings. Forgot one? Tray → **S
   one. Your Windows wallpaper is never changed; a workspace without a picture shows it.
 - **Apps in their place**: give an app a workspace (and a screen) in Settings → **Apps**, and its
   new windows open there, without switching your screens.
+- **Apps des-k leaves alone**: for an app that breaks when hidden or keeps grabbing focus, pick
+  **Leave alone** in its row in Settings → **Apps**, or in `settings.toml`:
+
+  ```toml
+  [apps]
+  "teams.exe" = "alone"   # an exe file name, or a Store app id
+  ```
+
+  des-k then never hides, follows, places or restores its windows, so they stay in view on every
+  workspace. The finder and the overview leave them out; reach them with Alt+Tab or the taskbar.
 - **Names**: call a workspace "Mail" or "Code", and rename a screen. The names show beside the
   numbers everywhere.
 - **A hidden window that wants you** (a new Slack message, say) shows a note on its screen, and
   its workspace keeps a dot until you go there.
 - **Settings** (tray → **Settings**): the number of workspaces (2 to 9), names, wallpapers, app
   rules, every shortcut, the indicator, colors and gestures. Changes apply at once.
-- **Pause** (tray â†’ **Pause des-k**, or a key you set in Settings): every hidden window comes back
+- **Workspaces per screen**: each screen can have its own number, say two on the laptop and six
+  on the big screen. Each screen's row in Settings has its own + and ×, or in `settings.toml`:
+
+  ```toml
+  workspaces = 4        # every screen without its own count
+
+  [workspaces_per_screen]
+  "internal" = 2        # the laptop panel
+  ```
+
+  A screen without a line has `workspaces`. Lowering a screen's count moves the windows of the
+  removed workspaces to its new last one.
+- **Pause** (tray → **Pause des-k**, or a key you set in Settings): every hidden window comes back
   and Windows gets its own shortcuts back, for a game or to see Windows on its own. **Resume
   des-k** puts each window back on its workspace. Swipes do nothing until you resume, and the
   tray icon turns gray. A restart while paused starts paused.

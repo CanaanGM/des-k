@@ -13,8 +13,8 @@ pub(super) fn each_state(theme: Theme, scale: f32, f: &mut dyn FnMut(&str, &Win)
         windows: vec![("DISPLAY1".into(), 0, r(0, 0, 9, 9)), ("DISPLAY2".into(), 0, r(0, 0, 9, 9)), ("DISPLAY2".into(), 3, r(0, 0, 9, 9))],
         names: vec![("DISPLAY1".into(), "Built-in display".into()), ("DISPLAY2".into(), "DELL U2720Q".into())],
         removals: vec![vec![
-            crate::ws::screens::Moved { name: "DELL U2720Q".into(), device: Some("DISPLAY2".into()), unplugged: false, windows: 1, from: vec![3] },
-            crate::ws::screens::Moved { name: "Built-in display".into(), device: Some("DISPLAY1".into()), unplugged: false, windows: 0, from: vec![] },
+            crate::ws::screens::Moved { id: "DEL-A0F5-1234".into(), name: "DELL U2720Q".into(), device: Some("DISPLAY2".into()), unplugged: false, windows: 1, from: vec![3], count: 3 },
+            crate::ws::screens::Moved { id: "internal".into(), name: "Built-in display".into(), device: Some("DISPLAY1".into()), unplugged: false, windows: 0, from: vec![], count: 3 },
         ]],
         waiting: vec![],
         present: vec![],

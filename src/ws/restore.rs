@@ -92,9 +92,9 @@ pub fn restore_after_panic() {
 
 /// Adopt the layout saved by a previous run (restart, update, hard kill). A saved window
 /// is ours only if it is still the same window (same pid) and still shell-cloaked on the
-/// CURRENT Windows desktop (windows on another Windows desktop are cloaked too). If its
-/// monitor is gone, its workspace no longer exists (the count was lowered), or it would
-/// land in the active workspace, show it rather than lose it.
+/// CURRENT Windows desktop (windows on another Windows desktop are cloaked too). A workspace
+/// past its screen's count (lowered since) is that screen's last (spec 0040 AC-14). If its
+/// monitor is gone, or it would land in the active workspace, show it rather than lose it.
 ///
 /// After a new sign in every handle is new, so instead the saved windows become the
 /// entries a restore matches reopened windows against (spec 0003). Returns whether a
@@ -112,9 +112,9 @@ pub fn load() -> Restoring {
     let Ok(text) = std::fs::read_to_string(state_file()) else { return Restoring::No };
     let present = s.seen.clone();
     let st = settings::get();
-    let count = st.workspaces;
     let by_device: HashMap<String, String> = s.present.iter().map(|p| (p.device.clone(), p.id.clone())).collect();
-    let lines = parse_state(&text, |dev| by_device.get(dev).cloned());
+    let mut lines = parse_state(&text, |dev| by_device.get(dev).cloned());
+    clamp_lines(&mut lines, |id| st.count_for(id));
     // An away window's W or P line is the same window as its A line: a restore must not match it twice.
     let away_raws: HashSet<isize> = lines.iter().filter_map(|l| if let Line::A { raw, .. } = l { (*raw != 0).then_some(*raw) } else { None }).collect();
     let (mut saved_logon, mut adopt, mut hidden, mut visible, mut pins) = (None, Vec::new(), Vec::new(), Vec::new(), Vec::new());
@@ -128,7 +128,7 @@ pub fn load() -> Restoring {
                 let here = present.contains(&id);
                 let m = mon_mut(s, &id);
                 // An active workspace that no longer exists starts at the first one.
-                m.active = if active < count { active } else { 0 };
+                m.active = if active < m.hidden.len() { active } else { 0 };
                 // Away windows' spots are relative to the area it had: kept until they are home.
                 if area != RECT::default() {
                     m.area = area;
@@ -211,7 +211,9 @@ pub fn load() -> Restoring {
         // Still held, under its screen even while that one is missing (spec 0039 AC-10).
         for (id, ws, raw, pid, fp) in adopt_held {
             if it(raw, pid, &fp) {
-                mon_mut(s, &id).held[ws.min(count - 1)].push((raw, pid));
+                let m = mon_mut(s, &id);
+                let ws = home_ws(ws, m.held.len());
+                m.held[ws].push((raw, pid));
             }
         }
     }
@@ -228,9 +230,11 @@ pub fn load() -> Restoring {
         }
         let cut = |(e, cut): (Entry, bool)| (new_sign_in || cut).then_some(e);
         let all = hidden.into_iter().filter_map(cut).chain(visible).chain(pinned.into_iter().filter_map(cut)).chain(aways.into_iter().filter_map(cut));
-        // An app with a rule goes by its rule, not by restore (spec 0027 AC-11).
-        let (ruled, saved): (Vec<Entry>, Vec<Entry>) = all.partition(|e| crate::apps::key_from(&e.fp.app).is_some_and(|key| st.apps.iter().any(|(k, _)| *k == key)));
-        let by_rule = if ruled.is_empty() { String::new() } else { format!(" ({} more left to their app's rule)", ruled.len()) };
+        // An app with a rule goes by its rule, not by restore (spec 0027 AC-11), and one des-k
+        // leaves alone isn't placed at all (spec 0041 AC-4).
+        let (ruled, saved): (Vec<Entry>, Vec<Entry>) =
+            all.partition(|e| crate::apps::key_from(&e.fp.app).is_some_and(|key| st.alone.contains(&key) || st.apps.iter().any(|(k, _)| *k == key)));
+        let by_rule = if ruled.is_empty() { String::new() } else { format!(" ({} more left to their app's rule or left alone)", ruled.len()) };
         info!("restore: {} {} saved window(s){by_rule}, matching for {} min", if new_sign_in { "new sign in," } else { "resuming," }, saved.len(), st.restore_minutes);
         s.restore = Some(Restore {
             pending: (0..saved.len()).collect(),
@@ -258,13 +262,13 @@ pub fn load() -> Restoring {
                 continue; // closed, reused handle, or not hidden by us any more
             }
             match s.monitors.get_mut(&dev) {
-                Some(m) if present.contains(&dev) && ws < count && m.active != ws => {
+                Some(m) if present.contains(&dev) && ws < m.hidden.len() && m.active != ws => {
                     m.hidden[ws].push(raw);
                     crate::cloak::adopt(h);
                     kept += 1;
                 }
                 // A remembered screen not plugged in: folded below, as at an unplug (spec 0016).
-                Some(m) if !present.contains(&dev) && ws < count => {
+                Some(m) if !present.contains(&dev) && ws < m.hidden.len() => {
                     m.hidden[ws].push(raw);
                     crate::cloak::adopt(h);
                     kept += 1;
@@ -323,7 +327,7 @@ pub fn restore_tick() -> bool {
         return false;
     }
     let Ok(shell) = Shell::new() else { return true }; // explorer not up yet: next tick
-    let count = settings::get().workspaces;
+    let set = settings::get();
 
     // Bottom of z order first, like a switch, so nothing behind flashes.
     let mut left = Vec::new();
@@ -381,7 +385,8 @@ pub fn restore_tick() -> bool {
                 && let Some(home) = s.monitors.get(&e.dev)
             {
                 let (home_active, name, from) = (home.active, home.name.clone(), home.area);
-                let ws = e.ws.unwrap_or(home_active).min(count - 1);
+                let count = set.count_for(&e.dev);
+                let ws = home_ws(e.ws.unwrap_or(home_active), count);
                 let main = s.present.iter().find(|p| p.primary).cloned();
                 if e.pin {
                     s.pinned.insert(raw);
@@ -394,9 +399,11 @@ pub fn restore_tick() -> bool {
                     && let Some(main) = main
                 {
                     let to = Spot { rect: remap(from, main.area, spot.rect), state: spot.state };
-                    if s.monitors.entry(main.id.clone()).or_insert_with(|| Monitor::of(&main)).active != ws {
+                    // The same workspace on the main display, or its last (spec 0040 AC-7).
+                    let on_main = fold_ws(ws, set.count_for(&main.id));
+                    if s.monitors.entry(main.id.clone()).or_insert_with(|| Monitor::of(&main)).active != on_main {
                         // Moved once hidden, so it never crosses screens where you can see it.
-                        plan.push(Hide { h, key, i, app: fp.app.clone(), to: (main.id.clone(), ws), then: After::Away { put: to, name } });
+                        plan.push(Hide { h, key, i, app: fp.app.clone(), to: (main.id.clone(), on_main), then: After::Away { put: to, name, ws, count } });
                         continue;
                     }
                     if !hung(h)
@@ -425,6 +432,7 @@ pub fn restore_tick() -> bool {
                 continue;
             };
             let m = s.monitors.entry(dev.clone()).or_insert_with(|| Monitor::of(&p));
+            let count = set.count_for(&dev);
             match () {
                 _ if ws >= count => use_up(r, &format!("workspace {} no longer exists", ws + 1)),
                 _ if m.active == ws => use_up(r, &format!("{dev} already shows workspace {}", ws + 1)),
@@ -482,7 +490,7 @@ pub fn restore_tick() -> bool {
         match p.then {
             After::Home { was_fg } => {
                 r.hidden += 1;
-                info!("restore: {} -> {dev} workspace {}/{count}", p.app, ws + 1);
+                info!("restore: {} -> {dev} workspace {}/{}", p.app, ws + 1, set.count_for(&dev));
                 if was_fg {
                     let mon = win::monitor_from_window(p.h, MONITOR_DEFAULTTONEAREST);
                     let next = app_windows_on(mon).first().copied().unwrap_or(win::get_shell_window());
@@ -492,7 +500,7 @@ pub fn restore_tick() -> bool {
                     }
                 }
             }
-            After::Away { put: to, name } => {
+            After::Away { put: to, name, ws, count } => {
                 r.kept += 1;
                 if !hung(p.h)
                     && let Err(err) = put(p.h, to)
@@ -529,7 +537,8 @@ pub(super) struct Hide {
 /// workspace while its screen is not plugged in, moved there once hidden.
 pub(super) enum After {
     Home { was_fg: bool },
-    Away { put: Spot, name: String },
+    // `ws` of `count`: the home workspace it waits for, which the main display may lack (AC-7).
+    Away { put: Spot, name: String, ws: usize, count: usize },
 }
 
 /// A planned restore hide that did not happen: its entry goes back to `pending` (in order, as

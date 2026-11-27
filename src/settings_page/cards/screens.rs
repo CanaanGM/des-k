@@ -1,6 +1,7 @@
 // The screen rows on the Workspaces card: each screen's tiles, the screens not plugged in, and
 // the picture of your screens (spec 0012, spec 0016, spec 0021).
 use super::*;
+use crate::ws::screens::Moved;
 
 impl Ctx<'_, '_> {
     /// Screen `id` as des-k names it: plugged in or remembered, as `ws::label` gave it, else your
@@ -9,20 +10,36 @@ impl Ctx<'_, '_> {
         screen_called(&self.w.pics.view, self.s, id)
     }
 
-    /// What a removal moves, per screen, unplugged ones included (AC-SET-3), since there is no undo.
-    pub(super) fn removal(&self, one: bool) -> NoteSpec {
-        let n = self.s.workspaces;
-        let d = DEFAULTS.workspaces;
-        let (list, to) = if one { (self.w.pics.view.removals.first(), n - 1) } else { (self.w.pics.view.removals.get(1), d) };
-        let title = if !one {
-            format!("Reset goes back to {d} and removes workspaces {} to {n} from every screen", d + 1)
-        } else if self.cx.focused(Ctl::Tiles) {
-            format!("Delete or Left removes workspace {n} from every screen")
-        } else {
-            format!("× removes workspace {n} from every screen")
+    /// Whether a screen can differ from the shared count: two or more rows, or a line that
+    /// already does (spec 0040 AC-10).
+    pub(super) fn split(&self) -> bool {
+        tile_rows(self.w) > 1 || self.s.count_by_screen.values().any(|&n| n != self.s.shared_count)
+    }
+
+    /// Row `r`'s own count.
+    pub(super) fn row_count(&self, r: usize) -> usize {
+        row_id(self.w, r).map_or(self.s.shared_count, |id| self.s.count_for(&id))
+    }
+
+    /// What a removal moves, per screen, unplugged ones included (AC-SET-3), since there is no
+    /// undo: one row's screen for its × or Left, the screens that follow the shared count for its
+    /// − or Reset (spec 0040 AC-8, AC-10).
+    pub(super) fn removal(&self, what: Removal) -> NoteSpec {
+        let (shared, d) = (self.s.shared_count, DEFAULTS.shared_count);
+        let every = if self.split() { "every screen without its own count" } else { "every screen" };
+        let removals = &self.w.pics.view.removals;
+        let (title, list, to, one) = match what {
+            Removal::Row(r) => {
+                let id = row_id(self.w, r).unwrap_or_default();
+                let (n, name) = (self.s.count_for(&id), self.screen_called(&id));
+                let title = if self.cx.focused(Ctl::Tiles(r)) { format!("Delete or Left removes workspace {n} from {name}") } else { format!("× removes workspace {n} from {name}") };
+                let list: Vec<Moved> = removals.get(2).map(|l| l.iter().filter(|m| m.id == id).cloned().collect()).unwrap_or_default();
+                (title, list, n - 1, true)
+            }
+            Removal::Lower => (format!("− removes workspace {shared} from {every}"), removals.first().cloned().unwrap_or_default(), shared - 1, true),
+            Removal::Reset => (format!("Reset goes back to {d} and removes workspaces {} to {shared} from {every}", d + 1), removals.get(1).cloned().unwrap_or_default(), d, false),
         };
         let mut parts = vec![if one { format!("Its windows move to workspace {to}.") } else { format!("Their windows move to workspace {to}.") }];
-        let list = list.cloned().unwrap_or_default();
         let win = |k: usize| if k == 1 { "1 window".to_string() } else { format!("{k} windows") };
         for m in list.iter().filter(|m| m.windows > 0 && !m.unplugged) {
             parts.push(format!("{}: {}.", m.name, win(m.windows)));
@@ -46,7 +63,7 @@ impl Ctx<'_, '_> {
     /// since the page can lay out from inside a switch and the ws lock is not reentrant.
     pub(super) fn names_here(&self, device: &str) -> Vec<String> {
         let Some(p) = self.w.pics.view.present.iter().find(|p| p.device == device) else { return vec![] };
-        (0..self.s.workspaces).map(|i| self.s.ws_name(&p.id, i).unwrap_or_default().to_string()).collect()
+        (0..self.s.count_for(&p.id)).map(|i| self.s.ws_name(&p.id, i).unwrap_or_default().to_string()).collect()
     }
 
     pub(super) fn active_on(&self, device: &str) -> usize {
@@ -58,33 +75,41 @@ impl Ctx<'_, '_> {
         n as f32 * tw + (n as f32 - 1.0) * 6.0 + if add { 6.0 + tw } else { 0.0 }
     }
 
-    /// One present screen: its name and size, and its workspaces as tiles (AC-SET-3).
+    /// A screen's name on its row, and "its own count" when its line differs from the shared
+    /// count (spec 0040 AC-10).
+    fn row_title(&self, id: &str, name: String) -> String {
+        if self.s.follows_shared(id) { name } else { format!("{name} · its own count") }
+    }
+
+    /// One present screen: its name and size, and its own workspaces as tiles (AC-SET-3).
     pub(super) fn screen_row(&mut self, y: f32, row: usize, sc: &crate::ws::views::ScreenInfo, gone: &[usize]) -> f32 {
-        let n = self.s.workspaces;
-        let name = self.name_of(sc);
+        let id = row_id(self.w, row).unwrap_or_default();
+        let n = self.s.count_for(&id);
+        let name = self.row_title(&id, self.name_of(sc));
         let a = self.active_on(&sc.device);
         let (rw, rh) = (sc.rect.right - sc.rect.left, sc.rect.bottom - sc.rect.top);
         let cap = vec![t(format!("{rw} × {rh} · {}% · on workspace {}", sc.scale, a + 1))];
         let counts: Vec<usize> = (0..n).map(|ws| self.w.pics.view.windows.iter().filter(|(d, k, _)| *d == sc.device && *k == ws).count()).collect();
         let add = n < 9;
         let tw = self.tiles_w(n, add);
-        let mut h = self.row(y, &name, &cap, (tw, 34.0), |c, x, y| c.tiles(x, y, &counts, Some((a, row)), gone, add), None);
+        let label = self.name_of(sc);
+        let mut h = self.row(y, &name, &cap, (tw, 34.0), |c, x, y| c.tiles(x, y, &counts, (row, &label), Some(a), gone, add), None);
         h = h.max(60.0);
         h
     }
 
-    /// The tiles: a workspace each in its color, with up to three window marks; the one in
-    /// view ringed; × on the last one while you point at it, + after them. `now`: a plugged in
-    /// screen's workspace in view and its row in Pics::screens; its tiles open the color picker.
+    /// The tiles of card row `row` (named `label`): a workspace each in its color, with up to
+    /// three window marks; the one in view ringed; × on the last one while you point at it, +
+    /// after them. `now`: a plugged in screen's workspace in view; its tiles open the color picker.
+    /// A screen not plugged in has grey tiles, and its own + and × too (spec 0040 AC-8).
     #[allow(clippy::too_many_arguments)]
-    fn tiles(&mut self, x: f32, y: f32, counts: &[usize], now: Option<(usize, usize)>, gone: &[usize], add: bool) {
+    fn tiles(&mut self, x: f32, y: f32, counts: &[usize], (row, label): (usize, &str), now: Option<usize>, gone: &[usize], add: bool) {
         let t = self.cx.c.t;
         let b = t.b;
         let n = counts.len();
         let tw = if n > 6 { 40.0 } else { 48.0 };
         let away = now.is_none();
-        let (now, row) = (now.map(|(a, _)| a), now.map_or(0, |(_, r)| r));
-        let device = self.w.pics.screens.get(row).map(|s| s.device.clone()).unwrap_or_default();
+        let device = if away { String::new() } else { self.w.pics.screens.get(row).map(|s| s.device.clone()).unwrap_or_default() };
         for (i, &k) in counts.iter().enumerate() {
             let tx = x + i as f32 * (tw + 6.0);
             let bx = (tx, y, tw, 34.0);
@@ -111,66 +136,70 @@ impl Ctx<'_, '_> {
                 let col = if away { b.tx3 } else if t.hc { if cur { b.on_acc } else { b.tx } } else { b.mk_ws[i] };
                 self.cx.c.fill_rr((mx, y + 4.0, 8.0, 10.0), 2.0, ui::color::alpha(col, if away || t.hc { 1.0 } else { 0.9 }));
             }
-            if gone.contains(&i) && !away {
+            if gone.contains(&i) {
                 self.cx.c.stroke_dash((tx + 1.0, y + 1.0, tw - 2.0, 32.0), 3.0, 2.0, op(b.tx), DashStyleDash);
             }
-            if away {
-                continue;
+            // A grey tile opens no picker: pointing at the last one focuses its row, for the ×.
+            let ctl = if away { Ctl::Tiles(row) } else { Ctl::WsTile(row, i) };
+            if !away {
+                if self.cx.hovered(ctl) && self.picks() && !cur {
+                    self.cx.cue(bx, ink);
+                }
+                // Before the ×'s hit, so a click inside the tile opens the picker and never removes
+                // a workspace (spec 0021 AC-1).
+                self.cx.hit(ctl, bx, 1);
+                self.out.geo.tiles.push((device.clone(), i, bx));
+            } else if i + 1 == n {
+                self.cx.hit(ctl, bx, 1);
             }
-            let ctl = Ctl::WsTile(row, i);
-            if self.cx.hovered(ctl) && self.picks() && !cur {
-                self.cx.cue(bx, ink);
-            }
-            // Before the ×'s hit, so a click inside the tile opens the picker and never removes
-            // a workspace (spec 0021 AC-1).
-            self.cx.hit(ctl, bx, 1);
-            self.out.geo.tiles.push((device.clone(), i, bx));
             if i + 1 == n && n > 2 && !self.cx.ro {
-                let show = self.cx.hovered(ctl) || self.cx.hovered(Ctl::TileRemove) || self.cx.focused(Ctl::Tiles);
+                let show = self.cx.hovered(ctl) || self.cx.hovered(Ctl::TileRemove(row)) || self.cx.focused(Ctl::Tiles(row));
                 if show {
                     let (cx, cy) = (tx + tw + 2.0, y - 2.0);
-                    let hov = self.cx.hovered(Ctl::TileRemove);
+                    let hov = self.cx.hovered(Ctl::TileRemove(row));
                     let (bg, fg) = if hov { (b.tx, b.card) } else { (b.card, b.tx) };
                     self.cx.c.circle(cx, cy, 9.0, Some(op(bg)), Some((op(b.tx3), 1.0)));
                     self.cx.c.lines(&[(cx - 3.0, cy - 3.0), (cx + 3.0, cy + 3.0)], 1.2, op(fg));
                     self.cx.c.lines(&[(cx + 3.0, cy - 3.0), (cx - 3.0, cy + 3.0)], 1.2, op(fg));
-                    self.cx.hit(Ctl::TileRemove, (cx - 10.0, cy - 10.0, 20.0, 20.0), 1);
+                    self.cx.hit(Ctl::TileRemove(row), (cx - 10.0, cy - 10.0, 20.0, 20.0), 1);
                 }
             }
         }
         if !away {
             self.out.geo.rows.push((device, (x, y, self.tiles_w(n, add), 34.0)));
         }
-        if !away && add {
+        if add {
             let ax = x + n as f32 * (tw + 6.0);
             let off = self.cx.ro;
-            let fill = if self.cx.hovered(Ctl::TileAdd) && !off { mix(b.card, b.tx, 0.06) } else { b.card };
+            let fill = if self.cx.hovered(Ctl::TileAdd(row)) && !off { mix(b.card, b.tx, 0.06) } else { b.card };
             self.cx.c.boxed((ax, y, tw, 34.0), 4.0, fill, Some(b.tx3));
             let iw = self.cx.c.width(I_ADD, F::IconSmall);
             self.cx.icon(ax + (tw - iw) / 2.0, y, 34.0, I_ADD, F::IconSmall, if off { b.tx3 } else { b.tx2 });
-            self.cx.hit(Ctl::TileAdd, (ax, y, tw, 34.0), 1);
+            self.cx.hit(Ctl::TileAdd(row), (ax, y, tw, 34.0), 1);
         }
-        if !away {
-            let w = self.tiles_w(n, add);
-            self.cx.ring((x - 3.0, y - 3.0, w + 6.0, 40.0), 6.0, Ctl::Tiles);
-            if !self.cx.said.iter().any(|(c, _)| *c == Ctl::Tiles) {
-                let name = format!("Workspaces per screen, {n}");
-                self.cx.say(Ctl::Tiles, UIA_SpinnerControlTypeId, &name, "Right adds one to every screen; Left or Delete removes the last.", self.cx.ro, (None, Some(n.to_string())));
-            }
+        let w = self.tiles_w(n, add);
+        self.cx.ring((x - 3.0, y - 3.0, w + 6.0, 40.0), 6.0, Ctl::Tiles(row));
+        if !self.cx.said.iter().any(|(c, _)| *c == Ctl::Tiles(row)) {
+            let name = format!("{label} workspaces, {n}");
+            self.cx.say(Ctl::Tiles(row), UIA_SpinnerControlTypeId, &name, "Right adds one to this screen; Left or Delete removes its last.", self.cx.ro, (None, Some(n.to_string())));
         }
     }
 
-    /// A screen not plugged in that windows wait for (spec 0016 AC-9), with Forget.
-    pub(super) fn away_row(&mut self, y: f32, i: usize, a: &crate::ws::views::Waiting) -> f32 {
-        let n = self.s.workspaces;
+    /// A screen not plugged in that windows wait for (spec 0016 AC-9), with its own count's tiles
+    /// (spec 0040 AC-8) and Forget.
+    pub(super) fn away_row(&mut self, y: f32, i: usize, a: &crate::ws::views::Waiting, gone: &[usize]) -> f32 {
+        let row = self.w.pics.screens.len() + i;
+        let n = self.s.count_for(&a.id);
         let total: usize = a.windows.iter().sum();
         let wait = if total == 1 { "1 window waits".to_string() } else { format!("{total} windows wait") };
         let cap = vec![t(format!("Not plugged in · {wait} for it and go back when you plug it in. Forget leaves them where they are now."))];
         let counts: Vec<usize> = (0..n).map(|ws| a.windows.get(ws).copied().unwrap_or(0)).collect();
-        let tw = self.tiles_w(n, false);
+        let add = n < 9;
+        let tw = self.tiles_w(n, add);
         let fw = self.cx.btn_w("Forget", None);
-        self.row(y, &a.name, &cap, (tw + 16.0 + fw, 34.0), |c, x, y| {
-            c.tiles(x, y, &counts, None, &[], false);
+        let title = self.row_title(&a.id, a.name.clone());
+        self.row(y, &title, &cap, (tw + 16.0 + fw, 34.0), |c, x, y| {
+            c.tiles(x, y, &counts, (row, &a.name), None, gone, add);
             c.cx.button(Ctl::Forget(i), x + tw + 16.0, y + 1.0, "Forget", None, false, 1);
         }, None)
         .max(60.0)
@@ -220,11 +249,78 @@ impl Ctx<'_, '_> {
     }
 }
 
+// ---- The rows' writes (spec 0040 AC-9) ----
+
+/// What a Workspaces card removal preview is about.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(in crate::settings_page) enum Removal {
+    /// Card row `r`'s last workspace: its × or Left.
+    Row(usize),
+    /// The shared count's −.
+    Lower,
+    /// The shared count's Reset.
+    Reset,
+}
+
+/// How many tile rows the Workspaces card has: plugged in screens, then those not plugged in.
+pub(in crate::settings_page) fn tile_rows(w: &Win) -> usize {
+    w.pics.screens.len() + w.pics.view.waiting.len()
+}
+
+/// Card row `r`'s screen id.
+pub(in crate::settings_page) fn row_id(w: &Win, r: usize) -> Option<String> {
+    match w.pics.screens.get(r) {
+        Some(sc) => w.pics.view.present.iter().find(|p| p.device == sc.device).map(|p| p.id.clone()),
+        None => w.pics.view.waiting.get(r - w.pics.screens.len()).map(|a| a.id.clone()),
+    }
+}
+
+/// What a row's + or × writes.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(in crate::settings_page) enum Write {
+    /// `workspaces`: the card's only row, whose screen follows it.
+    Shared(usize),
+    /// The screen's own line.
+    Line(usize),
+    /// The screen's line comes out: its new count is the shared one (the spec 0020 rule).
+    Remove,
+}
+
+/// `rows` on the card, whether this screen `has_line` that differs from `shared`, and its `new`
+/// count.
+pub(in crate::settings_page) fn row_write(rows: usize, has_line: bool, new: usize, shared: usize) -> Write {
+    match () {
+        _ if rows == 1 && !has_line => Write::Shared(new),
+        _ if new == shared => Write::Remove,
+        _ => Write::Line(new),
+    }
+}
+
+/// The shared count's new value, and out go the lines equal to the old one: they followed it,
+/// so they keep following (spec 0040 AC-1, your call during the build). Lines that differ stay.
+pub(in crate::settings_page) fn shared_edit(s: &Settings, new: usize) -> Edit {
+    let set = Edit::Value("workspaces", toml_edit::Value::from(new as i64));
+    s.count_by_screen.iter().filter(|&(_, &n)| n == s.shared_count).fold(set, |e, (id, _)| Edit::Pair(Box::new(e), Box::new(line_out(id))))
+}
+
+fn line_out(id: &str) -> Edit {
+    Edit::Remove(vec!["workspaces_per_screen".into(), id.into()])
+}
+
+/// The edit for screen `id`'s row going to `new`, with `rows` rows on the card.
+pub(in crate::settings_page) fn row_edit(s: &Settings, rows: usize, id: &str, new: usize) -> Edit {
+    match row_write(rows, !s.follows_shared(id), new, s.shared_count) {
+        Write::Shared(n) => shared_edit(s, n),
+        Write::Remove => line_out(id),
+        Write::Line(n) => Edit::At(vec!["workspaces_per_screen".into(), id.into()], toml_edit::Value::from(n as i64)),
+    }
+}
+
 // ---- Apps (spec 0027 AC-13, AC-14) ----
 
 /// Screen `id` as des-k names it: plugged in or remembered, as `ws::label` gave it, else your
 /// rename, else the id.
-fn screen_called(v: &crate::ws::views::View, s: &Settings, id: &str) -> String {
+pub(in crate::settings_page) fn screen_called(v: &crate::ws::views::View, s: &Settings, id: &str) -> String {
     v.present
         .iter()
         .find(|p| p.id == id)

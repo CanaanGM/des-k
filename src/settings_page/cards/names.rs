@@ -125,7 +125,9 @@ impl Ctx<'_, '_> {
             h += self.names_chooser_row(y + h, &list, i);
         }
         let mut rows = if (two && i > 0) || list.len() == 2 { vec![Nm::Screen] } else { vec![] };
-        rows.extend((0..self.s.workspaces).map(Nm::Ws));
+        // The chosen screen's own count, else the highest any screen has (spec 0040 AC-11).
+        let n = if two { list[i].id.as_deref().map_or(self.s.most(), |id| self.s.count_for(id)) } else { self.s.most() };
+        rows.extend((0..n).map(Nm::Ws));
         for (k, row) in rows.into_iter().enumerate() {
             if k > 0 || two {
                 self.sep(y + h);
@@ -140,7 +142,7 @@ impl Ctx<'_, '_> {
             None => "Names every screen shows, unless it has its own. Up to 32 characters each; most emoji count as two.".to_string(),
             Some(id) => {
                 let own = self.s.names_screens.get(id);
-                match (0..self.s.workspaces).filter(|&k| own.is_some_and(|o| o.ws[k].is_some())).count() {
+                match (0..self.s.count_for(id)).filter(|&k| own.is_some_and(|o| o.ws[k].is_some())).count() {
                     0 => "Empty rows follow all screens.".to_string(),
                     1 => "1 workspace differs on this screen. Empty rows follow all screens.".to_string(),
                     n => format!("{n} workspaces differ on this screen. Empty rows follow all screens."),

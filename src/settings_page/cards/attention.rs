@@ -19,7 +19,7 @@ impl Ctx<'_, '_> {
         let mut h = self.setting("attention.enabled", y);
         self.sep(y + h);
         h += self.words_row(y + h);
-        let n = self.s.workspaces;
+        let n = self.s.most();
         let here = self.w.pics.here.clone().unwrap_or_default();
         let a = self.active_on(&here);
         let named = self.w.pics.screens.len() > 1 && self.s.indicator_screen_name;

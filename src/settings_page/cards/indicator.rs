@@ -10,7 +10,7 @@ impl Ctx<'_, '_> {
         self.sep(y + h);
         h += self.setting("indicator.style", y + h);
         // The preview well: the chosen style for this screen, through the indicator's own drawing (AC-SET-7).
-        let n = self.s.workspaces;
+        let n = self.s.most();
         let here = self.w.pics.here.clone().unwrap_or_default();
         let a = self.active_on(&here);
         let named = self.w.pics.screens.len() > 1 && self.s.indicator_screen_name;

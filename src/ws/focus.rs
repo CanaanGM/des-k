@@ -100,7 +100,7 @@ pub fn attention(h: HWND) -> Option<Popup> {
     info!("attention: {} wants you on {id}, workspace {}", who(hwnd), ws + 1);
     let mon = mon_of(&s, &id)?;
     let active = s.monitors.get(&id).map_or(0, |m| m.active);
-    Some(Popup { mon, card: card(&s, &id, active, settings::get().workspaces), hwnd, ws })
+    Some(Popup { mon, card: card(&s, &id, active, settings::get().count_for(&id)), hwnd, ws })
 }
 
 /// Marked windows on present screens, by device, workspace and window: the overview's dots

@@ -141,3 +141,25 @@ fn rescue_keeps_away_lines() {
     assert_eq!((shown, left), (1, 0));
     assert_eq!(out, "M DEL-1 0 0 0 100 100\tDell\nA DEL-1 1 100 7 0 0 10 10 n 0\ta\tc\tt\n");
 }
+
+// Spec 0040 AC-14: a start after a screen's count went down clamps every W, H and A line past it
+// to that screen's last workspace, the same way for each kind, and leaves the others as saved.
+#[test]
+fn a_start_clamps_lines_past_their_screens_count() {
+    let away = |home: &str, ws: usize| Away { home: home.into(), ws, spot: spot(0, 'n'), pinned: false, pid: 1 };
+    let mut lines = vec![
+        Line::W { id: "internal".into(), ws: 4, raw: 1, pid: 1, spot: None, fp: None },
+        Line::H { id: "internal".into(), ws: 3, raw: 2, pid: 1, spot: None, fp: None },
+        Line::A { raw: 3, away: away("internal", 5), fp: None },
+        Line::W { id: "DEL-1".into(), ws: 4, raw: 4, pid: 1, spot: None, fp: None },
+        Line::A { raw: 5, away: away("DEL-1", 5), fp: None },
+        Line::Z,
+    ];
+    clamp_lines(&mut lines, |id| if id == "internal" { 2 } else { 6 });
+    let ws: Vec<usize> = lines.iter().filter_map(|l| match l {
+        Line::W { ws, .. } | Line::H { ws, .. } => Some(*ws),
+        Line::A { away, .. } => Some(away.ws),
+        _ => None,
+    }).collect();
+    assert_eq!(ws, [1, 1, 1, 4, 5]);
+}

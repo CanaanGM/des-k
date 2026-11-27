@@ -7,13 +7,15 @@ use super::*;
 pub fn pin() {
     // A dialog is never hidden itself, so its owner is what a switch would hide.
     let h = win::get_ancestor(win::get_foreground_window(), GA_ROOTOWNER);
-    if !app_windows().contains(&h) {
-        return info!("pin: nothing to pin ({}, {})", who(h), class_name(h));
+    match app_window(h) {
+        Ok(()) => {}
+        Err("left alone") => return alone::say_left_alone(&mut state(), h, "pin"),
+        Err(_) => return info!("pin: nothing to pin ({}, {})", who(h), class_name(h)),
     }
     let mon = win::monitor_from_window(h, MONITOR_DEFAULTTONEAREST);
-    let count = settings::get().workspaces;
     let mut s = state();
     let name = id_of(&mut s, &device_name(mon));
+    let count = settings::get().count_for(&name);
     s.last_acted = Some(name.clone());
     let raw = h.0 as isize;
     let pinned = !s.pinned.remove(&raw);
@@ -42,7 +44,6 @@ pub fn send(to: To, follow: bool) {
     if crate::cloak::unknown() {
         return info!("send: hiding is off on this Windows, nothing sent");
     }
-    let count = settings::get().workspaces;
     let mut s = state();
     // Nothing hides while paused (spec 0039); the keys are off then too.
     if !hiding_allowed(&s) {
@@ -66,8 +67,10 @@ pub fn send(to: To, follow: bool) {
             // A dialog is never hidden itself, so its owner goes.
             let h = win::get_ancestor(win::get_foreground_window(), GA_ROOTOWNER);
             // Only what a switch would hide: never the desktop, the taskbar, or a tool window.
-            if !app_windows().contains(&h) {
-                return info!("send: nothing to send ({}, {})", who(h), class_name(h));
+            match app_window(h) {
+                Ok(()) => {}
+                Err("left alone") => return alone::say_left_alone(&mut s, h, "send"),
+                Err(_) => return info!("send: nothing to send ({}, {})", who(h), class_name(h)),
             }
             let mon = win::monitor_from_window(h, MONITOR_DEFAULTTONEAREST);
             let name = id_of(&mut s, &device_name(mon));
@@ -76,8 +79,10 @@ pub fn send(to: To, follow: bool) {
         }
     };
     s.last_acted = Some(name.clone());
+    // The focused window's screen's own count (spec 0040 AC-4).
+    let count = settings::get().count_for(&name);
     let target = match to {
-        To::Step(dir) => (from as isize + dir).rem_euclid(count as isize) as usize,
+        To::Step(dir) => step_target(from, dir, count),
         To::Index(i) if i < count => i,
         To::Index(i) => {
             info!("send: no workspace {} ({count} workspaces)", i + 1);
@@ -287,7 +292,8 @@ pub(super) fn raise(h: HWND) {
 /// hidden there, moved across screens while cloaked so it never flashes. On failure nothing
 /// about the window or the state has changed.
 pub fn place(hwnd: HWND, device: &str, ws: usize) -> Result<(), Miss> {
-    let count = settings::get().workspaces;
+    // Only a workspace that screen has (spec 0040 AC-4).
+    let count = views::count(device);
     if ws >= count {
         return Err(Miss::CantMove);
     }

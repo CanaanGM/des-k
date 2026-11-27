@@ -8,7 +8,7 @@ use crate::settings_page::edit_box::place_box;
 use crate::settings_page::menu::{Menu, choose, close_menu, menu_lines, menu_open, open_menu};
 use crate::settings_page::recording::{Prompt, give_key, remove};
 use crate::settings_page::rows::{Kind, drawn_order, find_row, shortcut, unused, value};
-use super::act::{act, step_key};
+use super::act::{act, row_step, step_key};
 
 /// What Esc does: it backs out of the newest thing first, like a dialog. An open menu closes;
 /// the clash prompt presses Cancel, so a stray Esc never closes the page with a choice still
@@ -104,7 +104,7 @@ fn change(focus: Ctl, right: bool) {
         Ctl::Pick(MODE) => set_mode(right),
         Ctl::Picture => walk_picture(right),
         Ctl::Stepper(k) => step_key(k, right),
-        Ctl::Tiles => step_key("workspaces", right),
+        Ctl::Tiles(r) => row_step(r, right),
         Ctl::Pick(k) => match find_row(k).map(|r| r.kind) {
             Some(Kind::Pair(..)) if value(&s, k) != !right as i64 => save(k, !right as i64),
             Some(Kind::Choice(words)) if unused(&s, k).is_empty() => {
@@ -177,7 +177,7 @@ pub(super) fn on_key(h: HWND, vk: VIRTUAL_KEY) {
         }
         VK_SPACE | VK_RETURN => match focus {
             // A number or a choice changes with Left and Right only, so a stray Space never does.
-            Some(Ctl::Stepper(_) | Ctl::Pick(_) | Ctl::Tiles | Ctl::Picture) | None => {}
+            Some(Ctl::Stepper(_) | Ctl::Pick(_) | Ctl::Tiles(_) | Ctl::Picture) | None => {}
             // The color picker: nothing on the page moves once it is open (spec 0021).
             Some(f @ Ctl::Swatch(_)) => act(f),
             Some(f) => {
@@ -187,7 +187,7 @@ pub(super) fn on_key(h: HWND, vk: VIRTUAL_KEY) {
         },
         // On the tiles: removes the last workspace, as × does; on a shortcut row, its last key.
         VK_DELETE => match focus {
-            Some(Ctl::Tiles) => change(Ctl::Tiles, false),
+            Some(Ctl::Tiles(r)) => change(Ctl::Tiles(r), false),
             Some(Ctl::KeyRow(k)) if settings::store::parse_error().is_none() => {
                 let s = settings::get();
                 if let Some(sh) = shortcut(k)

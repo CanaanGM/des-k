@@ -44,6 +44,19 @@ fn the_window_you_use_keeps_its_screen_on_its_workspace() {
     assert_eq!(resume_targets(&active, &list, Some(99), true), active, "a new window: nobody's workspace");
 }
 
+// Spec 0041 AC-14: a window des-k leaves alone is never held, so z order alone would skip it and
+// follow the managed window under it, moving the screen away from the window you were using. With
+// one focused, resume follows nothing; any other focus keeps AC-7's follow.
+#[test]
+fn a_focused_window_left_alone_stops_the_follow() {
+    let active = shown(&[("A", 0)]);
+    let list = vec![held("A", 2, 10)];
+    let follow = |left_alone| resume_targets(&active, &list, resume_top(left_alone, Some(10)), true);
+    assert_eq!(follow(true), active, "the listed window you use keeps the screen where it is");
+    assert_eq!(follow(false), shown(&[("A", 2)]), "any other focus: AC-7 follows as before");
+    assert_eq!(resume_top(true, None), None);
+}
+
 // AC-7: when resume moves a screen to the window you use, the windows in view there at the pause
 // must go back to the workspace the screen showed then, as a follow would leave them, or they
 // quietly join the new one. The window you use and pinned ones stay; held windows of any screen

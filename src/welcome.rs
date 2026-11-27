@@ -270,8 +270,10 @@ pub fn tick() {
 
 /// Takes a new copy of the pictures' data; true when it changed.
 fn update_pictures() -> bool {
-    let n = settings::get().workspaces;
-    let Some(view) = crate::ws::views::view(&[n.saturating_sub(1).max(2)]) else { return false };
+    // The first run changes the shared count: what lowering it moves on the screens that follow it.
+    let st = settings::get();
+    let lower = |id: &str| st.follows_shared(id).then(|| st.shared_count.saturating_sub(1).max(2));
+    let Some(view) = crate::ws::views::view(&[&lower]) else { return false };
     let st = setup::state();
     // A give back that worked is over once Windows' gestures read off again; a failed one
     // stays until a later give back replaces it (AC-FR-5).

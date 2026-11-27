@@ -125,12 +125,14 @@ enum Ctl {
     Pick(&'static str), // focus only: a choice is one stop, Left and Right move
     Reset(&'static str),
     Link(Link),
-    Tiles, // focus only: the workspace tiles, one stop for every screen
+    // Focus only: one tile row of the Workspaces card, a stop per screen (spec 0040 AC-8). Rows are
+    // Pics::screens, then View::waiting.
+    Tiles(usize),
     // A plugged in screen's tile: its row in Pics::screens, its workspace. A click opens the color
     // picker (spec 0021); pointing at the last one shows its ×.
     WsTile(usize, usize),
-    TileAdd,
-    TileRemove,
+    TileAdd(usize),    // a row's +
+    TileRemove(usize), // a row's ×
     Forget(usize), // a screen not plugged in, by its place in View::waiting
     KeyRow(&'static str), // focus only: a shortcut row is one stop
     Key(&'static str, usize), // a key field, by its index in the file: records one in its place
@@ -198,7 +200,7 @@ impl Ctl {
     fn writes(self) -> bool {
         matches!(
             self,
-            Ctl::Toggle(_) | Ctl::Minus(_) | Ctl::Plus(_) | Ctl::Choice(..) | Ctl::Reset(_) | Ctl::WsTile(..) | Ctl::TileAdd | Ctl::TileRemove | Ctl::Forget(_)
+            Ctl::Toggle(_) | Ctl::Minus(_) | Ctl::Plus(_) | Ctl::Choice(..) | Ctl::Reset(_) | Ctl::WsTile(..) | Ctl::TileAdd(_) | Ctl::TileRemove(_) | Ctl::Forget(_)
                 | Ctl::KeyRow(_) | Ctl::Key(..) | Ctl::KeyX(..) | Ctl::AddKey(_) | Ctl::WinSide(..) | Ctl::Move(_) | Ctl::Picker(_) | Ctl::Item(_) | Ctl::Pad(Pad::ReadOn | Pad::GiveBack)
                 | Ctl::Hex(_) | Ctl::SameAll | Ctl::Picture | Ctl::Spot(_) | Ctl::ShowTile(..) | Ctl::Swatch(_) | Ctl::Words | Ctl::Name(_) | Ctl::NameSame(_)
                 | Ctl::AppAdd | Ctl::AppWs(_) | Ctl::AppScreen(_) | Ctl::AppX(_) | Ctl::WallPick(_) | Ctl::WallSame(_) | Ctl::WallTick(_) | Ctl::WallUse(_)
@@ -210,7 +212,7 @@ impl Ctl {
         match self {
             Ctl::Minus(k) | Ctl::Plus(k) => Ctl::Stepper(k),
             Ctl::Choice(k, _) => Ctl::Pick(k),
-            Ctl::WsTile(..) | Ctl::TileAdd | Ctl::TileRemove => Ctl::Tiles,
+            Ctl::WsTile(r, _) | Ctl::TileAdd(r) | Ctl::TileRemove(r) => Ctl::Tiles(r),
             Ctl::Spot(_) => Ctl::Picture,
             Ctl::Key(k, _) | Ctl::KeyX(k, _) | Ctl::AddKey(k) | Ctl::WinSide(k, _) => Ctl::KeyRow(k),
             c => c,
@@ -254,15 +256,21 @@ struct Pics {
 
 /// The pictures' data now, or None while ws is busy (the next tick tries again).
 fn pictures(h: Option<HWND>) -> Option<Pics> {
-    let n = settings::get().workspaces;
-    let view = crate::ws::views::view(&[n.saturating_sub(1).max(2), DEFAULTS.workspaces])?;
+    // What the caption stepper's −, its Reset, and each row's × would move (spec 0040 AC-8, AC-10).
+    let set = settings::get();
+    let lower = |id: &str| set.follows_shared(id).then(|| set.shared_count.saturating_sub(1).max(2));
+    let reset = |id: &str| set.follows_shared(id).then_some(DEFAULTS.shared_count);
+    let own = |id: &str| Some(set.count_for(id).saturating_sub(1).max(2));
+    let view = crate::ws::views::view(&[&lower, &reset, &own])?;
     let screens = crate::ws::views::screen_info();
     let here = h.and_then(|h| {
         let mon = unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) };
         let mut mi = MONITORINFOEXW { monitorInfo: MONITORINFO { cbSize: size_of::<MONITORINFOEXW>() as u32, ..Default::default() }, ..Default::default() };
         unsafe { GetMonitorInfoW(mon, &mut mi.monitorInfo).as_bool() }.then(|| String::from_utf16_lossy(&mi.szDevice).trim_end_matches('\0').trim_start_matches(r"\\.\").to_string())
     });
-    let apps = crate::apps::seen(&view.open);
+    // An app left alone is in no list of des-k's, so its rows find its windows apart (spec 0041 AC-11).
+    let alone = crate::ws::views::left_alone().into_iter().map(|raw| (raw, String::new(), 0));
+    let apps = crate::apps::seen(&view.open.iter().cloned().chain(alone).collect::<Vec<_>>());
     let s = settings::get();
     let mut files: Vec<String> = s.wallpaper.iter().chain(s.wallpaper_screens.values().flat_map(|a| a.iter().flatten())).map(Pick::key).filter(|f| !f.is_empty()).collect();
     files.sort();

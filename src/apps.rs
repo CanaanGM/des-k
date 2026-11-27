@@ -79,6 +79,8 @@ pub fn sync() {
             ws::rules::forget_opened();
             info!("apps: no rules, show hook out");
         }
+        // Only apps left alone: no hook is needed for them (spec 0041 AC-3, AC-12).
+        (None, false) if !settings::get().alone.is_empty() => info!("apps: 0 rules, no show hook"),
         _ => {}
     }
 }

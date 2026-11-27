@@ -2,7 +2,7 @@
 // problem line, and the key names and limits the reader holds the file to (spec 0001).
 use super::*;
 
-const TOP_KEYS: &[&str] = &["workspaces", "copilot_as_right_ctrl", "follow_activation", "act_on", "jump_back", "fastest", "first_run_seen", "whats_new_seen", "shortcuts", "indicator", "attention", "colors", "names", "wallpaper", "apps", "restore", "overview", "touchpad", "gesture"];
+const TOP_KEYS: &[&str] = &["workspaces", "workspaces_per_screen", "copilot_as_right_ctrl", "follow_activation", "act_on", "jump_back", "fastest", "first_run_seen", "whats_new_seen", "shortcuts", "indicator", "attention", "colors", "names", "wallpaper", "apps", "restore", "overview", "touchpad", "gesture"];
 const SHORTCUT_KEYS: &[&str] = &["previous", "next", "send_previous", "send_next", "send_previous_stay", "send_next_stay", "jump", "send_to", "send_to_stay", "back", "finder", "overview", "pin", "hints", "pause"];
 const INDICATOR_KEYS: &[&str] = &["enabled", "style", "screen_name", "spot", "gap", "x", "y", "hold_ms", "fade_ms", "screens"];
 const SCREEN_KEYS: &[&str] = &["spot", "gap", "x", "y"];
@@ -67,7 +67,8 @@ pub(super) fn parse(text: &str) -> (Settings, Vec<String>) {
         }
     };
     unknown_keys(&top, "", TOP_KEYS, &mut warn);
-    s.workspaces = int(&top, "workspaces", "workspaces", 2, 9, s.workspaces as i64, &mut warn) as usize;
+    s.shared_count = int(&top, "workspaces", "workspaces", 2, 9, s.shared_count as i64, &mut warn) as usize;
+    s.count_by_screen = per_screen_counts(&top, &mut warn);
     s.copilot_as_right_ctrl = boolean(&top, "copilot_as_right_ctrl", "copilot_as_right_ctrl", s.copilot_as_right_ctrl, &mut warn);
     s.follow_activation = boolean(&top, "follow_activation", "follow_activation", s.follow_activation, &mut warn);
     s.act_on = choice(&top, "act_on", "act_on", ACT_ON, s.act_on, &mut warn);
@@ -218,7 +219,7 @@ pub(super) fn parse(text: &str) -> (Settings, Vec<String>) {
     }
 
     if let Some(t) = section(&top, "apps", &mut warn) {
-        s.apps = apps(t, &file_order(text, "apps"), &mut warn);
+        (s.apps, s.alone) = apps(t, &file_order(text, "apps"), &mut warn);
     }
 
     if let Some(t) = section(&top, "restore", &mut warn) {
@@ -605,6 +606,30 @@ pub(crate) fn is_picture_name(name: &str) -> bool {
     name_why(name).is_none() && picture_ext(name)
 }
 
+/// `[workspaces_per_screen]`'s `"<screen id>" = N` lines (spec 0040 AC-1, AC-2): a bad line is
+/// dropped alone, and its screen follows `workspaces`. A line for a screen not plugged in, or
+/// one des-k never saw, is kept.
+fn per_screen_counts(top: &Table, warn: &mut Vec<String>) -> BTreeMap<String, usize> {
+    let mut out = BTreeMap::new();
+    let Some(v) = top.get("workspaces_per_screen") else { return out };
+    let Some(lines) = v.as_table() else {
+        warn.push(format!("workspaces_per_screen: expected a table of \"<screen id>\" = N lines, got a {}, ignored", v.type_str()));
+        return out;
+    };
+    for (id, v) in lines {
+        let full = format!("workspaces_per_screen.\"{}\"", key_shown(id));
+        match v {
+            _ if id.trim().is_empty() => warn.push(format!("{full}: an empty screen id, ignored")),
+            Value::Integer(n) if (2..=9).contains(n) => {
+                out.insert(id.clone(), *n as usize);
+            }
+            Value::Integer(n) => warn.push(format!("{full}: {n} is outside 2 to 9, ignored")),
+            v => warn.push(format!("{full}: expected a whole number, got a {}, ignored", v.type_str())),
+        }
+    }
+    out
+}
+
 /// The `[names.screens."<id>"]` tables. A table for a screen not plugged in is kept (AC-3).
 fn name_screens(t: &Table, warn: &mut Vec<String>) -> BTreeMap<String, ScreenNames> {
     let Some(v) = t.get("screens") else { return BTreeMap::new() };
@@ -642,11 +667,12 @@ fn wallpaper_screens(t: &Table, warn: &mut Vec<String>) -> BTreeMap<String, [Opt
     out
 }
 
-/// The `[apps]` rules (spec 0027 AC-10): a bad one is dropped alone, the first 64 kept, and of
-/// two keys that differ only in case the first wins. A key is only ever compared, never opened
-/// or run, and one with a path in it is never echoed: a log is safe to share.
-fn apps(t: &Table, order: &[String], warn: &mut Vec<String>) -> Vec<(String, Rule)> {
-    let mut out: Vec<(String, Rule)> = Vec::new();
+/// The `[apps]` rules (spec 0027 AC-10) and the apps des-k leaves alone (`"alone"`, spec 0041
+/// AC-10): a bad entry is dropped alone, the first 64 kept, and of two keys that differ only in
+/// case the first wins, whichever kind each is. A key is only ever compared, never opened or run,
+/// and one with a path in it is never echoed: a log is safe to share.
+fn apps(t: &Table, order: &[String], warn: &mut Vec<String>) -> (Vec<(String, Rule)>, HashSet<String>) {
+    let (mut out, mut alone): (Vec<(String, Rule)>, HashSet<String>) = (Vec::new(), HashSet::new());
     let mut dropped = 0;
     let rest = t.keys().filter(|k| !order.contains(k));
     for (key, v) in order.iter().chain(rest).filter_map(|k| t.get_key_value(k)) {
@@ -657,24 +683,28 @@ fn apps(t: &Table, order: &[String], warn: &mut Vec<String>) -> Vec<(String, Rul
             continue;
         }
         let lower = key.to_lowercase();
-        if out.iter().any(|(k, _)| *k == lower) {
+        if out.iter().any(|(k, _)| *k == lower) || alone.contains(&lower) {
             warn.push(format!("apps: {shown} differs from an earlier key only in case, ignored"));
             continue;
         }
         let rule = match v {
-            Value::Table(r) => rule(r, &full),
-            v => Err(format!("{full}: expected {{ workspace = N }}, got a {}, ignored", v.type_str())),
+            Value::Table(r) => rule(r, &full).map(Some),
+            Value::String(w) if w.eq_ignore_ascii_case("alone") => Ok(None),
+            // Never echoed: a mistyped word can be anything.
+            Value::String(_) => Err(format!("{full}: expected {{ workspace = N }} or \"alone\", got another word, ignored")),
+            v => Err(format!("{full}: expected {{ workspace = N }} or \"alone\", got a {}, ignored", v.type_str())),
         };
         match rule {
             Err(why) => warn.push(why),
-            Ok(_) if out.len() == APPS_MAX => dropped += 1,
-            Ok(r) => out.push((lower, r)),
+            Ok(_) if out.len() + alone.len() == APPS_MAX => dropped += 1,
+            Ok(Some(r)) => out.push((lower, r)),
+            Ok(None) => _ = alone.insert(lower),
         }
     }
     if dropped > 0 {
-        warn.push(format!("apps: more than {APPS_MAX} rules, the last {dropped} ignored"));
+        warn.push(format!("apps: more than {APPS_MAX} entries, the last {dropped} ignored"));
     }
-    out
+    (out, alone)
 }
 
 /// Table `name`'s keys as the file has them: toml's Table sorts its keys, and the first of two

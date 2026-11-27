@@ -3,7 +3,7 @@
 // Not next to the exe: the installed exe lives in Program Files, where you cannot write (spec 0008).
 // A bad value resets just that setting. A file that is not TOML resets all of them at start,
 // but keeps the settings in effect on a live reload. des-k always starts.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use arc_swap::Guard;
 use std::ops::Deref;
@@ -249,7 +249,11 @@ pub struct Gesture {
 
 #[derive(PartialEq, Debug)]
 pub struct Settings {
-    pub workspaces: usize,
+    // The file's `workspaces`: every screen's count unless `[workspaces_per_screen]` names it.
+    // Never read it as a screen's count; ask `count_for` (spec 0040).
+    pub shared_count: usize,
+    // `[workspaces_per_screen]`'s good lines, by screen id, kept for screens not plugged in.
+    pub count_by_screen: BTreeMap<String, usize>,
     pub copilot_as_right_ctrl: bool,
     pub follow_activation: bool,
     pub act_on: ActOn,
@@ -306,6 +310,9 @@ pub struct Settings {
     pub names_screens: BTreeMap<String, ScreenNames>, // by screen id (spec 0016)
     // Spec 0027: rules for where new windows open, in file order, keys lowercased.
     pub apps: Vec<(String, Rule)>,
+    // Spec 0041: apps des-k leaves alone, from `"<key>" = "alone"` in [apps], keys lowercased.
+    // A key is a rule or alone, never both. Read through `ws::alone`.
+    pub alone: HashSet<String>,
     // Spec 0026. Read only through wallpaper_for, which owns the fallback rules.
     pub wallpaper: [Pick; 9], // every screen's
     pub wallpaper_screens: BTreeMap<String, [Option<Pick>; 9]>, // by screen id; Some(Pick::None) = your Windows wallpaper there
@@ -377,7 +384,8 @@ fn default_gestures() -> Vec<Gesture> {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            workspaces: 4,
+            shared_count: 4,
+            count_by_screen: BTreeMap::new(),
             copilot_as_right_ctrl: false, // a new install asks first (spec 0038 AC-1)
             follow_activation: true,
             act_on: ActOn::Mouse,
@@ -424,6 +432,7 @@ impl Default for Settings {
             names: Default::default(),
             names_screens: BTreeMap::new(),
             apps: Vec::new(),
+            alone: HashSet::new(),
             wallpaper: Default::default(),
             wallpaper_screens: BTreeMap::new(),
             wallpaper_fit: Fit::Fill,
@@ -439,13 +448,17 @@ impl Default for Settings {
 /// Written verbatim when the file is missing. Must parse to `Settings::default()` (tested).
 const DEFAULT_FILE: &str = r##"# des-k settings. A saved change applies within two seconds; [restore] acts at the next start.
 
-workspaces = 4              # 2 to 9, every screen
+workspaces = 4              # 2 to 9, every screen without its own count below
 copilot_as_right_ctrl = false # true: the Copilot key is Right Ctrl, so Win Ctrl keys work with it
 follow_activation = true    # switch to a hidden window's workspace when it comes to the front
 act_on = "mouse"            # which screen keys act on: "mouse" (under it) or "focus" (the focused window's)
 jump_back = true            # Win+N on the workspace you're on goes back to the last one
 fastest = false             # true: every des-k fade and move is instant
 first_run_seen = false      # false: the first run opens at the next start
+
+# A screen's own workspace count, by its id (the settings page writes these):
+# [workspaces_per_screen]
+# "internal" = 2
 
 [shortcuts]
 # Keep these two if you switch with the touchpad swipe.
@@ -528,6 +541,7 @@ shuffle = false             # true: slideshows go in random order, else by file 
 # The settings page's Apps section writes these for you.
 # "slack.exe" = { workspace = 1, screen = "GSM-5B7F-12345" }
 # "spotify.exe" = { workspace = 4 }
+# "teams.exe" = "alone"     # des-k never hides, follows, places or lists its windows
 
 [restore]
 enabled = true              # after a reboot or sign in, hide reopened windows back into their workspaces
@@ -836,6 +850,29 @@ impl fmt::Display for Gesture {
 }
 
 impl Settings {
+    /// Screen `id`'s workspace count: its `[workspaces_per_screen]` line, else `workspaces`
+    /// (spec 0040 AC-1).
+    pub fn count_for(&self, id: &str) -> usize {
+        self.count_by_screen.get(id).copied().unwrap_or(self.shared_count)
+    }
+
+    /// Whether screen `id` follows `workspaces`: it has no line, or one equal to it (AC-1).
+    pub fn follows_shared(&self, id: &str) -> bool {
+        self.count_by_screen.get(id).is_none_or(|&n| n == self.shared_count)
+    }
+
+    /// The counts as the start line says them: "4 workspaces each; internal 2" (AC-3).
+    pub fn counts_said(&self) -> String {
+        let lines: Vec<String> = self.count_by_screen.iter().map(|(id, n)| format!("{id} {n}")).collect();
+        let each = format!("{} workspaces each", self.shared_count);
+        if lines.is_empty() { each } else { format!("{each}; {}", lines.join(", ")) }
+    }
+
+    /// The highest count any screen can have, for lists that cover every screen (AC-11).
+    pub fn most(&self) -> usize {
+        self.count_by_screen.values().copied().fold(self.shared_count, usize::max)
+    }
+
     /// The indicator's place on screen `id`: its own table's keys over the default (AC-9).
     pub fn indicator_pos_for(&self, id: &str) -> Pos {
         self.indicator_screens.get(id).map_or(self.indicator_pos, |o| o.over(self.indicator_pos))
@@ -844,7 +881,7 @@ impl Settings {
     /// Workspace `i`'s name (0 based) on screen `id`: the screen's own key, else `[names]`'s,
     /// else none; `""` is none, and so is a workspace past the count (spec 0023 AC-1, AC-3).
     pub fn ws_name(&self, id: &str, i: usize) -> Option<&str> {
-        if i >= self.workspaces {
+        if i >= self.count_for(id) {
             return None;
         }
         let own = self.names_screens.get(id).and_then(|n| n.ws.get(i)?.as_deref());
@@ -855,7 +892,7 @@ impl Settings {
     /// `[wallpaper]`'s, else none; `Pick::None` is none, and so is a workspace past the count
     /// (spec 0026 AC-1, AC-10).
     pub fn wallpaper_for(&self, id: &str, i: usize) -> Option<&Pick> {
-        if i >= self.workspaces {
+        if i >= self.count_for(id) {
             return None;
         }
         let own = self.wallpaper_screens.get(id).and_then(|w| w.get(i)?.as_ref());

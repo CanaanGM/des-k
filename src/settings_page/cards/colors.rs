@@ -75,7 +75,7 @@ impl Ctx<'_, '_> {
         h += 12.0;
         h + self.card(y + h, |c, y| {
             let mut h = c.header(y, "Workspace colors", None, "In every des-k window");
-            let n = c.s.workspaces;
+            let n = c.s.most();
             for (i, key) in WS_KEYS.iter().take(n).enumerate() {
                 if i > 0 {
                     c.sep(y + h);

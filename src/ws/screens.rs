@@ -130,35 +130,41 @@ pub(super) fn monitor_named(name: &str) -> Option<HMONITOR> {
     win::enum_display_monitors().into_iter().map(|(m, _)| m).find(|&m| device_name(m) == name)
 }
 
-/// What lowering the count to `count` would move: one line per screen with something to
-/// move, as "Screen 2: 3 windows from 7, 8 move to 6"; a screen not plugged in now goes under
-/// its device name (spec 0012 AC-6). The windows on screen count for the workspace shown.
-pub(super) fn moves(s: &State, count: usize) -> Vec<String> {
+/// What giving each screen `count_of(id)` workspaces would move (None: that screen is left out):
+/// one line per screen with something to move, as "Screen 2: 3 windows from 7, 8 move to 6"; a
+/// screen not plugged in now goes under its device name (spec 0012 AC-6). The windows on screen
+/// count for the workspace shown.
+pub(super) fn moves(s: &State, count_of: &dyn Fn(&str) -> Option<usize>) -> Vec<String> {
     let order = screen_order();
     let mut out = Vec::new();
     // Logged (settings::store::apply), so a screen not plugged in goes by Windows' name, never a rename.
-    for m in moved(s, count, |s, id| s.monitors.get(id).map_or_else(|| id.to_string(), |m| m.name.clone())).into_iter().filter(|m| m.windows > 0) {
+    for m in moved(s, count_of, |s, id| s.monitors.get(id).map_or_else(|| id.to_string(), |m| m.name.clone())).into_iter().filter(|m| m.windows > 0) {
         let name = m.device.and_then(|d| order.iter().position(|o| *o == d)).map_or(m.name, |i| format!("Screen {}", i + 1));
         let from: Vec<String> = m.from.iter().map(|ws| (ws + 1).to_string()).collect();
         let (win, go) = if m.windows == 1 { ("window", "moves") } else { ("windows", "move") };
-        out.push(format!("{name}: {} {win} from {} {go} to {count}", m.windows, from.join(", ")));
+        out.push(format!("{name}: {} {win} from {} {go} to {}", m.windows, from.join(", "), m.count));
     }
     out
 }
 
-/// What one screen would move if the count went down (spec 0017 AC-SET-3): every screen, those
-/// with nothing to move too, plugged in ones first in screen order. An unplugged screen counts
-/// its away windows, which are hidden on another screen, so that screen leaves them out.
+/// What one screen would move if its count went down (spec 0017 AC-SET-3): every screen asked
+/// about, those with nothing to move too, plugged in ones first in screen order. An unplugged
+/// screen counts its away windows, which are hidden on another screen, so that screen leaves
+/// them out.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Moved {
+    pub id: String,
     pub name: String, // as `label` gives it for the page; Windows' name for the log
     pub device: Option<String>,
     pub unplugged: bool,
     pub windows: usize,
     pub from: Vec<usize>, // the removed workspaces with windows, 0 based
+    pub count: usize,     // the count asked about
 }
 
-pub(super) fn moved(s: &State, count: usize, name: fn(&State, &str) -> String) -> Vec<Moved> {
+/// `count_of(id)` is the count each screen is asked about; None leaves that screen out (spec
+/// 0040 AC-8: a row's preview names only its own screen).
+pub(super) fn moved(s: &State, count_of: &dyn Fn(&str) -> Option<usize>, name: fn(&State, &str) -> String) -> Vec<Moved> {
     let order = screen_order();
     let at = |m: &Monitor| m.device.as_ref().and_then(|d| order.iter().position(|o| o == d));
     let mut ids: Vec<&String> = s.monitors.keys().collect();
@@ -166,6 +172,7 @@ pub(super) fn moved(s: &State, count: usize, name: fn(&State, &str) -> String) -
     let live = |raw: isize| win::is_window(Some(HWND(raw as *mut _))).as_bool();
     let mut out = Vec::new();
     for id in ids {
+        let Some(count) = count_of(id) else { continue };
         let m = &s.monitors[id];
         let unplugged = !s.present.iter().any(|p| &p.id == id);
         let mut per = vec![0; m.hidden.len().max(count)];
@@ -186,41 +193,100 @@ pub(super) fn moved(s: &State, count: usize, name: fn(&State, &str) -> String) -
         }
         let from: Vec<usize> = (count..per.len()).filter(|&ws| per[ws] > 0).collect();
         let windows = from.iter().map(|&ws| per[ws]).sum();
-        out.push(Moved { name: name(s, id), device: m.device.clone(), unplugged, windows, from });
+        out.push(Moved { id: id.clone(), name: name(s, id), device: m.device.clone(), unplugged, windows, from, count });
     }
     out
 }
 
-/// Gives every screen `count` workspaces (spec 0012 AC-6). Raising adds empty ones. Lowering
-/// moves the windows of every removed workspace onto the new last one; a screen showing a
-/// removed one switches to the new last one with all of them in view, elsewhere they stay
-/// hidden. Returns `removal`'s lines, as they were before the move. Main thread, from
-/// `settings::store::apply` only, never under `state()`.
-pub fn resize(count: usize) -> Vec<String> {
-    let mut s = state();
-    let lines = moves(&s, count);
-    // An away window of a removed workspace goes home to the new last one (spec 0016 AC-16).
-    for a in s.away.values_mut() {
-        a.ws = a.ws.min(count - 1);
-    }
-    let shell = Shell::new();
-    for (dev, m) in s.monitors.iter_mut() {
-        let show = m.resize(count);
-        if show.is_empty() {
+/// One screen a resize changed: its id, its old and new count, and the windows to show, top
+/// first, because it showed a removed workspace.
+pub(super) struct Resized {
+    pub id: String,
+    pub old: usize,
+    pub new: usize,
+    pub show: Vec<isize>,
+}
+
+/// The lists half of `resize`, without Windows: each screen, plugged in or remembered, whose
+/// lists are not `count_of(id)` long gets that many workspaces by the spec 0012 AC-6 rule, and
+/// the away records whose home it is and whose workspace it lost get its new last one (spec 0016
+/// AC-16, per screen since spec 0040 AC-3). Other screens and their away records don't move.
+pub(super) fn resize_lists(s: &mut State, count_of: impl Fn(&str) -> usize) -> Vec<Resized> {
+    let mut out = Vec::new();
+    let mut ids: Vec<String> = s.monitors.keys().cloned().collect();
+    ids.sort();
+    for id in ids {
+        let new = count_of(&id);
+        let m = s.monitors.get_mut(&id).expect("listed above");
+        let old = m.hidden.len();
+        if old == new {
             continue;
         }
+        let show = m.resize(new);
+        for a in s.away.values_mut().filter(|a| a.home == id) {
+            a.ws = home_ws(a.ws, new);
+        }
+        out.push(Resized { id, old, new, show });
+    }
+    out
+}
+
+/// Gives every screen its own count (spec 0040 AC-3): `settings::get().count_for(id)`, found by
+/// each monitor's list length, so it needs no old settings. Raising adds empty workspaces.
+/// Lowering moves the windows of every removed workspace onto that screen's new last one; a
+/// screen showing a removed one switches to it with all of them in view, elsewhere they stay
+/// hidden. Never asks `hiding_allowed`: it hides nothing. Returns one line per changed screen,
+/// "on internal 4 -> 2: <what moved>". Main thread, from `settings::store::apply` only, never
+/// under `state()`.
+pub fn resize() -> Vec<String> {
+    let set = settings::get();
+    let mut s = state();
+    let changed: Vec<(String, usize)> = s.monitors.iter().map(|(id, m)| (id.clone(), m.hidden.len(), set.count_for(id))).filter(|(_, old, new)| old != new).map(|(id, _, new)| (id, new)).collect();
+    if changed.is_empty() {
+        return vec![];
+    }
+    // As they were before the move, one screen at a time.
+    let said: Vec<(String, String)> = changed
+        .iter()
+        .map(|(id, n)| {
+            let one = |at: &str| (at == id).then_some(*n);
+            (id.clone(), moves(&s, &one).join("; "))
+        })
+        .collect();
+    let done = resize_lists(&mut s, |id| set.count_for(id));
+    let shell = Shell::new();
+    let mut lines = Vec::new();
+    for r in done {
+        let what = said.iter().find(|(id, _)| *id == r.id).map(|(_, w)| w.as_str()).filter(|w| !w.is_empty()).unwrap_or("nothing moves");
+        lines.push(format!("on {} {} -> {}: {what}", r.id, r.old, r.new));
+        if r.show.is_empty() {
+            continue;
+        }
+        let m = s.monitors.get_mut(&r.id).expect("resized above");
         let Ok(shell) = &shell else {
             // Kept with the shown workspace: the next switch away and back shows them.
-            error!("shell unavailable, {dev}: {} windows stay hidden", show.len());
-            m.hidden[count - 1] = show;
+            error!("shell unavailable, {}: {} windows stay hidden", r.id, r.show.len());
+            m.hidden[r.new - 1] = r.show;
             continue;
         };
         // Kept with the shown workspace, like above.
-        let (_, stuck) = show_all(show, |raw| uncloak(shell, raw));
-        m.hidden[count - 1] = stuck;
+        let (_, stuck) = show_all(r.show, |raw| uncloak(shell, raw));
+        m.hidden[r.new - 1] = stuck;
     }
     save(&mut s);
     lines
+}
+
+/// The workspace a window goes home to on a screen with `home_count` workspaces: its own `k`,
+/// or that screen's last when the count dropped meanwhile (spec 0040 AC-7, AC-14).
+pub(super) fn home_ws(k: usize, home_count: usize) -> usize {
+    k.min(home_count - 1)
+}
+
+/// The main display's workspace a window hidden on workspace `k` of a folding screen goes to:
+/// the same one, or its last when it has fewer (spec 0040 AC-7).
+pub(super) fn fold_ws(k: usize, main_count: usize) -> usize {
+    k.min(main_count - 1)
 }
 
 /// One active display config path: its GDI device name (DISPLAY1), whether it is a laptop
@@ -371,7 +437,7 @@ pub fn check_screens(tick: bool) {
     // line. A line about another screen names where its windows went instead of "here".
     let last = notes.last().expect("not empty");
     if let Some(mon) = monitor_named(&last.device) {
-        let mut c = card(&state(), &last.id, last.active, settings::get().workspaces);
+        let mut c = card(&state(), &last.id, last.active, settings::get().count_for(&last.id));
         for n in &notes {
             let mut line = n.line.clone();
             match &mut line {
@@ -569,14 +635,15 @@ pub(super) fn mark_away(s: &mut State, id: &str) -> usize {
 }
 
 /// A screen gone long enough (spec 0016 AC-2): each window it hid goes hidden into the same
-/// workspace of the main display, at the same relative spot, or into view there when that
-/// workspace is shown. Each keeps an away record of its home; the screen is remembered.
+/// workspace of the main display, or its last one when it has fewer (spec 0040 AC-7), at the same
+/// relative spot, or into view there when that workspace is shown. Each keeps an away record of
+/// its home and its own workspace; the screen is remembered.
 pub(super) fn fold(s: &mut State, id: &str, notes: &mut Vec<Note>) {
     let Some(main) = s.present.iter().find(|p| p.primary).cloned() else {
         return warn!("{id} unplugged, and no main display to take its windows: trying again next check");
     };
     let Ok(shell) = Shell::new() else { return warn!("shell unavailable: {id}'s windows fold at the next check") };
-    let count = settings::get().workspaces;
+    let (count, main_count) = (settings::get().count_for(id), settings::get().count_for(&main.id));
     let Some(gone) = s.monitors.get_mut(id) else { return };
     let lists = std::mem::replace(&mut gone.hidden, vec![Vec::new(); count]);
     let held = std::mem::replace(&mut gone.held, vec![Vec::new(); count]);
@@ -602,7 +669,7 @@ pub(super) fn fold(s: &mut State, id: &str, notes: &mut Vec<Note>) {
                 warn!("fold: could not move {}: {e}", who(h));
             }
             s.spots.insert(raw, (main.id.clone(), spot_of(h)));
-            match fold_to(ws, count, main_active) {
+            match fold_to(ws, main_count, main_active) {
                 FoldTo::Show(_) => show.push(raw),
                 FoldTo::Hide(ws) => mon_mut(s, &main.id).hidden[ws].push(raw),
             }
@@ -654,10 +721,10 @@ pub(super) enum FoldTo {
     Hide(usize),
 }
 
-/// The same workspace on the main display, capped at its last one, in view when it is the one
-/// shown (`main_active`).
-pub(super) fn fold_to(ws: usize, count: usize, main_active: usize) -> FoldTo {
-    let ws = ws.min(count - 1);
+/// The same workspace on the main display, capped at its last one (`fold_ws`), in view when it is
+/// the one shown (`main_active`).
+pub(super) fn fold_to(ws: usize, main_count: usize, main_active: usize) -> FoldTo {
+    let ws = fold_ws(ws, main_count);
     if ws == main_active { FoldTo::Show(ws) } else { FoldTo::Hide(ws) }
 }
 
@@ -681,7 +748,7 @@ pub(super) fn give_back(s: &mut State, id: &str, last: bool, notes: &mut Vec<Not
         warn!("shell unavailable: {}'s windows go back at the next check", p.name);
         return false;
     };
-    let count = settings::get().workspaces;
+    let count = settings::get().count_for(id);
     let (saved, active) = {
         let m = mon_mut(s, id);
         (m.area, m.active)
@@ -808,11 +875,11 @@ pub(super) fn give_back(s: &mut State, id: &str, last: bool, notes: &mut Vec<Not
     changed
 }
 
-/// An away window's home workspace (capped at the last one) and whether it goes home in view:
+/// An away window's home workspace (`home_ws` on its screen's `count`) and whether it goes home in view:
 /// when it was pinned, when that workspace is the one its screen shows (`active`), or on a layout
 /// des-k does not know, where nothing can be hidden (spec 0030 AC-6).
 pub(super) fn goes_in_view(a: &Away, count: usize, active: usize, unknown: bool) -> (usize, bool) {
-    let ws = a.ws.min(count - 1);
+    let ws = home_ws(a.ws, count);
     (ws, a.pinned || ws == active || unknown)
 }
 

@@ -58,7 +58,7 @@ pub fn remind() {
         let mut s = state();
         let id = id_of(&mut s, &dev);
         let active = s.monitors.get(&id).map_or(0, |m| m.active);
-        card(&s, &id, active, settings::get().workspaces)
+        card(&s, &id, active, settings::get().count_for(&id))
     };
     indicator::show(mon, card.with(Says::Paused));
     info!("starting paused: reminder shown");
@@ -255,6 +255,14 @@ pub(super) fn resume_targets(active: &HashMap<String, usize>, held: &[Held], top
     out
 }
 
+/// The window resume follows (AC-7): the top app window, unless the focused window belongs to an
+/// app des-k leaves alone. That one is the window you use, and it is never held, so nothing moves
+/// (spec 0041 AC-14). Focus, not z order, so an always on top call bar you aren't using doesn't
+/// block the follow.
+pub(super) fn resume_top(focus_left_alone: bool, top: Option<isize>) -> Option<isize> {
+    top.filter(|_| !focus_left_alone)
+}
+
 /// The windows resume hides (AC-6): held, still open with the same pid, not pinned, on the
 /// screen they were held on, on a workspace other than that screen's target. The rest stay in view.
 pub(super) fn resume_hides<'a>(held: &'a [Held], targets: &HashMap<String, usize>) -> Vec<&'a Held> {
@@ -306,7 +314,8 @@ pub fn resume() {
             })
             .collect();
         let active: HashMap<String, usize> = s.monitors.iter().map(|(id, m)| (id.clone(), m.active)).collect();
-        let top = windows.first().map(|&h| win::get_ancestor(h, GA_ROOTOWNER).0 as isize);
+        let focus_left_alone = app_window(win::get_ancestor(win::get_foreground_window(), GA_ROOTOWNER)) == Err("left alone");
+        let top = resume_top(focus_left_alone, windows.first().map(|&h| win::get_ancestor(h, GA_ROOTOWNER).0 as isize));
         let targets = resume_targets(&active, &held, top, settings::get().follow_activation);
         // The screen AC-7 moved acts as a follow there would: what was in view goes back to the
         // workspace it showed at the pause.
@@ -365,7 +374,7 @@ pub fn resume() {
                 let (mon, dev) = under_mouse();
                 let id = id_of(s, &dev);
                 let active = mon_mut(s, &id).active;
-                indicator::show(mon, card(s, &id, active, settings::get().workspaces).with(Says::NotSaved));
+                indicator::show(mon, card(s, &id, active, settings::get().count_for(&id)).with(Says::NotSaved));
                 return;
             }
         }

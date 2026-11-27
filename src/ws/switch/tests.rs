@@ -278,3 +278,18 @@ fn a_window_still_cloaked_after_a_failed_hide_stays_listed() {
 fn a_hide_that_never_cloaked_needs_no_undo() {
     assert!(failed_hide(|| 0, || panic!("nothing to undo")));
 }
+
+// Spec 0040 AC-4: the laptop with two and the big screen with six step and jump over their own
+// counts. Next from the laptop's 2 wraps to 1 while the big screen goes on to 3, and a jump to 5
+// on the laptop is past its count: only the note, which names the laptop's 2.
+#[test]
+fn steps_and_jumps_use_each_screens_own_count() {
+    let set = settings::Settings { count_by_screen: [("internal".to_string(), 2)].into(), shared_count: 6, ..Default::default() };
+    let (l, b) = (set.count_for("internal"), set.count_for("DEL-1"));
+    assert_eq!((step_target(1, 1, l), step_target(1, 1, b)), (0, 2));
+    assert_eq!((step_target(0, -1, l), step_target(0, -1, b)), (1, 5));
+    let m = crate::ws::tests::with_hidden(0, &[&[], &[]]);
+    assert_eq!(jump_target(&m, 4, l, true), Jump::Missing);
+    let m = crate::ws::tests::with_hidden(0, &[&[], &[], &[], &[], &[], &[]]);
+    assert_eq!(jump_target(&m, 4, b, true), Jump::Go(4));
+}

@@ -29,10 +29,17 @@ pub(crate) fn id(device: &str) -> String {
 }
 
 pub fn names(device: &str) -> Vec<String> {
-    let count = settings::get().workspaces;
     let mut s = state();
     let id = id_of(&mut s, device);
+    let count = settings::get().count_for(&id);
     if s.present.iter().any(|p| p.id == id) { names_of(&id, count) } else { vec![String::new(); count] }
+}
+
+/// `device`'s own workspace count, for the overview and the settings page, which know screens
+/// by device name (spec 0040 AC-4).
+pub fn count(device: &str) -> usize {
+    let id = id_of(&mut state(), device);
+    settings::get().count_for(&id)
 }
 
 pub(super) fn pid_of(hwnd: HWND) -> u32 {
@@ -81,6 +88,12 @@ pub(crate) fn app_windows() -> Vec<HWND> {
     top_level().into_iter().filter(|&h| app_window(h).is_ok()).collect()
 }
 
+/// The windows app_windows would list but for their app being left alone, top first: the settings
+/// page's Apps rows read their icon and name from these (spec 0041 AC-11).
+pub fn left_alone() -> Vec<isize> {
+    top_level().into_iter().filter(|&h| app_window(h) == Err("left alone")).map(|h| h.0 as isize).collect()
+}
+
 /// Every top level window, shown or not, top of z order first.
 pub(super) fn top_level() -> Vec<HWND> {
     win::enum_windows()
@@ -101,6 +114,8 @@ pub(crate) fn app_window(h: HWND) -> Result<(), &'static str> {
         // Never des-k's own settings page or welcome screen: a hidden one is one the
         // tray's Settings would focus where you cannot see it.
         _ if pid_of(h) == std::process::id() => "des-k's own",
+        // Last, so only a window des-k would otherwise manage pays for its app's lookup (spec 0041 AC-12).
+        _ if alone::listed(h) => "left alone",
         _ => return Ok(()),
     };
     Err(why)
@@ -257,7 +272,7 @@ pub struct View {
     pub active: Vec<(String, usize)>,       // device and the workspace it shows
     pub windows: Vec<(String, usize, RECT)>, // device, workspace, where it sits
     pub names: Vec<(String, String)>,       // device and its name, as `label` gives it (spec 0017)
-    pub removals: Vec<Vec<Moved>>,          // what each screen moves, one list per count asked
+    pub removals: Vec<Vec<Moved>>,          // what each screen asked about moves, one list per ask
     pub waiting: Vec<Waiting>,              // screens not plugged in (spec 0016 AC-9)
     pub present: Vec<Present>,              // screens plugged in, left to right (spec 0020)
     /// Every listed window, front first: its hwnd, its screen's device, and its workspace (a
@@ -277,6 +292,9 @@ pub struct Present {
     pub work: RECT,
 }
 
+/// The count a removal list asks each screen id about; None leaves that screen out.
+pub type Ask<'a> = &'a dyn Fn(&str) -> Option<usize>;
+
 /// A remembered screen not plugged in, with its away windows per workspace (spec 0017 AC-SET-3).
 #[derive(Clone, PartialEq, Default, Debug)]
 pub struct Waiting {
@@ -287,8 +305,9 @@ pub struct Waiting {
 }
 
 /// The layout now, or None while a switch holds it: the page can be asked to refresh from
-/// inside one (an activation change mid switch), and the lock is not reentrant.
-pub fn view(counts: &[usize]) -> Option<View> {
+/// inside one (an activation change mid switch), and the lock is not reentrant. Each ask gives
+/// the count a screen id is asked about, None to leave that screen out of its removal list.
+pub fn view(asks: &[Ask]) -> Option<View> {
     let mut s = match STATE.try_lock() {
         Ok(g) => g,
         Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
@@ -299,7 +318,7 @@ pub fn view(counts: &[usize]) -> Option<View> {
     let open = places.iter().map(|p| (p.hwnd.0 as isize, p.device.clone(), p.workspace)).collect();
     let active = s.monitors.values().filter_map(|m| Some((m.device.clone()?, m.active))).collect();
     let names = s.present.iter().map(|p| (p.device.clone(), label(&s, &p.id))).collect();
-    let removals = counts.iter().map(|&n| moved(&s, n, label)).collect();
+    let removals = asks.iter().map(|ask| moved(&s, *ask, label)).collect();
     let present = s.present.iter().map(|p| Present { id: p.id.clone(), device: p.device.clone(), name: label(&s, &p.id), windows_name: windows_name(p), full: p.full, work: p.area }).collect();
     Some(View { active, windows, names, removals, waiting: waiting(&s), present, open })
 }

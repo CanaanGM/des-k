@@ -87,6 +87,8 @@ pub enum Line {
     Followed { app: String },
     /// A start came up paused, shown at your first input (spec 0039 AC-5).
     Paused,
+    /// A send or pin on a window of `app`, which des-k leaves alone (spec 0041 AC-5).
+    LeftAlone { app: String },
 }
 
 impl Line {
@@ -203,6 +205,7 @@ fn words(card: &Card, line: &Line, named: bool) -> Words {
         Line::NotSaved => Words { icon: '\u{E7BA}', ink: Ink::Warn, title: "Layout can't be saved".into(), chip: None, sub: "Nothing hidden".into(), sub_chip: None },
         Line::Followed { app } => w('\u{E8AB}', came_forward(app), String::new()),
         Line::Paused => Words { icon: '\u{E769}', ink: Ink::Accent, title: "des-k is paused".into(), chip: None, sub: "Resume from the tray icon".into(), sub_chip: None },
+        Line::LeftAlone { app } => w('\u{E946}', format!("des-k leaves {app} alone"), String::new()),
     }
 }
 
@@ -888,6 +891,7 @@ mod tests {
             ("past-count", Card::new(1, 4, dell()).with(Line::NoWorkspace { n: 7 })),
             ("not-saved", Card::new(1, 4, dell()).with(Line::NotSaved)),
             ("paused", Card::new(1, 4, dell()).with(Line::Paused)),
+            ("left-alone", Card::new(1, 4, dell()).with(Line::LeftAlone { app: "Microsoft Teams".into() })),
             ("unplugged", Card::new(0, 4, None).with(gone(None))),
             ("back", Card::new(1, 4, dell()).with(Line::ScreenBack { name: "DELL U2720Q".into(), moved: 5, left: 0, here: true })),
             ("back-some-left", Card::new(1, 4, dell()).with(Line::ScreenBack { name: "DELL U2720Q".into(), moved: 3, left: 2, here: true })),

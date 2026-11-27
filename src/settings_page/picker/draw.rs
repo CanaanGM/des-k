@@ -145,7 +145,7 @@ impl Ctx<'_, '_> {
             self.cx.icon(sx, top, 16.0, I_WARN, F::IconSmall, b.warn);
             self.cx.c.para(sx + 24.0, top, room - 24.0, 16.0, &[(NOT_SAVED, F::SmallBold, b.tx)]);
         } else if let Some(i) = wi
-            && let Some((j, same)) = dup_of(p.color, i, &b.ws, self.s.workspaces)
+            && let Some((j, same)) = dup_of(p.color, i, &b.ws, self.s.most())
         {
             let line = format!("Workspace {} {}", j + 1, if same { "uses this color too." } else { "has a very close color." });
             let th = self.cx.c.measuring().para(0.0, 0.0, room - 30.0, 16.0, &[(&line, F::Small, b.tx2)]);

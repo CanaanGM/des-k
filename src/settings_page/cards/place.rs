@@ -243,7 +243,7 @@ impl Ctx<'_, '_> {
         };
         let Some(p) = p else { return false };
         let scale = self.w.pics.screens.iter().find(|s| s.device == p.device).map_or(1.0, |s| s.scale as f32 / 100.0);
-        let card = crate::indicator::Card::new(0, self.s.workspaces, None);
+        let card = crate::indicator::Card::new(0, ch.id.as_deref().map_or(self.s.most(), |id| self.s.count_for(id)), None);
         let (cw, chh) = crate::indicator::draw_preview(&self.cx.c.measuring(), 0.0, 0.0, self.s.indicator_style, &card);
         let (w, h) = ((cw * scale).round() as i32, (chh * scale).round() as i32);
         let (x, y) = crate::indicator::place(p.work, w, h, pos, scale);
@@ -310,7 +310,7 @@ impl Ctx<'_, '_> {
             }
         }
         let (px, py) = at(chosen);
-        let n = self.s.workspaces;
+        let n = self.s.most();
         let a = self.active_on(&self.w.pics.here.clone().unwrap_or_default()).min(8);
         let (lit, off) = if na || hc { (b.tx3, b.tx3) } else { (b.ws[a], b.bar_off) };
         self.cx.c.boxed((px, py, cw, chh), 3.0, b.card, Some(if hc { b.tx } else { b.line }));

@@ -16,12 +16,11 @@ pub(super) fn card(s: &State, id: &str, active: usize, count: usize) -> Card {
 
 /// The indicator on `mon` as it is now: the settings page's Show (spec 0012 AC-19).
 pub fn show_indicator(mon: HMONITOR) {
-    let count = settings::get().workspaces;
     let c = {
         let mut s = state();
         let id = id_of(&mut s, &device_name(mon));
         let active = mon_mut(&mut s, &id).active;
-        card(&s, &id, active, count)
+        card(&s, &id, active, settings::get().count_for(&id))
     };
     indicator::show(mon, c);
 }
@@ -77,12 +76,13 @@ pub(super) fn step_target(active: usize, dir: isize, count: usize) -> usize {
     (active as isize + dir).rem_euclid(count as isize) as usize
 }
 
-/// Switch the workspace of the screen `target` picks by `dir` (-1 / +1), wrapping like a send.
+/// Switch the workspace of the screen `target` picks by `dir` (-1 / +1), wrapping like a send
+/// over that screen's own count (spec 0040 AC-4).
 pub fn switch(dir: isize, from: Source) {
     let (mon, dev) = target(from);
-    let count = settings::get().workspaces;
     let mut s = state();
     let name = id_of(&mut s, &dev);
+    let count = settings::get().count_for(&name);
     let active = mon_mut(&mut s, &name).active;
     let target = step_target(active, dir, count);
     if target == active {
@@ -123,9 +123,9 @@ pub(super) fn jump_target(m: &Monitor, index: usize, count: usize, jump_back: bo
 /// `jump_back` on, it goes back to the last workspace when there is one (spec 0024 AC-8).
 pub fn jump(index: usize, from: Source) {
     let (mon, dev) = target(from);
-    let count = settings::get().workspaces;
     let mut s = state();
     let name = id_of(&mut s, &dev);
+    let count = settings::get().count_for(&name);
     let m = mon_mut(&mut s, &name);
     let active = m.active;
     match jump_target(m, index, count, settings::get().jump_back) {
@@ -149,9 +149,9 @@ pub fn jump(index: usize, from: Source) {
 /// it comes back (spec 0024). Nothing to go back to: only the indicator, as jump does.
 pub fn back(from: Source) {
     let (mon, dev) = target(from);
-    let count = settings::get().workspaces;
     let mut s = state();
     let name = id_of(&mut s, &dev);
+    let count = settings::get().count_for(&name);
     let m = mon_mut(&mut s, &name);
     let active = m.active;
     let Some(target) = m.back_target(count) else {
@@ -199,7 +199,7 @@ pub fn follow(hwnd: HWND) {
             let note = Says::Followed { app: crate::finder::names::app_name(hwnd).unwrap_or_default() };
             if switch_to(&mut s, mon, &name, ws, Some(hwnd), None, Some(note)) == Switch::Switched {
                 s.monitors.get_mut(&name).expect("switch_to keeps the monitor").last_follow = Some(Instant::now());
-                info!("follow: {name} -> workspace {}/{} for {app}", ws + 1, settings::get().workspaces);
+                info!("follow: {name} -> workspace {}/{} for {app}", ws + 1, settings::get().count_for(&name));
             }
         }
     }
@@ -323,7 +323,7 @@ pub(super) fn switch_to(s: &mut State, mon: HMONITOR, name: &str, target: usize,
         return Switch::Refused;
     }
     s.last_acted = Some(name.to_string());
-    let count = settings::get().workspaces;
+    let count = settings::get().count_for(name);
     let active = mon_mut(s, name).active;
     if target == active {
         return Switch::Already;
@@ -472,14 +472,15 @@ pub(super) fn uncloak(shell: &Shell, raw: isize) -> Option<bool> {
 }
 
 /// Show workspace `ws` on `device`, exactly like a switch there: the indicator shows, and
-/// focus moves on only if the focused window got hidden (spec 0010).
+/// focus moves on only if the focused window got hidden (spec 0010). Nothing past that screen's
+/// own count (spec 0040 AC-4).
 pub fn show_workspace(device: &str, ws: usize) {
-    if ws >= settings::get().workspaces {
-        return;
-    }
     let Some(mon) = monitor_named(device) else { return warn!("overview: {device} not found") };
     let mut s = state();
     let id = id_of(&mut s, device);
+    if ws >= settings::get().count_for(&id) {
+        return;
+    }
     switch_to(&mut s, mon, &id, ws, None, None, None);
 }
 

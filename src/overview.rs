@@ -547,17 +547,17 @@ fn tab(by: isize) {
     }
 }
 
-/// A digit: switch the selected screen to that workspace.
+/// A digit: switch the selected screen to that workspace, only within its own count (spec 0040
+/// AC-4).
 fn jump(i: usize) {
-    if i >= settings::get().workspaces {
-        return;
-    }
     let target = SESSION.with_borrow(|s| {
         let s = s.as_ref()?;
         let sc = s.screens.get(s.selected.0)?;
         Some((sc.device.clone(), sc.shown))
     });
-    if let Some((device, shown)) = target {
+    if let Some((device, shown)) = target
+        && i < ws::views::count(&device)
+    {
         show(&device, shown, i);
     }
 }

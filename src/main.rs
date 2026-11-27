@@ -127,11 +127,12 @@ fn backdrop_check(seen: &mut Option<(u64, u64, bool)>) {
         return;
     }
     *seen = Some(now);
+    // Each screen's own count of pictures and slideshow clocks (spec 0040 AC-5).
     let wants = ws::views::shown().into_iter().map(|(rect, id, shown)| backdrop::Want {
         rect,
         shown,
-        files: (0..s.workspaces).map(|i| s.wallpaper_for(&id, i).filter(|_| !paused).and_then(backdrop::Source::of)).collect(),
-        intervals: (0..s.workspaces).map(|i| s.interval_for(i)).collect(),
+        files: (0..s.count_for(&id)).map(|i| s.wallpaper_for(&id, i).filter(|_| !paused).and_then(backdrop::Source::of)).collect(),
+        intervals: (0..s.count_for(&id)).map(|i| s.interval_for(i)).collect(),
         id,
     });
     let look = backdrop::Look { fit: s.wallpaper_fit, dim: s.wallpaper_dim, fade: s.wallpaper_fades(), fastest: s.fastest, shuffle: s.wallpaper_shuffle };
@@ -196,6 +197,8 @@ fn main() -> windows::core::Result<()> {
     // Before ws::restore::load, so adopting a saved layout already knows whether hiding works (AC-3).
     cloak::check_at_start(&ws::views::app_windows());
     let restoring = ws::restore::load();
+    // Before restore, the first hide and the rules: a listed app's adopted windows show now (spec 0041 AC-7).
+    ws::alone::sweep();
     apps::sync(); // after ws::restore::load, so the windows it adopted count as already open (spec 0027 AC-3)
     // Always on: the finder's recency needs it even with follow_activation off (spec 0007).
     // Skipping our own process keeps des-k's own focus changes from triggering a follow.
@@ -243,7 +246,7 @@ fn main() -> windows::core::Result<()> {
     }
     // After an update, never with the first run: a start opens one screen at most (spec 0029).
     whats_new::at_start(first_run);
-    info!("des-k running: the shortcuts switch the monitor under the mouse ({} workspaces each).", settings::get().workspaces);
+    info!("des-k running: the shortcuts switch the monitor under the mouse ({}).", settings::get().counts_said());
 
     // Only now, with every exit path in place, may restore hide anything. The first tick
     // runs at once, so windows already open are matched like later ones (spec 0003).
@@ -398,6 +401,7 @@ fn main() -> windows::core::Result<()> {
                     ui::repaint_all();
                 }
                 settings::store::watch();
+                ws::alone::sweep(); // after the watch, so a listed app shows within 2 s of the save (spec 0041 AC-6)
                 ws::screens::check_screens(true);
                 ws::restore::resync();
                 ws::pause::tick();

@@ -25,6 +25,7 @@ use crate::indicator::{self, Card, Line as Says};
 use crate::restore::{Entry, Fp, Pick};
 use crate::{keys, settings};
 
+pub(crate) mod alone;
 pub(crate) mod focus;
 pub(crate) mod moves;
 pub(crate) mod pause;
@@ -100,8 +101,9 @@ struct Monitor {
 }
 
 impl Monitor {
-    fn new() -> Self {
-        Self::with(settings::get().workspaces)
+    /// Screen `id`'s, with its own count of empty workspaces (spec 0040 AC-14).
+    fn new(id: &str) -> Self {
+        Self::with(settings::get().count_for(id))
     }
 
     fn with(count: usize) -> Self {
@@ -126,7 +128,7 @@ impl Monitor {
 
     /// A present screen's, with nothing hidden yet.
     fn of(p: &Screen) -> Self {
-        Monitor { device: Some(p.device.clone()), area: p.area, name: p.name.clone(), ..Self::new() }
+        Monitor { device: Some(p.device.clone()), area: p.area, name: p.name.clone(), ..Self::new(&p.id) }
     }
 
     /// Gives this screen `count` workspaces (spec 0012 AC-6), lists only. The windows of a
@@ -246,7 +248,7 @@ static STATE: LazyLock<Mutex<State>> = LazyLock::new(Default::default);
 /// `id`'s Monitor, made for a present screen if it has none yet.
 fn mon_mut<'a>(s: &'a mut State, id: &str) -> &'a mut Monitor {
     let p = s.present.iter().find(|p| p.id == id);
-    s.monitors.entry(id.to_string()).or_insert_with(|| p.map_or_else(Monitor::new, Monitor::of))
+    s.monitors.entry(id.to_string()).or_insert_with(|| p.map_or_else(|| Monitor::new(id), Monitor::of))
 }
 
 /// The screen id of a present screen's device name. A device it does not know yet (just

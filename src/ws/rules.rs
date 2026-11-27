@@ -48,7 +48,6 @@ pub fn place_new(h: HWND, rule: &settings::Rule, name: String, shown: Option<u32
 }
 
 pub(super) fn place_in(s: &mut State, h: HWND, rule: &settings::Rule, name: String, shown: Option<u32>) -> Option<(HMONITOR, Card)> {
-    let count = settings::get().workspaces;
     let (app, k, raw) = (who(h), rule.workspace, h.0 as isize);
     // Paused: a new window opens where Windows puts it, and nothing logs per window (spec 0039 AC-4).
     if !hiding_allowed(s) {
@@ -58,13 +57,15 @@ pub(super) fn place_in(s: &mut State, h: HWND, rule: &settings::Rule, name: Stri
         info!("apps: {app} opened where Windows put it: hiding is off on this Windows");
         return None;
     }
-    if k >= count {
-        info!("apps: {app} opened where Windows put it: its rule's workspace {} waits, you have {count}", k + 1);
-        return None;
-    }
     let from_mon = win::monitor_from_window(h, MONITOR_DEFAULTTONEAREST);
     let from = id_of(s, &device_name(from_mon));
     let target = rule.screen.clone().unwrap_or_else(|| from.clone());
+    // Past the count of the screen it would land on, it waits (spec 0040 AC-6).
+    let count = settings::get().count_for(&target);
+    if k >= count {
+        info!("apps: {app} opened where Windows put it: its rule's workspace {} waits, {target} has {count}", k + 1);
+        return None;
+    }
     // Where it lands now: the rule's screen, or the main display while that one is unplugged (AC-7).
     let (land, away) = match s.present.iter().find(|p| p.id == target) {
         Some(p) => (p.clone(), false),
@@ -80,11 +81,14 @@ pub(super) fn place_in(s: &mut State, h: HWND, rule: &settings::Rule, name: Stri
             }
         },
     };
+    // On the main display while its screen is away: the same workspace, or its last (AC-7).
+    let land_count = settings::get().count_for(&land.id);
+    let land_ws = if away { fold_ws(k, land_count) } else { k };
     let now = spot_of(h);
     let from_area = work_area(from_mon);
     let spot = Spot { rect: remap(from_area, land.area, now.rect), state: now.state };
     let was_fg = win::get_foreground_window() == h;
-    let hide = s.monitors.entry(land.id.clone()).or_insert_with(|| Monitor::of(&land)).active != k;
+    let hide = s.monitors.entry(land.id.clone()).or_insert_with(|| Monitor::of(&land)).active != land_ws;
     let mut how = String::from("visible");
     if hide {
         let Ok(shell) = Shell::new() else {
@@ -93,7 +97,7 @@ pub(super) fn place_in(s: &mut State, h: HWND, rule: &settings::Rule, name: Stri
         };
         // Listed and saved before the cloak, so every exit path shows it again (spec 0034 AC-1,
         // spec 0027 AC-12). Front = top. Refused: it stays where Windows put it.
-        if list_then_save(s, &[(land.id.clone(), k, raw)]).is_err() {
+        if list_then_save(s, &[(land.id.clone(), land_ws, raw)]).is_err() {
             return None;
         }
         match hide_new(s, &shell, h) {
@@ -132,11 +136,11 @@ pub(super) fn place_in(s: &mut State, h: HWND, rule: &settings::Rule, name: Stri
         s.away.insert(raw, Away { home: target.clone(), ws: k, spot, pinned: false, pid: pid_of(h) });
     }
     let waits = if away { format!(", waiting for {}", s.monitors.get(&target).map_or(target.as_str(), |m| m.name.as_str())) } else { String::new() };
-    info!("apps: {app} -> {} workspace {}/{count}, {how}{waits}", land.name, k + 1);
+    info!("apps: {app} -> {} workspace {}/{land_count}, {how}{waits}", land.name, land_ws + 1);
     save(s);
     let active = s.monitors.get(&land.id).map_or(0, |m| m.active);
     let mon = monitor_named(&land.device)?;
-    hide.then(|| (mon, card(s, &land.id, active, count).with(Says::Opened { app: name, to: k })))
+    hide.then(|| (mon, card(s, &land.id, active, land_count).with(Says::Opened { app: name, to: land_ws })))
 }
 
 /// Moves focus off a window a rule hid to the top window on `mon`, the screen it opened on, or

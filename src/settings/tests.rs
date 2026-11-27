@@ -135,3 +135,54 @@ gap = 0
     assert_eq!(s.indicator_pos_for("internal"), Pos { gap: 0, ..d });
     assert_eq!(s.indicator_pos_for("LG-unplugged"), d);
 }
+
+// Spec 0040 AC-1, AC-2: a laptop with two workspaces next to a big screen with six. A good line
+// gives its screen its own count, a line for a screen des-k never saw is kept, and each bad line
+// is dropped alone with a line naming its key, so that screen just follows `workspaces`.
+#[test]
+fn each_screen_can_have_its_own_count() {
+    let (s, warn) = parse("workspaces = 6\n[workspaces_per_screen]\n\"internal\" = 2\n\"GSM-OLD-1\" = 3\n\"#1\" = 12\n\"#2\" = \"two\"\n\"\" = 3\n");
+    assert_eq!((s.count_for("internal"), s.count_for("GSM-OLD-1"), s.count_for("DEL-A0F5-1234")), (2, 3, 6));
+    assert_eq!((s.count_for("#1"), s.count_for("#2")), (6, 6), "bad lines follow workspaces");
+    assert_eq!(s.count_by_screen.len(), 2, "only the good lines are kept");
+    assert_eq!(warn, [
+        "workspaces_per_screen.\"\": an empty screen id, ignored",
+        "workspaces_per_screen.\"#1\": 12 is outside 2 to 9, ignored",
+        "workspaces_per_screen.\"#2\": expected a whole number, got a string, ignored",
+    ]);
+    // Nothing else resets (spec 0001).
+    assert_eq!(s.shared_count, 6);
+}
+
+// AC-2: a value that is not a table is ignored with one line, and every screen has workspaces.
+#[test]
+fn a_per_screen_value_that_is_not_a_table_is_ignored() {
+    let (s, warn) = parse("workspaces = 5\nworkspaces_per_screen = 2\n");
+    assert!(s.count_by_screen.is_empty());
+    assert_eq!(s.count_for("internal"), 5);
+    assert_eq!(warn.len(), 1, "{warn:?}");
+    assert!(warn[0].starts_with("workspaces_per_screen: expected a table"));
+}
+
+// AC-1, AC-11: a line equal to workspaces is the same as following it, and the cards that list
+// workspaces for every screen go up to the highest count any screen has, never past it.
+#[test]
+fn most_is_the_highest_count_and_an_equal_line_follows() {
+    let (s, _) = parse("workspaces = 4\n[workspaces_per_screen]\n\"internal\" = 4\n");
+    assert_eq!((s.count_for("internal"), s.most()), (4, 4));
+    let (s, _) = parse("workspaces = 3\n[workspaces_per_screen]\n\"internal\" = 2\n\"DEL-1\" = 7\n");
+    assert_eq!(s.most(), 7);
+    let (s, _) = parse("workspaces = 5\n[workspaces_per_screen]\n\"internal\" = 2\n");
+    assert_eq!(s.most(), 5, "a lower line never shortens the lists");
+    assert_eq!(s.counts_said(), "5 workspaces each; internal 2");
+    assert_eq!(Settings::default().counts_said(), "4 workspaces each");
+}
+
+// AC-5: a workspace past a screen's own count has no name and no picture there, while a screen
+// with more still shows them.
+#[test]
+fn names_and_pictures_stop_at_each_screens_count() {
+    let (s, _) = parse("workspaces = 6\n[workspaces_per_screen]\n\"internal\" = 2\n[names]\nws3 = \"Mail\"\n[wallpaper]\nws3 = \"forest.jpg\"\n");
+    assert_eq!((s.ws_name("internal", 2), s.ws_name("DEL-1", 2)), (None, Some("Mail")));
+    assert_eq!((s.wall_name("internal", 2), s.wall_name("DEL-1", 2)), (None, Some("forest.jpg")));
+}

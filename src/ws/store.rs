@@ -262,6 +262,19 @@ pub(super) fn parse_state(text: &str, upgrade: impl Fn(&str) -> Option<String>) 
     text.lines().filter_map(|line| parse_line(line, &upgrade)).collect()
 }
 
+/// Each W, H and A line whose workspace is past its screen's count (`count_of(id)`) clamped to
+/// that screen's last, the same way for each kind of line (spec 0040 AC-14), so a start never
+/// indexes past a list and no window is left out.
+pub(super) fn clamp_lines(lines: &mut [Line], count_of: impl Fn(&str) -> usize) {
+    for line in lines {
+        match line {
+            Line::W { id, ws, .. } | Line::H { id, ws, .. } => *ws = home_ws(*ws, count_of(id)),
+            Line::A { away, .. } => away.ws = home_ws(away.ws, count_of(&away.home)),
+            _ => {}
+        }
+    }
+}
+
 pub(super) fn parse_line(line: &str, upgrade: &dyn Fn(&str) -> Option<String>) -> Option<Line> {
     let (head, tail) = line.split_once('\t').unwrap_or((line, ""));
     // The fingerprint follows the first tab; a line without one is from an older des-k.

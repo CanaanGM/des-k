@@ -25,13 +25,15 @@ impl Ctx<'_, '_> {
         for (r, sc) in screens.iter().enumerate() {
             let ry = y0 + 8.0 + r as f32 * (th + 22.0);
             let name = self.name_of(sc);
+            let own = self.w.pics.view.present.iter().find(|p| p.device == sc.device).map_or(self.s.shared_count, |p| self.s.count_for(&p.id));
             self.cx.c.text(x0 + 16.0, ry, 14.0, &name, F::Small, if t.hc { b.card } else { white });
             let a = self.active_on(&sc.device);
             self.out.geo.groups.push((sc.device.clone(), (x0 + 16.0, ry + 16.0, 4.0 * tw + 3.0 * gap, th)));
             for i in 0..4 {
                 let (x, yy) = (x0 + 16.0 + i as f32 * (tw + gap), ry + 16.0);
-                // Past your count: an empty slot, as a screen not plugged in is drawn (spec 0021 AC-2).
-                if i >= self.s.workspaces {
+                // Past this screen's count: an empty slot, as a screen not plugged in is drawn (spec
+                // 0021 AC-2, spec 0040 AC-4).
+                if i >= own {
                     if t.hc {
                         self.cx.c.boxed((x, yy, tw, th), 4.0, b.bez, Some(b.card));
                     } else {

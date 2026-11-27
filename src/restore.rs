@@ -86,7 +86,8 @@ pub fn exe_path(pid: u32) -> Option<String> {
     ok.then(|| String::from_utf16_lossy(&buf[..len as usize]))
 }
 
-fn app_id(hwnd: HWND) -> Option<String> {
+/// A Store app frame window's app id, lowercased and cleaned; None until it can be read.
+pub fn app_id(hwnd: HWND) -> Option<String> {
     unsafe {
         let store: IPropertyStore = SHGetPropertyStoreForWindow(hwnd).ok()?;
         let mut v = store.GetValue(&PKEY_AppUserModel_ID).ok()?;
