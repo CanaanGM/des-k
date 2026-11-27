@@ -36,7 +36,8 @@ cargo test render -- --ignored   # draws each window's states to PNGs under targ
 
 ## How the code is built
 
-Every change keeps these rules:
+[Where is the code?](https://canaangm.github.io/des-k/how-it-works.html#where-is-the-code) maps each file to what it owns. Every change keeps
+these rules:
 
 - des-k only ever shows again the windows it hid itself. Every exit path (Quit, `--quit`, a
   panic, Ctrl+C) shows them all.

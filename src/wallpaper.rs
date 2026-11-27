@@ -20,7 +20,7 @@ use windows::Win32::{
 use windows::core::{HSTRING, PCWSTR, PWSTR, w};
 
 use crate::settings::Fit;
-use crate::ui::Picture;
+use crate::ui::canvas::Picture;
 
 /// What a tile shows behind its windows.
 #[derive(Clone)]
@@ -220,7 +220,8 @@ fn read(screens: &[(RECT, (i32, i32))]) -> windows::core::Result<()> {
         match decode(&path, screen, all.unwrap_or(screen), fit, size, back) {
             Some(p) => store(screen, size, Some(key), Face::Picture(Arc::new(p))),
             None => {
-                warn!("wallpaper: {} not decoded, its tiles show the background color", std::path::Path::new(&path).file_name().unwrap_or_default().display());
+                // The screen, never the picture: a log is shared, a picture's name is yours (spec 0033 AC-5).
+                warn!("wallpaper: the Windows wallpaper of the screen at {},{} not decoded, its tiles show the background color", screen.left, screen.top);
                 plain(screen, size);
             }
         }
@@ -233,7 +234,7 @@ fn read(screens: &[(RECT, (i32, i32))]) -> windows::core::Result<()> {
 /// settings page, whichever did not call. A failure only marks the file (AC-8): the backdrop decodes
 /// the same files and logs the one line.
 fn read_ws(screens: &[(RECT, (i32, i32), Vec<String>)], fit: Fit) {
-    let folder = crate::ws::data_dir().join("wallpapers");
+    let folder = crate::ws::store::data_dir().join("wallpapers");
     let fit = crate::backdrop::position(fit);
     let back = if screens.iter().any(|s| !s.2.is_empty()) { background().unwrap_or(0) } else { 0 };
     let mut wanted = Vec::new();

@@ -21,9 +21,10 @@ use windows::Win32::{
 };
 use windows::core::{PCWSTR, w};
 
-use crate::settings::{self, Edit, Settings};
-use crate::settings_page::{self as sp, Section};
-use crate::ui::{self, Bx, Canvas, F, Fonts, Theme, buffered, dark_title, mix, op, theme};
+use crate::controls::{self, Style};
+use crate::settings::{self, Settings, edit::Edit};
+use crate::settings_page::{self as sp, rows::Section};
+use crate::ui::{self, Theme, canvas::{Bx, Canvas, buffered}, color::{mix, op}, dark_title, fonts::{F, Fonts}, theme};
 use crate::update::{self, Version};
 
 const CLASS: PCWSTR = w!("des-k-whats-new");
@@ -68,7 +69,7 @@ pub(crate) struct Card {
     title: &'static str,
     text: Text,
     button: &'static str,
-    to: (Section, Option<sp::Card>),
+    to: (Section, Option<sp::rows::Card>),
 }
 
 /// 0.9.0's cards, biggest first (AC-3).
@@ -78,7 +79,7 @@ const V0_9_0: [Card; 5] = [
         title: "A picture for each workspace",
         text: Text::Plain("Give each workspace its own picture, or a slideshow from a folder. Your Windows wallpaper is never changed."),
         button: "Pick pictures",
-        to: (Section::Workspaces, Some(sp::Card::Wallpaper)),
+        to: (Section::Workspaces, Some(sp::rows::Card::Wallpaper)),
     },
     Card {
         pic: Pic::Lands,
@@ -92,15 +93,48 @@ const V0_9_0: [Card; 5] = [
         title: "Name your workspaces",
         text: Text::Plain("Call a workspace Mail or Code, and rename a screen. The names show on the indicator, the overview and the finder."),
         button: "Name them",
-        to: (Section::Workspaces, Some(sp::Card::Names)),
+        to: (Section::Workspaces, Some(sp::rows::Card::Names)),
     },
-    Card { pic: Pic::Back, title: "Go back", text: Text::Back, button: "Change the key", to: (Section::Shortcuts, Some(sp::Card::Back)) },
+    Card { pic: Pic::Back, title: "Go back", text: Text::Back, button: "Change the key", to: (Section::Shortcuts, Some(sp::rows::Card::Back)) },
     Card { pic: Pic::Note, title: "A hidden window that wants you", text: Text::Attention, button: "Change the words", to: (Section::Attention, None) },
+];
+
+/// 0.10.0's cards (spec 0038 AC-18, spec 0039 AC-16, spec 0041 AC-13). Nothing about the Copilot
+/// key: an upgrader keeps theirs.
+const V0_10_0: [Card; 4] = [
+    Card {
+        pic: Pic::Screens,
+        title: "Keys can follow your focus",
+        text: Text::Plain("Shortcuts can act on the focused window's screen instead of the one under the mouse. And when a window comes forward on another workspace, the indicator names its app."),
+        button: "Choose",
+        to: (Section::Workspaces, None),
+    },
+    Card {
+        pic: Pic::Screens,
+        title: "Pause des-k",
+        text: Text::Plain("Pick Pause des-k in the tray for a game or to try Windows on its own: every window comes back and Windows gets its keys back. Resume puts each window back on its workspace."),
+        button: "Set a key",
+        to: (Section::Shortcuts, None),
+    },
+    Card {
+        pic: Pic::Screens,
+        title: "Workspaces per screen",
+        text: Text::Plain("Each screen can have its own number of workspaces, say two on the laptop and six on the big screen. Each screen's row has its own + and ×."),
+        button: "Choose",
+        to: (Section::Workspaces, None),
+    },
+    Card {
+        pic: Pic::Lands,
+        title: "Apps des-k leaves alone",
+        text: Text::Plain("Pick Leave alone for an app that breaks when hidden or keeps grabbing focus. Its windows then stay in view on every workspace, and des-k never moves them."),
+        button: "Pick an app",
+        to: (Section::Apps, None),
+    },
 ];
 
 /// Every release with news, oldest first. A release without an entry opens nothing; add one
 /// before each release that has news (spec 0029 Follow-up).
-const NEWS: &[(Version, &[Card])] = &[(Version(0, 9, 0), &V0_9_0)];
+const NEWS: &[(Version, &[Card])] = &[(Version(0, 9, 0), &V0_9_0), (Version(0, 10, 0), &V0_10_0)];
 
 /// The releases to show, newest first: those newer than `seen` and not newer than the running
 /// des-k. A missing `seen` is older than every release; one newer than ours (a downgrade) shows
@@ -117,12 +151,16 @@ enum Ctl {
     Got,
 }
 
-#[derive(Clone, Copy)]
-struct Hit {
-    ctl: Ctl,
-    at: Bx,
-    scrolled: bool, // inside the scrolled card area, so it counts only within its view
+// What's new is never read only: its buttons open the settings page and write nothing.
+impl controls::Id for Ctl {
+    fn writes(self) -> bool {
+        false
+    }
 }
+
+/// A click area; its group says it is inside the scrolled card area, so it counts only within
+/// its view.
+type Hit = controls::Hit<Ctl, bool>;
 
 struct Win {
     hwnd: HWND,
@@ -176,7 +214,7 @@ pub fn at_start(first_run: bool) {
     if news.is_empty() {
         return;
     }
-    let (mon, _) = crate::ws::under_mouse();
+    let (mon, _) = crate::ws::switch::under_mouse();
     if crate::indicator::busy(mon) {
         info!("what's new: waiting until you're not busy (a full screen app or a presentation)");
         WAITING.set(news);
@@ -190,7 +228,7 @@ pub fn tick() {
     if WAITING.with_borrow(Vec::is_empty) {
         return;
     }
-    let (mon, _) = crate::ws::under_mouse();
+    let (mon, _) = crate::ws::switch::under_mouse();
     if crate::indicator::busy(mon) {
         return;
     }
@@ -209,7 +247,7 @@ fn open_due(news: Vec<(Version, &'static [Card])>, ours: Version) {
 }
 
 fn remember(ours: Version) {
-    if let Err(why) = settings::write(Edit::Value("whats_new_seen", ours.to_string().into())) {
+    if let Err(why) = settings::edit::write(Edit::Value("whats_new_seen", ours.to_string().into())) {
         error!("what's new: could not write whats_new_seen = \"{ours}\", so What's new opens again at the next start ({why})");
     }
 }
@@ -241,114 +279,84 @@ struct Out {
 }
 
 struct Ctx<'a, 'f> {
-    c: &'a mut Canvas<'f>,
+    cx: controls::Ctx<'a, 'f, Ctl, bool>, // its group: drawing the card area
     w: &'a Win,
     s: &'a Settings,
     cw: f32,
-    scrolled: bool, // drawing the card area
     out: Out,
+}
+
+/// A pass's shared context over `c`, in the first run's look.
+fn shared<'a, 'f>(c: &'a mut Canvas<'f>, w: &Win, scrolled: bool) -> controls::Ctx<'a, 'f, Ctl, bool> {
+    controls::Ctx { c, hits: vec![], said: vec![], ro: false, focus: Some(w.focus), hover: w.hover, kb: w.kb, group: scrolled, style: Style::FirstRun }
 }
 
 impl Ctx<'_, '_> {
     fn hit(&mut self, ctl: Ctl, at: Bx) {
-        self.out.hits.push(Hit { ctl, at, scrolled: self.scrolled });
-    }
-
-    fn focused(&self, ctl: Ctl) -> bool {
-        self.w.kb && self.w.focus == ctl
-    }
-
-    fn hovered(&self, ctl: Ctl) -> bool {
-        self.w.hover == Some(ctl)
-    }
-
-    /// The focus ring: 2 dip in the text color, 2 dip out, as the first run's.
-    fn ring(&self, (x, y, w, h): Bx, r: f32, ctl: Ctl) {
-        if self.focused(ctl) {
-            self.c.stroke_rr((x - 3.0, y - 3.0, w + 6.0, h + 6.0), r + 3.0, 2.0, op(self.c.t.b.tx));
-        }
-    }
-
-    fn btn_w(&self, label: &str) -> f32 {
-        self.c.width(label, F::Body) + 30.0
-    }
-
-    /// A button, 32 dip, as the first run's: the purple one is Got it.
-    fn button(&mut self, ctl: Ctl, x: f32, y: f32, label: &str, primary: bool) {
-        let b = self.c.t.b;
-        let w = self.btn_w(label);
-        let hot = self.hovered(ctl);
-        if primary {
-            self.c.fill_rr((x, y, w, 32.0), 6.0, op(if hot && !self.c.t.hc { mix(b.acc, b.tx, 0.12) } else { b.acc }));
-            self.c.text(x + 15.0, y, 32.0, label, F::Body, b.on_acc);
-        } else {
-            self.c.boxed((x, y, w, 32.0), 6.0, if hot { mix(b.card, b.tx, 0.05) } else { b.card }, Some(b.line));
-            self.c.text(x + 15.0, y, 32.0, label, F::Body, b.tx);
-        }
-        self.ring((x, y, w, 32.0), 6.0, ctl);
-        self.hit(ctl, (x, y, w, 32.0));
+        let group = self.cx.group;
+        self.cx.hit(ctl, at, group);
     }
 
     /// A workspace chip, 18 dip, as the settings page's.
     fn chip(&self, x: f32, y: f32, i: usize) {
-        let b = self.c.t.b;
-        let (fill, ink) = if self.c.t.hc { (b.acc, b.on_acc) } else { (b.ws[i], b.on_ws[i]) };
-        self.c.fill_rr((x, y, 18.0, 18.0), 3.0, op(fill));
+        let b = self.cx.c.t.b;
+        let (fill, ink) = if self.cx.c.t.hc { (b.acc, b.on_acc) } else { (b.ws[i], b.on_ws[i]) };
+        self.cx.c.fill_rr((x, y, 18.0, 18.0), 3.0, op(fill));
         let d = (i + 1).to_string();
-        self.c.text(x + (18.0 - self.c.width(&d, F::SmallBold)) / 2.0, y, 18.0, &d, F::SmallBold, ink);
+        self.cx.c.text(x + (18.0 - self.cx.c.width(&d, F::SmallBold)) / 2.0, y, 18.0, &d, F::SmallBold, ink);
     }
 
     /// A chip, and a name after it, on a small card: the drawings' tag.
     fn tag(&self, x: f32, y: f32, i: usize, name: &str) {
-        let b = self.c.t.b;
-        let tw = if name.is_empty() { 0.0 } else { 4.0 + self.c.width(name, F::SmallBold) };
-        self.c.boxed((x, y, 3.0 + 18.0 + tw + 5.0, 24.0), 4.0, b.card, Some(b.line));
+        let b = self.cx.c.t.b;
+        let tw = if name.is_empty() { 0.0 } else { 4.0 + self.cx.c.width(name, F::SmallBold) };
+        self.cx.c.boxed((x, y, 3.0 + 18.0 + tw + 5.0, 24.0), 4.0, b.card, Some(b.line));
         self.chip(x + 3.0, y + 3.0, i);
         if !name.is_empty() {
-            self.c.text(x + 25.0, y, 24.0, name, F::SmallBold, b.tx);
+            self.cx.c.text(x + 25.0, y, 24.0, name, F::SmallBold, b.tx);
         }
     }
 
     /// A drawn screen as the settings page draws one (screens_art), shrunk: its bezel, the
     /// picture inside, and its number.
     fn screen(&self, (x, y, w, h): Bx, pic: (u32, u32), n: usize) {
-        let b = self.c.t.b;
-        let hc = self.c.t.hc;
-        self.c.fill_rr((x, y, w, h), 4.0, op(if hc { b.tx } else { b.bez }));
+        let b = self.cx.c.t.b;
+        let hc = self.cx.c.t.hc;
+        self.cx.c.fill_rr((x, y, w, h), 4.0, op(if hc { b.tx } else { b.bez }));
         if hc {
-            self.c.fill_rr((x + 1.5, y + 1.5, w - 3.0, h - 3.0), 2.5, op(b.card));
+            self.cx.c.fill_rr((x + 1.5, y + 1.5, w - 3.0, h - 3.0), 2.5, op(b.card));
         } else {
-            self.c.gradient(x + 1.5, y + 1.5, w - 3.0, h - 3.0, pic.0, pic.1);
+            self.cx.c.gradient(x + 1.5, y + 1.5, w - 3.0, h - 3.0, pic.0, pic.1);
         }
-        self.c.text(x + 5.0, y + h - 17.0, 16.0, &n.to_string(), F::SmallBold, if hc { b.tx } else { INK });
+        self.cx.c.text(x + 5.0, y + h - 17.0, 16.0, &n.to_string(), F::SmallBold, if hc { b.tx } else { INK });
     }
 
     /// A card's small drawing, 112 × 68 on the soft tint (design C).
     fn pic(&self, x: f32, y: f32, pic: Pic) {
-        let b = self.c.t.b;
-        let hc = self.c.t.hc;
+        let b = self.cx.c.t.b;
+        let hc = self.cx.c.t.hc;
         if hc {
-            self.c.boxed((x, y, PIC.0, PIC.1), 6.0, b.card, Some(b.tx));
+            self.cx.c.boxed((x, y, PIC.0, PIC.1), 6.0, b.card, Some(b.tx));
         } else {
-            self.c.fill_rr((x, y, PIC.0, PIC.1), 6.0, op(mix(b.card, b.acc_a, 0.09)));
+            self.cx.c.fill_rr((x, y, PIC.0, PIC.1), 6.0, op(mix(b.card, b.acc_a, 0.09)));
         }
         let stand = op(if hc { b.tx } else { b.stand });
         match pic {
             Pic::Screens => {
                 // A laptop beside a monitor, bottoms lined up; the stand at half size.
                 let (ox, oy) = (x + 8.0, y + 12.0);
-                self.c.fill_rr((ox, oy + 34.0, 46.0, 2.0), 1.0, stand);
+                self.cx.c.fill_rr((ox, oy + 34.0, 46.0, 2.0), 1.0, stand);
                 self.screen((ox + 6.0, oy + 10.0, 34.0, 24.0), DUNES, 1);
                 let mx = ox + 52.0;
-                self.c.fill_rr((mx + 25.0 - 4.0, oy + 34.0, 8.0, 4.5), 0.0, stand);
-                self.c.fill_rr((mx + 25.0 - 11.0, oy + 38.5, 22.0, 1.5), 0.75, stand);
+                self.cx.c.fill_rr((mx + 25.0 - 4.0, oy + 34.0, 8.0, 4.5), 0.0, stand);
+                self.cx.c.fill_rr((mx + 25.0 - 11.0, oy + 38.5, 22.0, 1.5), 0.75, stand);
                 self.screen((mx, oy, 50.0, 34.0), FOREST, 3);
             }
             Pic::Lands => {
                 let (wx, wy) = (x + 12.0, y + 19.0);
-                self.c.boxed((wx, wy, 38.0, 30.0), 3.0, b.card, Some(b.line));
-                self.c.fill_rr((wx + 1.0, wy + 1.0, 36.0, 5.0), 2.0, op(b.line));
-                self.c.text(x + 56.0, y + 26.0, 16.0, I_ARROW, F::IconSmall, b.link);
+                self.cx.c.boxed((wx, wy, 38.0, 30.0), 3.0, b.card, Some(b.line));
+                self.cx.c.fill_rr((wx + 1.0, wy + 1.0, 36.0, 5.0), 2.0, op(b.line));
+                self.cx.c.text(x + 56.0, y + 26.0, 16.0, I_ARROW, F::IconSmall, b.link);
                 self.tag(x + 76.0, y + 22.0, 2, "");
             }
             Pic::Names => {
@@ -357,23 +365,23 @@ impl Ctx<'_, '_> {
             }
             Pic::Back => {
                 self.tag(x + 10.0, y + 22.0, 1, "");
-                self.c.text(x + 46.0, y + 26.0, 16.0, I_UNDO, F::IconSmall, b.link);
+                self.cx.c.text(x + 46.0, y + 26.0, 16.0, I_UNDO, F::IconSmall, b.link);
                 self.tag(x + 76.0, y + 22.0, 0, "");
             }
             Pic::Note => {
                 let (nx, ny, nw, nh) = (x + 10.0, y + 14.0, PIC.0 - 20.0, 40.0);
-                self.c.boxed((nx, ny, nw, nh), 6.0, b.card, Some(b.line));
+                self.cx.c.boxed((nx, ny, nw, nh), 6.0, b.card, Some(b.line));
                 self.chip(nx + 7.0, ny + 11.0, 3);
                 let line = settings::fill(&self.s.attention_text, "Slack");
                 let tw = nw - 7.0 - 18.0 - 6.0 - 6.0;
                 let runs = [(line.as_str(), F::SmallBold, b.tx)];
-                let th = self.c.measuring().para(0.0, 0.0, tw, 14.0, &runs);
+                let th = self.cx.c.measuring().para(0.0, 0.0, tw, 14.0, &runs);
                 if th <= 28.0 {
-                    self.c.para(nx + 31.0, ny + (nh - th) / 2.0, tw, 14.0, &runs);
+                    self.cx.c.para(nx + 31.0, ny + (nh - th) / 2.0, tw, 14.0, &runs);
                 } else {
-                    self.c.text(nx + 31.0, ny, nh, &self.c.fit(&line, F::SmallBold, tw), F::SmallBold, b.tx);
+                    self.cx.c.text(nx + 31.0, ny, nh, &self.cx.c.fit(&line, F::SmallBold, tw), F::SmallBold, b.tx);
                 }
-                self.c.circle(x + PIC.0 - 10.0, y + 10.0, 3.0, Some(op(b.acc)), None);
+                self.cx.c.circle(x + PIC.0 - 10.0, y + 10.0, 3.0, Some(op(b.acc)), None);
             }
         }
     }
@@ -385,10 +393,10 @@ impl Ctx<'_, '_> {
 
     /// One card's row: the drawing, its title and words, its button. Returns its height.
     fn row(&mut self, y: f32, i: usize, card: &Card) -> f32 {
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         let caps = if card.text == Text::Back { self.back_caps() } else { None };
         let button = if card.text == Text::Back && caps.is_none() { "Set a key" } else { card.button };
-        let bw = self.btn_w(button);
+        let bw = self.cx.btn_w(button, None);
         let lx = X0 + 16.0 + PIC.0 + 16.0;
         let lw = X0 + self.cw - 16.0 - bw - 16.0 - lx;
         let attention = settings::fill(&self.s.attention_text, "Slack");
@@ -407,41 +415,41 @@ impl Ctx<'_, '_> {
                 (" and its workspace keeps a dot.", F::Small, b.tx2),
             ],
         };
-        let th = 20.0 + 2.0 + self.c.measuring().para(0.0, 0.0, lw, 16.0, &runs);
+        let th = 20.0 + 2.0 + self.cx.c.measuring().para(0.0, 0.0, lw, 16.0, &runs);
         let top = th.max(PIC.1);
         let h = 14.0 + top + 14.0;
         self.pic(X0 + 16.0, y + 14.0 + (top - PIC.1) / 2.0, card.pic);
         let ty = y + 14.0 + (top - th) / 2.0;
-        self.c.text(lx, ty, 20.0, card.title, F::Bold, b.tx);
+        self.cx.c.text(lx, ty, 20.0, card.title, F::Bold, b.tx);
         if let Some(caps) = &caps {
-            let mut cx = lx + self.c.width(card.title, F::Bold) + 10.0;
+            let mut cx = lx + self.cx.c.width(card.title, F::Bold) + 10.0;
             for k in caps {
-                cx += self.c.key_cap(cx, ty - 1.0, 22.0, k, false) + 4.0;
+                cx += self.cx.c.key_cap(cx, ty - 1.0, 22.0, k, false) + 4.0;
             }
         }
-        self.c.para(lx, ty + 22.0, lw, 16.0, &runs);
-        self.button(Ctl::Card(i), X0 + self.cw - 16.0 - bw, y + (h - 32.0) / 2.0, button, false);
+        self.cx.c.para(lx, ty + 22.0, lw, 16.0, &runs);
+        let _ = self.cx.button(Ctl::Card(i), X0 + self.cw - 16.0 - bw, y + (h - 32.0) / 2.0, button, None, false, self.cx.group);
         h
     }
 
     fn head(&mut self) -> f32 {
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         let mut x = X0;
         if self.w.updated {
-            let pw = self.c.width("Updated", F::SmallBold) + 16.0;
-            self.c.fill_rr((x, 18.0, pw, 18.0), 9.0, op(b.acc));
-            self.c.text(x + 8.0, 18.0, 18.0, "Updated", F::SmallBold, b.on_acc);
+            let pw = self.cx.c.width("Updated", F::SmallBold) + 16.0;
+            self.cx.c.fill_rr((x, 18.0, pw, 18.0), 9.0, op(b.acc));
+            self.cx.c.text(x + 8.0, 18.0, 18.0, "Updated", F::SmallBold, b.on_acc);
             x += pw + 8.0;
         }
-        self.c.text(x, 18.0, 18.0, &format!("des-k {}", self.w.ours), F::Small, b.tx2);
-        self.c.text(X0, 37.0, 32.0, "What's new", F::Heading, b.tx);
+        self.cx.c.text(x, 18.0, 18.0, &format!("des-k {}", self.w.ours), F::Small, b.tx2);
+        self.cx.c.text(X0, 37.0, 32.0, "What's new", F::Heading, b.tx);
         let sub = "A few things you can do now. Each button opens its setting.";
-        73.0 + self.c.para(X0, 73.0, self.cw, 20.0, &[(sub, F::Body, b.tx2)])
+        73.0 + self.cx.c.para(X0, 73.0, self.cw, 20.0, &[(sub, F::Body, b.tx2)])
     }
 
     /// Every release's cards, each release under its own heading when there are two or more.
     fn cards(&mut self, y0: f32) -> f32 {
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         let many = self.w.news.len() > 1;
         let mut y = y0;
         let mut i = 0;
@@ -451,21 +459,22 @@ impl Ctx<'_, '_> {
                     y += 20.0;
                 }
                 let name = v.to_string();
-                self.c.text(X0, y, 20.0, &name, F::Bold, b.tx);
+                self.cx.c.text(X0, y, 20.0, &name, F::Bold, b.tx);
                 if k == 0 {
-                    self.c.text(X0 + self.c.width(&name, F::Bold) + 8.0, y, 20.0, "newest", F::Small, b.tx2);
+                    self.cx.c.text(X0 + self.cx.c.width(&name, F::Bold) + 8.0, y, 20.0, "newest", F::Small, b.tx2);
                 }
                 y += 28.0;
             }
             let h: f32 = {
-                let mut m = Ctx { c: &mut self.c.measuring(), w: self.w, s: self.s, cw: self.cw, scrolled: true, out: Out { hits: vec![], content: 0.0, mid: (0.0, 0.0) } };
+                let mut canvas = self.cx.c.measuring();
+                let mut m = Ctx { cx: shared(&mut canvas, self.w, true), w: self.w, s: self.s, cw: self.cw, out: Out { hits: vec![], content: 0.0, mid: (0.0, 0.0) } };
                 cards.iter().enumerate().map(|(j, c)| m.row(0.0, j, c)).sum()
             };
-            self.c.boxed((X0, y, self.cw, h), 8.0, b.card, Some(b.line));
+            self.cx.c.boxed((X0, y, self.cw, h), 8.0, b.card, Some(b.line));
             let mut ry = y;
             for (j, card) in cards.iter().enumerate() {
                 if j > 0 {
-                    self.c.rule(X0 + 1.0, ry, self.cw - 2.0, op(b.line));
+                    self.cx.c.rule(X0 + 1.0, ry, self.cw - 2.0, op(b.line));
                 }
                 ry += self.row(ry, i, card);
                 i += 1;
@@ -476,58 +485,58 @@ impl Ctx<'_, '_> {
     }
 
     fn footer(&mut self) {
-        let b = self.c.t.b;
+        let b = self.cx.c.t.b;
         let vh = self.w.vh;
         let y = vh - FOOT;
-        self.c.fill_rr((0.0, y, W, FOOT), 0.0, op(b.band));
-        self.c.rule(0.0, y, W, op(b.line));
+        self.cx.c.fill_rr((0.0, y, W, FOOT), 0.0, op(b.band));
+        self.cx.c.rule(0.0, y, W, op(b.line));
         let link = format!("Everything in {}", self.w.ours);
-        let lw = self.c.width(&link, F::Body);
-        let at = (X0, y + 22.0, lw + 6.0 + self.c.width(I_OUT, F::IconSmall), 24.0);
-        let ink = if self.hovered(Ctl::Link) && !self.c.t.hc { mix(b.link, b.tx, 0.25) } else { b.link };
-        self.c.text(X0, at.1, 24.0, &link, F::Body, ink);
-        self.c.text(X0 + lw + 6.0, at.1, 24.0, I_OUT, F::IconSmall, ink);
-        self.ring(at, 3.0, Ctl::Link);
+        let lw = self.cx.c.width(&link, F::Body);
+        let at = (X0, y + 22.0, lw + 6.0 + self.cx.c.width(I_OUT, F::IconSmall), 24.0);
+        let ink = if self.cx.hovered(Ctl::Link) && !self.cx.c.t.hc { mix(b.link, b.tx, 0.25) } else { b.link };
+        self.cx.c.text(X0, at.1, 24.0, &link, F::Body, ink);
+        self.cx.c.text(X0 + lw + 6.0, at.1, 24.0, I_OUT, F::IconSmall, ink);
+        self.cx.ring(at, 3.0, Ctl::Link);
         self.hit(Ctl::Link, at);
-        let gw = self.btn_w("Got it");
-        self.button(Ctl::Got, W - X0 - gw, y + 18.0, "Got it", true);
+        let gw = self.cx.btn_w("Got it", None);
+        let _ = self.cx.primary(Ctl::Got, W - X0 - gw, y + 18.0, "Got it", self.cx.group);
     }
 }
 
 /// The whole window, back to front: the cards, then the head and footer over them.
 fn compose(c: &mut Canvas, w: &Win, s: &Settings) -> Out {
     let cw = W - 2.0 * X0;
-    let mut x = Ctx { c, w, s, cw, scrolled: false, out: Out { hits: vec![], content: 0.0, mid: (0.0, 0.0) } };
-    let b = x.c.t.b;
+    let mut x = Ctx { cx: shared(c, w, false), w, s, cw, out: Out { hits: vec![], content: 0.0, mid: (0.0, 0.0) } };
+    let b = x.cx.c.t.b;
     let head = {
-        let draw = std::mem::replace(&mut x.c.draw, false);
+        let draw = std::mem::replace(&mut x.cx.c.draw, false);
         let h = x.head();
-        x.c.draw = draw;
+        x.cx.c.draw = draw;
         h
     };
     let (top, bottom) = (head + 20.0, w.vh - FOOT - 8.0);
     x.out.mid = (top, bottom);
-    x.scrolled = true;
+    x.cx.group = true;
     x.out.content = x.cards(top - w.scroll);
-    x.scrolled = false;
+    x.cx.group = false;
     // The head and the footer cover the cards scrolled under them; a line marks a cut edge.
-    x.c.fill_rr((0.0, 0.0, W, top), 0.0, op(b.bg));
-    x.c.fill_rr((0.0, bottom, W, w.vh - bottom), 0.0, op(b.bg));
+    x.cx.c.fill_rr((0.0, 0.0, W, top), 0.0, op(b.bg));
+    x.cx.c.fill_rr((0.0, bottom, W, w.vh - bottom), 0.0, op(b.bg));
     x.head();
     let view = bottom - top;
     if w.scroll > 0.5 {
-        x.c.rule(X0 - 1.0, top, cw + 2.0, op(b.line));
+        x.cx.c.rule(X0 - 1.0, top, cw + 2.0, op(b.line));
     }
     if w.scroll < x.out.content - view - 1.0 {
-        x.c.rule(X0 - 1.0, bottom - 1.0, cw + 2.0, op(b.line));
+        x.cx.c.rule(X0 - 1.0, bottom - 1.0, cw + 2.0, op(b.line));
     }
     if x.out.content - view > 1.0 {
         let th = ((view - 8.0) * view / x.out.content).max(24.0);
         let ty = top + 4.0 + (view - 8.0 - th) * (w.scroll / (x.out.content - view).max(1.0));
-        x.c.fill_rr((W - 5.0, ty, 2.0, th), 1.0, op(b.tx3));
+        x.cx.c.fill_rr((W - 5.0, ty, 2.0, th), 1.0, op(b.tx3));
     }
     x.footer();
-    x.out
+    Out { hits: x.cx.hits, ..x.out }
 }
 
 fn repaint() {
@@ -540,7 +549,7 @@ fn repaint() {
 fn layout() {
     let Some(out) = get(|w| unsafe {
         let dc = GetDC(Some(w.hwnd));
-        let out = compose(&mut Canvas::new(dc, false, w.scale, w.theme, &w.fonts), w, settings::get());
+        let out = compose(&mut Canvas::new(dc, false, w.scale, w.theme, &w.fonts), w, &settings::get());
         ReleaseDC(Some(w.hwnd), dc);
         out
     }) else {
@@ -561,7 +570,7 @@ fn wanted(w: &Win, cap: f32) -> f32 {
     let probe = Win { vh: 10_000.0, hits: vec![], news: w.news.clone(), fonts: Fonts::new(w.scale), ..*w };
     let out = unsafe {
         let dc = GetDC(None);
-        let out = compose(&mut Canvas::new(dc, false, w.scale, w.theme, &probe.fonts), &probe, settings::get());
+        let out = compose(&mut Canvas::new(dc, false, w.scale, w.theme, &probe.fonts), &probe, &settings::get());
         ReleaseDC(None, dc);
         out
     };
@@ -579,7 +588,7 @@ fn scroll_by(dy: f32) {
 /// Scrolls the focused card's button into view after Tab.
 fn reveal() {
     let dy = get(|w| {
-        let h = w.hits.iter().find(|h| h.ctl == w.focus && h.scrolled)?;
+        let h = w.hits.iter().find(|h| h.ctl == w.focus && h.group)?;
         let (top, bottom) = (h.at.1 - 12.0, h.at.1 + h.at.3 + 12.0);
         if top < w.mid.0 {
             Some(top - w.mid.0)
@@ -657,7 +666,7 @@ fn point(lp: LPARAM, scale: f32) -> (f32, f32) {
 /// The control under a point; a card's button counts only inside the card area's view.
 fn hit_at(w: &Win, (x, y): (f32, f32)) -> Option<Ctl> {
     let inside = |(hx, hy, hw, hh): Bx| x >= hx && x < hx + hw && y >= hy && y < hy + hh;
-    w.hits.iter().find(|h| (!h.scrolled || (y >= w.mid.0 && y < w.mid.1)) && inside(h.at)).map(|h| h.ctl)
+    w.hits.iter().find(|h| (!h.group || (y >= w.mid.0 && y < w.mid.1)) && inside(h.at)).map(|h| h.ctl)
 }
 
 /// Opens the window on the screen under the mouse with `news`, or brings the open one to the
@@ -679,7 +688,7 @@ fn show(news: Vec<(Version, &'static [Card])>, ours: Version, updated: bool) {
         }
         return;
     }
-    ui::gdiplus();
+    ui::canvas::gdiplus();
     unsafe {
         let Ok(inst) = GetModuleHandleW(None) else { return };
         let wc = WNDCLASSW {
@@ -690,7 +699,7 @@ fn show(news: Vec<(Version, &'static [Card])>, ours: Version, updated: bool) {
             ..Default::default()
         };
         RegisterClassW(&wc); // fails harmlessly when it opens a second time
-        let (mon, _) = crate::ws::under_mouse();
+        let (mon, _) = crate::ws::switch::under_mouse();
         let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
         let _ = GetMonitorInfoW(mon, &mut mi);
         let work = mi.rcWork;
@@ -761,7 +770,7 @@ unsafe extern "system" fn wndproc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LR
                     buffered(dc, 0, 0, r.right, r.bottom, |mem| {
                         let mut c = Canvas::new(mem, true, w.scale, w.theme, &w.fonts);
                         c.boxed((0.0, 0.0, r.right as f32 / w.scale + 1.0, r.bottom as f32 / w.scale + 1.0), 0.0, w.theme.b.bg, None);
-                        compose(&mut c, w, settings::get());
+                        compose(&mut c, w, &settings::get());
                     })
                 });
                 let _ = EndPaint(h, &ps);
@@ -892,17 +901,9 @@ mod tests {
         assert_eq!(V0_9_0.len(), 5);
     }
 
-    // Not a check that can fail: draws the window offscreen into target/whatsnew/*.png, so the
-    // drawing can be compared with the approved design (pdesk-design whats-new/whats-new-r1.html,
-    // direction C) without updating des-k. Run with `cargo test render -- --ignored`.
-    #[test]
-    #[ignore]
-    fn render_whats_new() {
-        assert!(ui::gdiplus());
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("whatsnew");
-        std::fs::create_dir_all(&dir).unwrap();
-        let night_sky = ui::high_contrast([0x000000, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);
-        let runs: Vec<(&str, Theme, f32)> = vec![("light", ui::LIGHT, 1.0), ("dark", ui::DARK, 1.0), ("hc", night_sky, 1.0), ("light-150", ui::LIGHT, 1.5)];
+    /// Each render state, set up as the render test draws it: the releases shown, the focus,
+    /// the settings.
+    fn each_state(theme: Theme, scale: f32, f: &mut dyn FnMut(&str, &Win, &Settings)) {
         const NEXT: [Card; 1] = [Card { pic: Pic::Lands, title: "A card for 0.10.0", text: Text::Plain("Made up for this picture only, to show two releases at once."), button: "Open it", to: (Section::Apps, None) }];
         let plain = Settings::default();
         let no_key = Settings { back: vec![], ..Settings::default() };
@@ -915,28 +916,74 @@ mod tests {
             }),
             ("two-releases", &plain, |w| w.news.insert(0, (Version(0, 10, 0), &NEXT as &[Card]))),
             ("sidebar", &plain, |w| w.updated = false),
+            ("0.10.0", &plain, |w| {
+                (w.news, w.ours) = (due(Some(V(0, 9, 0)), V(0, 10, 0)), V(0, 10, 0));
+            }),
         ];
+        for (sname, s, setup) in &states {
+            let mut win = Win {
+                hwnd: HWND::default(), scale, theme, fonts: Fonts::new(scale), news: due(None, V(0, 9, 0)), ours: V(0, 9, 0), updated: true,
+                scroll: 0.0, content: 0.0, mid: (0.0, 0.0), hits: vec![], focus: Ctl::Got, kb: false, hover: None, press: None, vh: 10_000.0,
+            };
+            setup(&mut win);
+            let out = unsafe {
+                let dc = GetDC(None);
+                let out = compose(&mut Canvas::new(dc, false, scale, theme, &win.fonts), &win, s);
+                ReleaseDC(None, dc);
+                out
+            };
+            win.vh = (out.mid.0 + out.content + 8.0 + FOOT).min(MOST);
+            f(sname, &win, s);
+        }
+    }
+
+    // Not a check that can fail: draws the window offscreen into target/whatsnew/*.png, so the
+    // drawing can be compared with the approved design (pdesk-design whats-new/whats-new-r1.html,
+    // direction C) without updating des-k. Run with `cargo test render -- --ignored`.
+    #[test]
+    #[ignore]
+    fn render_whats_new() {
+        assert!(ui::canvas::gdiplus());
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("whatsnew");
+        std::fs::create_dir_all(&dir).unwrap();
+        let night_sky = ui::high_contrast([0x000000, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);
+        let runs: Vec<(&str, Theme, f32)> = vec![("light", ui::LIGHT, 1.0), ("dark", ui::DARK, 1.0), ("hc", night_sky, 1.0), ("light-150", ui::LIGHT, 1.5)];
         for (tname, theme, scale) in &runs {
-            for (sname, s, setup) in &states {
-                let mut win = Win {
-                    hwnd: HWND::default(), scale: *scale, theme: *theme, fonts: Fonts::new(*scale), news: due(None, V(0, 9, 0)), ours: V(0, 9, 0), updated: true,
-                    scroll: 0.0, content: 0.0, mid: (0.0, 0.0), hits: vec![], focus: Ctl::Got, kb: false, hover: None, press: None, vh: 10_000.0,
-                };
-                setup(&mut win);
-                let out = unsafe {
-                    let dc = GetDC(None);
-                    let out = compose(&mut Canvas::new(dc, false, *scale, *theme, &win.fonts), &win, s);
-                    ReleaseDC(None, dc);
-                    out
-                };
-                win.vh = (out.mid.0 + out.content + 8.0 + FOOT).min(MOST);
+            each_state(*theme, *scale, &mut |sname, win, s| {
                 let (pw, ph) = ((W * scale).round() as i32, (win.vh * scale).round() as i32);
                 ui::tests::save_png(pw, ph, &dir.join(format!("{sname}-{tname}.png")), |dc| {
                     let mut c = Canvas::new(dc, true, *scale, *theme, &win.fonts);
                     c.boxed((0.0, 0.0, W + 1.0, win.vh + 1.0), 0.0, theme.b.bg, None);
-                    compose(&mut c, &win, s);
+                    compose(&mut c, win, s);
                 });
-            }
+            });
         }
+    }
+
+    // The click areas in every render state, kept from before the controls merge so the merge
+    // can't change them (spec 0035 AC-7). Run by hand, as the PNGs are:
+    // `cargo test snapshot -- --ignored`.
+    #[test]
+    #[ignore]
+    fn snapshot_whats_new() {
+        use std::fmt::Write;
+        assert!(ui::canvas::gdiplus());
+        let night_sky = ui::high_contrast([0x000000, 0xFFFFFF, 0x8EE3F0, 0x263B50, 0xA6A6A6]);
+        let mut got = String::new();
+        for (tname, theme) in [("light", ui::LIGHT), ("hc", night_sky)] {
+            each_state(theme, 1.0, &mut |sname, win, s| {
+                let out = unsafe {
+                    let dc = GetDC(None);
+                    let out = compose(&mut Canvas::new(dc, false, win.scale, win.theme, &win.fonts), win, s);
+                    ReleaseDC(None, dc);
+                    out
+                };
+                let _ = writeln!(got, "== {sname} {tname}");
+                for h in &out.hits {
+                    let _ = writeln!(got, "hit {:?} {} {}", h.ctl, h.group, crate::snapshot::bx(h.at));
+                }
+            });
+        }
+        crate::snapshot::check("whats_new", &got);
     }
 }

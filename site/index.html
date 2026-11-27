@@ -522,13 +522,14 @@ footer .footnote:empty { display: none; }
     <h1>Every screen gets its <em>own</em> desktops</h1>
     <p>des-k lets each monitor switch its own workspaces. The other screens stay where they are. This page shows how to install it, use it and remove it.</p>
     <div class="pills"><span class="pill">Runs on <b>Windows 11</b></span><span class="pill">Built with <b>Rust</b></span><span class="pill">Windows stay <b>floating</b></span></div>
-    <p class="meta"><span class="chip sage">Reviewed</span><span>Updated <time datetime="2026-11-22">22 Nov 2026</time></span><span>12 min read</span></p>
+    <p class="meta"><span class="chip sage">Reviewed</span><span>Updated <time datetime="2026-11-27">27 Nov 2026</time></span><span>12 min read</span></p>
   </header>
   <aside class="related" aria-label="Related"><p class="toc-title">Related</p><ul><li><a href="how-it-works.html">How des-k works inside</a></li><li><a href="https://github.com/CanaanGM/des-k">The code on GitHub</a></li><li><a href="https://github.com/CanaanGM/des-k#readme">The README</a></li></ul></aside>
   <main class="sections">
 <section class="card">
   <p class="kicker">Read first</p>
   <h2>What des-k does</h2>
+  <p><a href="https://github.com/CanaanGM/des-k/actions/workflows/build.yml"><img src="https://github.com/CanaanGM/des-k/actions/workflows/build.yml/badge.svg?branch=main" alt="Build status of des-k's main branch" style="vertical-align: middle"></a> <a href="https://github.com/CanaanGM/des-k/releases/latest">Download the newest release</a></p>
   <p>Windows already has virtual desktops. But one switch changes <strong>every</strong> screen at once. des-k gives each screen its own set of workspaces. You switch only the screen under your mouse.</p>
   <div class="legend"><span class="key coral">Windows' own desktops</span><span class="key teal">des-k</span></div>
   <figure class="pic">
@@ -580,19 +581,48 @@ footer .footnote:empty { display: none; }
   <p>The easy way needs nothing but Windows 11:</p>
   <ol class="steps">
     <li>Download the newest <code>des-k-…-setup.exe</code> from <a href="https://github.com/CanaanGM/des-k/releases/latest">Releases</a> and run it.</li>
-    <li>des-k is not signed yet, so Windows may say "Windows protected your PC". Click <strong>More info</strong>, then <strong>Run anyway</strong>.</li>
+    <li>The setup has no Windows code signature yet (what SmartScreen looks for), so Windows may say "Windows protected your PC". Click <strong>More info</strong>, then <strong>Run anyway</strong>. From 0.10.0 on, its checksum file carries the publisher's signature instead: see <a href="#check-a-download">Check a download</a>.</li>
     <li>Say <strong>Yes</strong> to the UAC prompt. When the des-k icon shows in the tray, des-k is running.</li>
   </ol>
   <p>To update, click <strong>Check for updates</strong> in the tray menu, then <strong>Install X.Y.Z</strong>. Or run the newer setup the same way. Your workspaces are kept.</p>
   <p><strong>No admin rights</strong> (a work laptop, say)? Choose <strong>Install for me only</strong> when Setup asks. des-k goes to <code>%LOCALAPPDATA%\Programs\des-k</code> and still starts when you sign in. But without admin, its shortcuts stop while an admin window is in front, it cannot move or close admin windows, and <strong>Install X.Y.Z</strong> opens the release page instead, so you run the newer setup yourself.</p>
   <p>The release also has a zip with the same <code>des-k.exe</code> and <code>install.ps1</code>, if you would rather use a script. Unzip it, open a terminal in that folder and run:</p>
   <pre data-lang="powershell"><code>powershell -ExecutionPolicy Bypass -File install.ps1</code></pre>
+  <h3 id="check-a-download">Check a download</h3>
+  <p>Three different questions, and what answers each:</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Question</th><th>What answers it</th><th>What that still does not prove</th></tr></thead>
+    <tbody>
+      <tr><td>Is the file the one in the release?</td><td>Its SHA-256 matches its line in the release's <code>SHA256SUMS.txt</code>.</td><td>Who made it. Whoever controls the release controls both files.</td></tr>
+      <tr><td>Does it come from des-k's publisher?</td><td><code>SHA256SUMS.txt.minisig</code> checks out with the publisher's key below, with the trusted comment <code>des-k X.Y.Z</code> for that version. Releases from 0.10.0 on carry this signature; 0.9.0 and older do not.</td><td>That the program is safe.</td></tr>
+      <tr><td>Is it safe?</td><td>No check proves that. The code is public, CI builds each release from its tagged commit, and the publisher signs only when the tag, <code>main</code> and that CI build name the same commit.</td><td>That the code does only what it says. Nothing checks what the code does.</td></tr>
+    </tbody>
+  </table></div>
+  <p>To check a download yourself:</p>
+  <ol class="steps">
+    <li>Install minisign 0.10 or newer: <code>winget install jedisct1.minisign</code>.</li>
+    <li>From the same release, download the setup (or the zip), <code>SHA256SUMS.txt</code> and <code>SHA256SUMS.txt.minisig</code> into one folder, and open a terminal there.</li>
+    <li>Check the signature with the main key:
+      <pre data-lang="powershell"><code>minisign -Vm SHA256SUMS.txt -P RWThunwqMhrF8Ty7LmKeLKoczPJyRjIQoPDPAYyEyLpGhgPnHDr8nBkJ</code></pre>
+      If it says the key ids differ, run it again with the backup key. It must print <code>Signature and comment signature verified</code> and <code>Trusted comment: des-k X.Y.Z</code>, with the version you downloaded.</li>
+    <li>Hash the file and compare it with its line in <code>SHA256SUMS.txt</code>, ignoring case (<code>Get-FileHash</code> prints capitals, the file has small letters):
+      <pre data-lang="powershell"><code>Get-FileHash des-k-vX.Y.Z-setup.exe</code></pre></li>
+  </ol>
+  <div class="callout watch"><strong>If any step fails, do not run the file,</strong> and please <a href="https://github.com/CanaanGM/des-k/issues">open an issue</a>.</div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Key</th><th>Key id</th><th>Public key</th></tr></thead>
+    <tbody>
+      <tr><td>main</td><td><code>F1C51A322A7CBAE1</code></td><td><code>RWThunwqMhrF8Ty7LmKeLKoczPJyRjIQoPDPAYyEyLpGhgPnHDr8nBkJ</code></td></tr>
+      <tr><td>backup</td><td><code>383EB8633678DAD9</code></td><td><code>RWTZ2ng2Y7g+OCJHvqDtAUchdqToYuz2sd4zArQdh/UCryBUNv+USVkz</code></td></tr>
+    </tbody>
+  </table></div>
+  <p>An update from the tray does this check for you, with the keys built into the des-k you already have, which a takeover of des-k's GitHub account cannot change. A check of a first download is only as strong as the page you read the key from, and this page lives on that same account.</p>
   <h3>Or build it yourself</h3>
   <p>You build des-k on your own PC, then the same script installs it. You need three things:</p>
   <div class="table-wrap"><table>
     <thead><tr><th>You need</th><th>Why</th><th>Where to get it</th></tr></thead>
     <tbody>
-      <tr><td>Windows 11</td><td>des-k uses parts of Windows 11. It is tested on 25H2.</td><td>You have it</td></tr>
+      <tr><td>Windows 11</td><td>des-k uses parts of Windows 11. See <a href="#which-windows-builds-was-des-k-tried-on">the builds it was tried on</a>.</td><td>You have it</td></tr>
       <tr><td>Rust</td><td>To build des-k from the code</td><td><a href="https://rustup.rs">rustup.rs</a></td></tr>
       <tr><td>Git</td><td>To download the code</td><td><a href="https://git-scm.com">git-scm.com</a></td></tr>
     </tbody>
@@ -795,7 +825,7 @@ cd des-k</code></pre></li>
   </table></div>
   <p>des-k checks the file once a second and uses a change at once. Only the <code>[restore]</code> settings wait for the next start.</p>
   <h3>Your colors</h3>
-  <p>des-k's accent follows your Windows accent color and changes with it. In Settings, Colors, choose <strong>My own</strong> to type a color instead, like <code>2E8B57</code>. des-k mixes two neighbor shades from it for its headers and badges. Each workspace can have its own color too. You see it on the indicator, the finder, the overview and the tray menu. <strong>Reset</strong> puts des-k's color back. With Windows' high contrast on, des-k uses Windows' colors and ignores yours.</p>
+  <p>des-k's accent follows your Windows accent color and changes with it. In Settings, Colors, choose <strong>My own</strong> to use your own instead: click its swatch and pick one of des-k's colors or any color on the wheel, or type one in the box, like <code>2E8B57</code>. des-k mixes two neighbor shades from it for its headers and badges. Each workspace can have its own color too: click its tile under Workspaces, a workspace in the Overview picture, or its swatch under Colors. A color you pick saves at once, and Esc puts the old one back. You see it on the indicator, the finder, the overview and the tray menu. <strong>Reset</strong> puts des-k's color back. With Windows' high contrast on, des-k uses Windows' colors and ignores yours.</p>
   <h3>Where the indicator shows</h3>
   <p>In Settings, Indicator, click one of the 9 spots on the little screen picture: a corner, an edge or the center. Distance sets how far it stays from the edges. Or choose <strong>Custom</strong> and drag it anywhere. With two or more screens, pick one in the Screen list to give it its own place. <strong>Same as all screens</strong> undoes that, and <strong>Show it there</strong> shows the real indicator on that screen.</p>
   <div class="callout tip"><strong>A typo cannot break des-k.</strong> A bad value only sets that one setting back to its default. The log says which one.</div>
@@ -811,8 +841,8 @@ cd des-k</code></pre></li>
     <li>When you plug that screen in again, its windows go back after 2 seconds: same workspace, same place, same size. This also works after a sleep, a reboot or a power cut. A window you moved to another screen yourself stays where you put it. A note on the screen and a tray balloon say what moved.</li>
     <li>des-k knows a screen by the monitor's own model and serial number, so another port or another dock is still the same screen. <strong>Settings</strong> lists the screens des-k waits for. <strong>Forget</strong> stops the wait for a screen you will not plug in again.</li>
     <li>The tray icon menu has <strong>Shortcut hints</strong>, <strong>Settings</strong>, <strong>Open log</strong>, <strong>Check for updates</strong> and <strong>Quit</strong>.</li>
-    <li><strong>Check for updates</strong> asks GitHub which des-k release is newest and answers in a balloon. If a newer one is out, click the balloon (or <strong>Install X.Y.Z</strong> in the menu): des-k downloads that release's setup, checks it against the release's checksum file, and runs it silently. des-k stops, updates and comes back with your layout, then says "des-k updated". If anything fails, a balloon says why and des-k carries on. Only the installed des-k does this; a copy you run yourself opens the release page instead. des-k checks and installs only when you click.</li>
-    <li>des-k keeps the title, app, class, place and size of each window it tracks, and the model and serial number of each screen, in <code>state.txt</code>, in <code>%LOCALAPPDATA%\des-k</code> on this PC. The log names windows by their app (<code>chrome.exe</code>), never by their title, so it is safe to share. None of it leaves your PC. The only thing des-k sends out is the update check you click: a request to github.com with your address and des-k's version.</li>
+    <li><strong>Check for updates</strong> asks GitHub which des-k release is newest and answers in a balloon. If a newer one is out, click the balloon (or <strong>Install X.Y.Z</strong> in the menu): des-k downloads that release's setup and runs it silently, but only when the publisher's signature on the release's checksum file checks out for that version and the setup matches its line there. des-k stops, updates and comes back with your layout, then says "des-k updated". If anything fails, a balloon says why and des-k carries on. Only the installed des-k does this; a copy you run yourself opens the release page instead. des-k checks and installs only when you click.</li>
+    <li>des-k keeps the app file name (<code>code.exe</code>, never its folder), class, place and size of each window it tracks, its title only while Restore is on, and the model and serial number of each screen, in <code>state.txt</code>, in <code>%LOCALAPPDATA%\des-k</code> on this PC. To clear it, Quit from the tray, then delete <code>state.txt</code>. The log names windows by their app (<code>chrome.exe</code>), never by their title or folder, so it is safe to share. None of it leaves your PC. The only thing des-k sends out is the update check you click: a request to github.com with your address and des-k's version.</li>
   </ul>
 </section>
 
@@ -860,10 +890,22 @@ Remove-Item -Recurse "$env:ProgramFiles\des-k"</code></pre></li>
       <tr><td><code>install.ps1</code> says scripts are blocked</td><td>Use the full command with <code>-ExecutionPolicy Bypass</code>, as in the install steps.</td></tr>
       <tr><td>Everything looks wrong</td><td>Click <strong>Quit</strong> in the tray. Every window comes back. Then open <strong>des-k</strong> from the Start menu.</td></tr>
       <tr><td>You want to know why something happened</td><td>Tray → <strong>Open log</strong>. The log says what des-k did and why. Each line has the time and a level: <code>INFO</code> is something done as intended, <code>WARN</code> a hiccup des-k carried on from, <code>ERROR</code> something you may notice. The first line names the des-k version and Windows build. At 5 MB the log starts fresh, and the old part moves to <code>des-k.old.log</code>, where the run before also lives.</td></tr>
-      <tr><td>Windows Defender says des-k is a trojan (like <code>Trojan:Win32/Bearfoos.A!ml</code>)</td><td>The <code>!ml</code> means a guess by Defender's machine learning, which often flags new unsigned programs. des-k is open source, and every release lists its SHA-256 in <code>SHA256SUMS.txt</code>. Update Defender's definitions, then restore des-k from Windows Security, Protection history, or install it again.</td></tr>
+      <tr><td>Windows Defender says des-k is a trojan (like <code>Trojan:Win32/Bearfoos.A!ml</code>)</td><td>The <code>!ml</code> means a guess by Defender's machine learning, common for new programs without a Windows code signature. Check the signature by hand (<a href="#check-a-download">Check a download</a>), and report the file to Microsoft as a false positive at <a href="https://www.microsoft.com/en-us/wdsi/filesubmission">microsoft.com/wdsi/filesubmission</a>. Restoring it from Windows Security, Protection history is your own decision, since no check proves a program is safe.</td></tr>
     </tbody>
   </table></div>
-  <div class="callout watch"><strong>des-k uses a hidden part of Windows</strong> to hide windows. It works on Windows 11 25H2, but a big Windows update could change that. If it does, the tray shows a warning. Tray → <strong>Check for updates</strong> tells you when a fix is out.</div>
+  <div class="callout watch"><strong>des-k uses a hidden part of Windows</strong> to hide windows. It works on the Windows builds listed below, but a big Windows update could change that. If it does, the tray shows a warning. Tray → <strong>Check for updates</strong> tells you when a fix is out.</div>
+</section>
+
+<section class="card">
+  <h2>Which Windows builds was des-k tried on?</h2>
+  <p>des-k hides windows through a hidden part of Windows, so it matters which Windows it ran on. This list names each Windows build des-k was tried on, and each release adds its own.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Windows 11</th><th>Build</th><th>Releases tried on it</th></tr></thead>
+    <tbody>
+      <tr><td>25H2</td><td>26200</td><td>0.1.0 to 0.10.0</td></tr>
+    </tbody>
+  </table></div>
+  <p>Another Windows 11 build may work too. If des-k does not know that hidden part on yours, the tray shows a warning and switching hides nothing, so no window gets lost.</p>
 </section>
   </main>
 

@@ -16,7 +16,7 @@ use windows::Win32::{
 use windows::core::w;
 
 use crate::settings::{self, Pos, Spot, Style};
-use crate::ui::{self, Canvas, F, Theme, mix, op};
+use crate::ui::{self, Theme, canvas::Canvas, color::{mix, op}, fonts::F};
 
 /// Also how `--quit` and the single-instance check find the running des-k.
 pub const CLASS: windows::core::PCWSTR = w!("des-k-indicator");
@@ -30,6 +30,7 @@ const FADE_TIMER: usize = 1;
 const FADE_STEP_MS: u32 = 16;
 const LINE_MS: u32 = 1500; // a card with a line stays at least this long, so it can be read
 const NOTE_MS: u32 = 3000; // a screen unplugged or back
+const PAUSED_MS: u32 = 6000; // a paused start's note: unasked, right after logon (spec 0039 AC-5)
 
 /// What the indicator says: `active` (0 based) of `count` on a screen, named when there are two
 /// or more, with any lines under it.
@@ -79,12 +80,28 @@ pub enum Line {
     Wants { text: String, ws: usize },
     /// A new window of `app` went hidden onto `to` by its rule (spec 0027 AC-5); you stay.
     Opened { app: String, to: usize },
+    /// state.txt could not be saved, so a switch or send hid nothing (spec 0034 AC-2).
+    NotSaved,
+    /// Follow switched here because `app`'s window came forward; empty when it has no name
+    /// (spec 0038 AC-12). The Card style only.
+    Followed { app: String },
+    /// A start came up paused, shown at your first input (spec 0039 AC-5).
+    Paused,
+    /// A send or pin on a window of `app`, which des-k leaves alone (spec 0041 AC-5).
+    LeftAlone { app: String },
 }
 
 impl Line {
     fn note(&self) -> bool {
-        // A popup comes unasked, like a screen note, so it holds as long.
-        matches!(self, Line::ScreenGone { .. } | Line::ScreenBack { .. } | Line::Wants { .. })
+        // A popup comes unasked, like a screen note, so it holds as long; so does a warning.
+        matches!(self, Line::ScreenGone { .. } | Line::ScreenBack { .. } | Line::Wants { .. } | Line::NotSaved)
+    }
+
+    /// Shown with `indicator.enabled = false` too. A window that wants you has its own switch,
+    /// `[attention] enabled` (spec 0022 AC-8); a paused start's note reports a state you may have
+    /// forgotten, not a key you pressed (spec 0039 AC-5).
+    fn shows_when_off(&self) -> bool {
+        matches!(self, Line::Wants { .. } | Line::Paused)
     }
 }
 
@@ -103,6 +120,19 @@ thread_local! {
     static ALPHA: Cell<u8> = const { Cell::new(0) };
     static STEP: Cell<u8> = const { Cell::new(255) }; // alpha lost per fade tick
     static SHELLHOOK: Cell<u32> = const { Cell::new(0) }; // 0 until registered
+}
+
+/// Follow's line (spec 0038 AC-12): the app's name cut at 40 characters, or "A window" without one.
+fn came_forward(app: &str) -> String {
+    let app = app.trim();
+    if app.is_empty() {
+        return "A window came forward".into();
+    }
+    let mut name: String = app.chars().take(40).collect();
+    if app.chars().count() > 40 {
+        name.push('…');
+    }
+    format!("{name} came forward")
 }
 
 fn windows(n: usize) -> String {
@@ -172,6 +202,10 @@ fn words(card: &Card, line: &Line, named: bool) -> Words {
             sub: format!("You stay on {on}"),
             sub_chip: None,
         },
+        Line::NotSaved => Words { icon: '\u{E7BA}', ink: Ink::Warn, title: "Layout can't be saved".into(), chip: None, sub: "Nothing hidden".into(), sub_chip: None },
+        Line::Followed { app } => w('\u{E8AB}', came_forward(app), String::new()),
+        Line::Paused => Words { icon: '\u{E769}', ink: Ink::Accent, title: "des-k is paused".into(), chip: None, sub: "Resume from the tray icon".into(), sub_chip: None },
+        Line::LeftAlone { app } => w('\u{E946}', format!("des-k leaves {app} alone"), String::new()),
     }
 }
 
@@ -460,11 +494,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 let mut rc = RECT::default();
                 let _ = GetClientRect(hwnd, &mut rc);
                 ui::get(&SHOWN, "indicator paint", |s| {
-                    ui::buffered(hdc, 0, 0, rc.right, rc.bottom, |mem| {
-                        let bg = CreateSolidBrush(ui::cref(s.theme.b.card));
+                    ui::canvas::buffered(hdc, 0, 0, rc.right, rc.bottom, |mem| {
+                        let bg = CreateSolidBrush(ui::color::cref(s.theme.b.card));
                         FillRect(mem, &rc, bg);
                         let _ = DeleteObject(bg.into());
-                        let fonts = ui::fonts(s.scale);
+                        let fonts = ui::fonts::fonts(s.scale);
                         draw(&Canvas::new(mem, true, s.scale, s.theme, &fonts), 0.0, 0.0, s.style, &s.card, false);
                     });
                 });
@@ -500,7 +534,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             // Screens can take a while to light up after a wake (spec 0016 AC-18).
             WM_POWERBROADCAST if wp.0 as u32 == PBT_APMRESUMEAUTOMATIC => {
-                crate::ws::woke();
+                crate::ws::screens::woke();
                 LRESULT(1)
             }
             WM_DISPLAYCHANGE => {
@@ -529,7 +563,7 @@ fn window() -> Option<HWND> {
     if let Some(h) = WND.get() {
         return Some(h);
     }
-    ui::gdiplus();
+    ui::canvas::gdiplus();
     // No-activate and see-through to the mouse: never steals focus, never takes a click.
     let h = ui::popup(CLASS, Some(wndproc), WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT, true)?;
     // An admin des-k would drop `des-k --quit` from a normal terminal otherwise (spec 0008).
@@ -561,21 +595,33 @@ pub fn busy(mon: HMONITOR) -> bool {
     full && unsafe { MonitorFromWindow(GetForegroundWindow(), MONITOR_DEFAULTTONEAREST) } == mon
 }
 
+/// How long a card with these lines stays before it fades, given the `hold_ms` setting.
+fn hold_for(lines: &[Line], hold_ms: u32) -> u32 {
+    if lines.contains(&Line::Paused) {
+        PAUSED_MS
+    } else if lines.iter().any(Line::note) {
+        NOTE_MS
+    } else if !lines.is_empty() {
+        hold_ms.max(LINE_MS)
+    } else {
+        hold_ms
+    }
+}
+
 /// Show `card` centered on `mon`'s work area, replacing whatever the indicator shows.
 pub fn show(mon: HMONITOR, card: Card) {
     let st = settings::get();
-    // A window that wants you has its own switch, `[attention] enabled` (spec 0022 AC-8).
-    let wants = card.lines.iter().any(|l| matches!(l, Line::Wants { .. }));
-    if !st.indicator_enabled && !wants {
+    if !st.indicator_enabled && !card.lines.iter().any(Line::shows_when_off) {
         return;
     }
     let Some(h) = window() else { return };
     let style = st.indicator_style;
+    let card = styled(card, style);
     let theme = ui::system_theme();
     let (mut dx, mut dy) = (96u32, 96u32);
     unsafe { let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy); }
     let scale = dx as f32 / 96.0;
-    let fonts = ui::fonts(scale);
+    let fonts = ui::fonts::fonts(scale);
     let (w, ht) = unsafe {
         let dc = GetDC(None);
         let size = draw(&Canvas::new(dc, false, scale, theme, &fonts), 0.0, 0.0, style, &card, false);
@@ -584,13 +630,7 @@ pub fn show(mon: HMONITOR, card: Card) {
     };
     let (w, ht) = ((w * scale).ceil() as i32, (ht * scale).ceil() as i32);
 
-    let hold = if card.lines.iter().any(Line::note) {
-        NOTE_MS
-    } else if !card.lines.is_empty() {
-        st.hold_ms.max(LINE_MS)
-    } else {
-        st.hold_ms
-    };
+    let hold = hold_for(&card.lines, st.hold_ms);
     // Enough steps to fade from full to 0 in about fade_ms; 0 hides on the first tick.
     let full = (theme.b.alpha * 255.0).round() as u8;
     let ticks = (ui::motion_ms(st.fade_ms) / FADE_STEP_MS).max(1);
@@ -616,6 +656,14 @@ pub fn show(mon: HMONITOR, card: Card) {
         SetTimer(Some(h), FADE_TIMER, hold, None);
     }
     crate::uia::notify(h, &text, "des-k indicator", false);
+}
+
+/// `card` as `style` shows it: the dots show a follow as any switch, with no line (spec 0038 AC-13).
+fn styled(mut card: Card, style: Style) -> Card {
+    if style == Style::Dots {
+        card.lines.retain(|l| !matches!(l, Line::Followed { .. }));
+    }
+    card
 }
 
 /// The card's top left on `work` for a card `w` by `h` px (spec 0020 AC-7, AC-8). Pure, so the
@@ -647,7 +695,7 @@ pub(crate) fn place(work: RECT, w: i32, h: i32, pos: Pos, scale: f32) -> (i32, i
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::{DARK, Fonts, LIGHT, Theme};
+    use crate::ui::{DARK, LIGHT, Theme, fonts::Fonts};
 
     const WORK: RECT = RECT { left: 0, top: 0, right: 1920, bottom: 1040 };
 
@@ -722,6 +770,23 @@ mod tests {
         assert_eq!((opened.title.as_str(), opened.chip, opened.sub.as_str()), ("Notepad opened on ", Some(2), "You stay on 2"));
     }
 
+    // Spec 0038 AC-12: a switch you didn't press says whose window caused it, never a blank, and
+    // a long name can't push the card past its width.
+    #[test]
+    fn a_follow_names_the_app_that_came_forward() {
+        let said = |app: &str| words(&card(1, true), &Line::Followed { app: app.into() }, true).title;
+        assert_eq!(said("Slack"), "Slack came forward");
+        assert_eq!(said(""), "A window came forward");
+        assert_eq!(said("  "), "A window came forward");
+        let long = "Microsoft Teams (work or school) Preview Edition";
+        assert_eq!(said(long), "Microsoft Teams (work or school) Preview… came forward");
+        assert_eq!(said(&long[..40]), format!("{} came forward", &long[..40]), "40 fit whole");
+        // AC-13: the dots have no room for words; they show the switch alone.
+        let followed = card(1, true).with(Line::Followed { app: "Slack".into() });
+        assert_eq!(styled(followed.clone(), Style::Dots).lines, []);
+        assert_eq!(styled(followed.clone(), Style::Card), followed);
+    }
+
     #[test]
     fn narrator_reads_the_painted_words() {
         let c = card(2, true).with(Line::Sent { to: 1, unpinned: false });
@@ -784,12 +849,26 @@ mod tests {
         unsafe { ReleaseDC(None, dc) };
     }
 
+    // Spec 0039 AC-5: a paused start's note is the one reminder that reaches you at logon, so it
+    // must show even with the indicator turned off, and stay long enough to be read unasked; the
+    // indicator off still silences ordinary cards, and other notes keep their 3 s.
+    #[test]
+    fn the_paused_note_shows_with_the_indicator_off_and_stays_6_s() {
+        assert!(Line::Paused.shows_when_off());
+        assert!(!Line::NotSaved.shows_when_off(), "only attention and the paused note pass the switch");
+        let paused = card(1, true).with(Line::Paused);
+        assert_eq!(hold_for(&paused.lines, 200), 6000);
+        assert_eq!(hold_for(&card(1, true).with(Line::NotSaved).lines, 200), 3000);
+        assert_eq!(hold_for(&card(1, true).lines, 200), 200);
+        assert_eq!(spoken(&paused, Style::Card), "Workspace 2 of 4, DELL U2720Q, des-k is paused, Resume from the tray icon");
+    }
+
     /// Draws every state the design shows to target/indicator/ PNGs, to compare by eye with
     /// pdesk-design/restart/captures/ir5-* (spec 0017 AC-1).
     #[test]
     #[ignore]
     fn render() {
-        ui::gdiplus();
+        ui::canvas::gdiplus();
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("indicator");
         std::fs::create_dir_all(&dir).unwrap();
         let dell = || Some("DELL U2720Q".to_string());
@@ -810,6 +889,9 @@ mod tests {
             ("pinned", Card::new(1, 4, dell()).with(Line::Pinned)),
             ("unpinned", Card::new(1, 4, dell()).with(Line::Unpinned)),
             ("past-count", Card::new(1, 4, dell()).with(Line::NoWorkspace { n: 7 })),
+            ("not-saved", Card::new(1, 4, dell()).with(Line::NotSaved)),
+            ("paused", Card::new(1, 4, dell()).with(Line::Paused)),
+            ("left-alone", Card::new(1, 4, dell()).with(Line::LeftAlone { app: "Microsoft Teams".into() })),
             ("unplugged", Card::new(0, 4, None).with(gone(None))),
             ("back", Card::new(1, 4, dell()).with(Line::ScreenBack { name: "DELL U2720Q".into(), moved: 5, left: 0, here: true })),
             ("back-some-left", Card::new(1, 4, dell()).with(Line::ScreenBack { name: "DELL U2720Q".into(), moved: 3, left: 2, here: true })),
@@ -837,6 +919,8 @@ mod tests {
                 wants(Card::new(1, 6, dell()), &[4]).with(Line::Wants { text: "Microsoft Teams (work or school) wants you back on that call right now".into(), ws: 4 }),
             ),
             ("marked-switch", wants(Card::new(1, 4, dell()), &[2])),
+            // Spec 0038 AC-12: a follow's switch says why.
+            ("followed", Card::new(2, 4, dell()).with(Line::Followed { app: "Slack".into() })),
             ("marked-one-screen", wants(Card::new(0, 4, None), &[2, 3])),
             ("marked-sent", wants(Card::new(1, 4, dell()), &[2]).with(sent(false))),
             ("marked-nine", wants(Card::new(6, 9, dell()), &[0, 4, 8])),
@@ -888,6 +972,7 @@ mod tests {
             for style in [Style::Card, Style::Dots] {
                 let sname = if style == Style::Card { "card" } else { "dots" };
                 for (name, card) in &states {
+                    let card = &styled(card.clone(), style);
                     let (w, h) = unsafe {
                         let dc = GetDC(None);
                         let size = draw(&Canvas::new(dc, false, s, t, &fonts), 0.0, 0.0, style, card, true);
@@ -897,7 +982,7 @@ mod tests {
                     let (pw, ph) = (((w + 48.0) * s).ceil() as i32, ((h + 48.0) * s).ceil() as i32);
                     let path = dir.join(format!("{sname}-{name}-{tname}.png"));
                     ui::tests::save_png(pw, ph, &path, |dc| unsafe {
-                        let bg = CreateSolidBrush(ui::cref(backdrop(&t)));
+                        let bg = CreateSolidBrush(ui::color::cref(backdrop(&t)));
                         FillRect(dc, &RECT { left: 0, top: 0, right: pw, bottom: ph }, bg);
                         let _ = DeleteObject(bg.into());
                         draw_preview(&Canvas::new(dc, true, s, t, &fonts), 24.0, 24.0, style, card);

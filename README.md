@@ -1,5 +1,8 @@
 # des-k
 
+[![build](https://github.com/CanaanGM/des-k/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/CanaanGM/des-k/actions/workflows/build.yml)
+[![latest release](https://img.shields.io/github/v/release/CanaanGM/des-k)](https://github.com/CanaanGM/des-k/releases/latest)
+
 Virtual desktops **per monitor** for Windows 11.
 
 Windows' own virtual desktops switch every screen at once. des-k gives each screen its own
@@ -7,22 +10,26 @@ workspaces: you switch the screen under your mouse, and the other screens stay w
 like on macOS or GNOME.
 
 des-k is not a tiling window manager like [komorebi](https://github.com/LGUG2Z/komorebi).
-Windows stay floating; des-k only hides and shows them.
+Windows stay floating; des-k only hides and shows them. A switch takes about 40 ms
+([how fast is it?](https://canaangm.github.io/des-k/how-it-works.html#how-fast-is-it)).
 
 **The full guide, with pictures: <https://canaangm.github.io/des-k/>**
 
-How it works inside, for developers: <https://canaangm.github.io/des-k/how-it-works.html>
+How it works inside, for developers: <https://canaangm.github.io/des-k/how-it-works.html>, with
+[where each part's code is](https://canaangm.github.io/des-k/how-it-works.html#where-is-the-code).
 
 ## Install
 
 1. Download the newest `des-k-…-setup.exe` from
    [Releases](https://github.com/CanaanGM/des-k/releases/latest) and run it.
-2. des-k isn't signed yet, so Windows may say "Windows protected your PC". Click
-   **More info**, then **Run anyway**.
+2. The setup has no Windows code signature yet (what SmartScreen looks for), so Windows may say
+   "Windows protected your PC". Click **More info**, then **Run anyway**. From 0.10.0 on, its
+   checksum file carries the publisher's signature instead: see [Check a download](#check-a-download).
 3. Say **Yes** to the admin prompt. A des-k icon shows up in the tray.
 
 To update, click **Check for updates** in the tray menu, then **Install X.Y.Z**. des-k downloads
-the setup, checks it against the release's `SHA256SUMS.txt` and runs it. Your workspaces are kept.
+the setup and runs it only when the publisher's signature on the release's `SHA256SUMS.txt` checks
+out for that version and the setup matches its line there. Your workspaces are kept.
 
 > Why admin? When an admin window (like Task Manager) has focus, Windows stops normal programs
 > from hearing the keyboard. Running des-k as admin keeps the shortcuts working everywhere.
@@ -44,9 +51,58 @@ the setup, checks it against the release's `SHA256SUMS.txt` and runs it. Your wo
 
 </details>
 
+### Check a download
+
+Three different questions, and what answers each:
+
+- **Is the file the one in the release?** Its SHA-256 matches its line in the release's
+  `SHA256SUMS.txt`. Alone, that proves nothing about who made it: whoever controls the release
+  controls both files.
+- **Does it come from des-k's publisher?** `SHA256SUMS.txt.minisig` checks out with the
+  publisher's key below, with the trusted comment `des-k X.Y.Z` for that version. Releases from
+  0.10.0 on carry this signature; 0.9.0 and older don't.
+- **Is it safe?** No check proves that. What there is: the code is public, CI builds each release
+  from its tagged commit, and the publisher signs only when the tag, `main` and that CI build name
+  the same commit. That still doesn't prove the code does only what it says, since nothing checks
+  what the code does.
+
+To check a download yourself:
+
+1. Install minisign 0.10 or newer: `winget install jedisct1.minisign`.
+2. From the same release, download the setup (or the zip), `SHA256SUMS.txt` and
+   `SHA256SUMS.txt.minisig` into one folder, and open a terminal there.
+3. Check the signature with the main key:
+
+   ```powershell
+   minisign -Vm SHA256SUMS.txt -P RWThunwqMhrF8Ty7LmKeLKoczPJyRjIQoPDPAYyEyLpGhgPnHDr8nBkJ
+   ```
+
+   If it says the key ids differ, run it again with the backup key. It must print
+   `Signature and comment signature verified` and `Trusted comment: des-k X.Y.Z`, with the version
+   you downloaded.
+4. Hash the file and compare it with its line in `SHA256SUMS.txt`, ignoring case (`Get-FileHash`
+   prints capitals, the file has small letters):
+
+   ```powershell
+   Get-FileHash des-k-vX.Y.Z-setup.exe
+   ```
+
+If any step fails, don't run the file, and please [open an issue](https://github.com/CanaanGM/des-k/issues).
+
+| Key | Key id | Public key |
+|---|---|---|
+| main | `F1C51A322A7CBAE1` | `RWThunwqMhrF8Ty7LmKeLKoczPJyRjIQoPDPAYyEyLpGhgPnHDr8nBkJ` |
+| backup | `383EB8633678DAD9` | `RWTZ2ng2Y7g+OCJHvqDtAUchdqToYuz2sd4zArQdh/UCryBUNv+USVkz` |
+
+An update from the tray does this check for you, with the keys built into the des-k you already
+have, which a takeover of des-k's GitHub account can't change. A check of a first download is only
+as strong as the page you read the key from, and this page lives on that same account.
+
 ## Shortcuts
 
-Everything works on **the screen under your mouse**.
+Everything works on **the screen under your mouse**. To have the keys act on the focused window's
+screen instead, set Settings → Workspaces → **Keys act on**; swipes still use the screen under
+the pointer.
 
 | Keys | What it does |
 |---|---|
@@ -78,12 +134,38 @@ taskbar app"). You can change any shortcut in Settings. Forgot one? Tray → **S
   one. Your Windows wallpaper is never changed; a workspace without a picture shows it.
 - **Apps in their place**: give an app a workspace (and a screen) in Settings → **Apps**, and its
   new windows open there, without switching your screens.
+- **Apps des-k leaves alone**: for an app that breaks when hidden or keeps grabbing focus, pick
+  **Leave alone** in its row in Settings → **Apps**, or in `settings.toml`:
+
+  ```toml
+  [apps]
+  "teams.exe" = "alone"   # an exe file name, or a Store app id
+  ```
+
+  des-k then never hides, follows, places or restores its windows, so they stay in view on every
+  workspace. The finder and the overview leave them out; reach them with Alt+Tab or the taskbar.
 - **Names**: call a workspace "Mail" or "Code", and rename a screen. The names show beside the
   numbers everywhere.
 - **A hidden window that wants you** (a new Slack message, say) shows a note on its screen, and
   its workspace keeps a dot until you go there.
 - **Settings** (tray → **Settings**): the number of workspaces (2 to 9), names, wallpapers, app
   rules, every shortcut, the indicator, colors and gestures. Changes apply at once.
+- **Workspaces per screen**: each screen can have its own number, say two on the laptop and six
+  on the big screen. Each screen's row in Settings has its own + and ×, or in `settings.toml`:
+
+  ```toml
+  workspaces = 4        # every screen without its own count
+
+  [workspaces_per_screen]
+  "internal" = 2        # the laptop panel
+  ```
+
+  A screen without a line has `workspaces`. Lowering a screen's count moves the windows of the
+  removed workspaces to its new last one.
+- **Pause** (tray → **Pause des-k**, or a key you set in Settings): every hidden window comes back
+  and Windows gets its own shortcuts back, for a game or to see Windows on its own. **Resume
+  des-k** puts each window back on its workspace. Swipes do nothing until you resume, and the
+  tray icon turns gray. A restart while paused starts paused.
 - **Screens**: unplug one and its windows move to the main display. Plug it back in and they go
   back to their workspace, place and size.
 - Windows on other workspaces leave the taskbar and Alt+Tab (Store apps like Calculator keep
@@ -96,9 +178,21 @@ The [guide](https://canaangm.github.io/des-k/) explains each of these in full.
 ## Your data
 
 des-k keeps its layout, settings and log in `%LOCALAPPDATA%\des-k`, on this PC only. The log
-names windows by their app (`chrome.exe`), never by their title, so it is safe to share. The only
-thing des-k sends out is the update check you click: a request to github.com that carries your
-address and des-k's version, nothing else.
+names windows by their app (`chrome.exe`), never by their title or folder, so it is safe to share.
+The only thing des-k sends out is the update check you click: a request to github.com that
+carries your address and des-k's version, nothing else.
+
+The layout lives in `state.txt`, so des-k can put your windows back after a restart or a reboot.
+It holds:
+
+- each screen: its model and serial number, its area, and which workspace it shows
+- each window des-k tracks: its app's file name (`code.exe`, never its folder), its window class,
+  its place and size, its window handle and process id, and its title, only while **Restore** is
+  on in settings (restore uses the title to tell two windows of one app apart)
+
+While des-k runs, every tracked window is in there. **Quit** leaves only your screens and the
+windows waiting for an unplugged screen. To clear it, Quit from the tray, then delete
+`state.txt`. Deleting it while des-k runs does nothing: des-k writes it again at the next change.
 
 ## Stop or uninstall
 
@@ -119,17 +213,30 @@ Your settings and log stay in `%LOCALAPPDATA%\des-k`; delete that folder too if 
 ## If something goes wrong
 
 - **A window seems lost**: press `Win+F` and search for it, or open the overview.
+- **Shortcuts do nothing while a remote control app has focus** (TeamViewer, AnyDesk, Remote
+  Desktop): the app takes the keys before des-k hears them, and may send them to the other PC.
+  Click another window first, and they work again.
 - **des-k stopped** (no tray icon) and windows are still hidden: run
   `& "$env:ProgramFiles\des-k\des-k.exe" --quit`. It shows every window des-k hid. Then start
   **des-k** from the Start menu.
 - **Defender calls des-k a trojan** (like `Trojan:Win32/Bearfoos.A!ml`): `!ml` is a machine
-  learning guess, common for new unsigned programs. Check the file against the release's
-  `SHA256SUMS.txt`, update Defender, then restore des-k from Windows Security → Protection history.
+  learning guess, common for new programs without a Windows code signature. Check the signature
+  by hand ([Check a download](#check-a-download)), and report the file to Microsoft as a false
+  positive at <https://www.microsoft.com/en-us/wdsi/filesubmission>. Restoring it from Windows Security → Protection history
+  is your own decision, since no check proves a program is safe.
 - **To see why**: tray → **Open log**. `des-k.old.log` beside it holds the run before.
 
-des-k hides windows through an undocumented part of Windows. It works on Windows 11 25H2, but a
-big Windows update could break it. If that happens, the tray shows a warning and switching hides
-nothing until des-k is updated.
+## Windows builds it was tried on
+
+des-k hides windows through an undocumented part of Windows, so it matters which Windows it ran
+on. This list names each Windows build des-k was tried on, and each release adds its own.
+
+| Windows 11 | Build | Releases tried on it |
+|---|---|---|
+| 25H2 | 26200 | 0.1.0 to 0.10.0 |
+
+Another Windows 11 build may work too. A big Windows update could change that undocumented part.
+If it does, the tray shows a warning and switching hides nothing until des-k is updated.
 
 ## License
 

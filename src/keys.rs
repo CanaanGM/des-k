@@ -10,6 +10,8 @@
 // - The pin shortcut: posted as WM_PIN, once per press (spec 0014).
 // - The hints shortcut: posted as WM_HINTS, once per press (spec 0017).
 // - The back shortcut: posted as WM_BACK, once per press (spec 0024).
+// - The pause shortcut: posted as WM_PAUSE, once per press (spec 0039). While paused it is the
+//   only shortcut taken: every other key reaches Windows as if des-k were not running.
 // - Copilot key (sends LWin, LShift, F23): turned into Right Ctrl, unless settings turn it off.
 // - The keys and clicks touchpad gestures type (spec 0011).
 // - Recording for the settings page or the hints window: while on, every key is swallowed and
@@ -56,9 +58,23 @@ pub const WM_HINTS: u32 = WM_APP + 14;
 /// Thread message: flip the screen under the mouse to the workspace it showed before (spec 0024).
 /// 17 and 18 are taken by `apps` (spec 0027).
 pub const WM_BACK: u32 = WM_APP + 19;
+/// Thread message: pause des-k, or resume it while paused (spec 0039).
+pub const WM_PAUSE: u32 = WM_APP + 20;
 
 static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
 static RECORDING: AtomicBool = AtomicBool::new(false);
+/// Paused (spec 0039): mirrors `ws::State.paused`, written only by the main thread under the ws lock.
+static PAUSED: AtomicBool = AtomicBool::new(false);
+
+/// ws sets it with its own paused flag. Main thread.
+pub fn set_paused(on: bool) {
+    PAUSED.store(on, Ordering::Relaxed);
+}
+
+/// Whether des-k is paused, readable from any thread without the ws lock.
+pub fn paused() -> bool {
+    PAUSED.load(Ordering::Relaxed)
+}
 /// The window recording, which main sends WM_RECORDED on to; 0 while none is. Main thread.
 static OWNER: AtomicIsize = AtomicIsize::new(0);
 
@@ -104,11 +120,17 @@ thread_local! {
     // The watch window raw input goes to, and whether raw input is on now.
     static WATCH: Cell<Option<HWND>> = const { Cell::new(None) };
     static RAW_ON: Cell<bool> = const { Cell::new(false) };
+    // The probe (spec 0038 AC-15): when the hook let a Win key down through (its event time),
+    // and whether a key since found Windows' key state without it: 0 no, 1 yes, 2 logged.
+    static WIN_HEARD: Cell<Option<u32>> = const { Cell::new(None) };
+    static PROBE: Cell<u8> = const { Cell::new(0) };
 }
 
 const WATCH_CLASS: PCWSTR = w!("des-k-keys");
 const WATCH_TIMER: usize = 1;
 const WATCH_MS: u32 = 5000;
+/// A Win down older than this proves nothing to the probe: its up may have gone unheard (Win L).
+const PROBE_MS: u32 = 5000;
 
 fn mod_of(vk: u16) -> u8 {
     match VIRTUAL_KEY(vk) {
@@ -156,11 +178,11 @@ fn recorder(vk: u16, up: bool) -> bool {
 }
 
 /// The recorder while it is on or still owns this key, else the shortcuts.
-fn route(vk: u16, up: bool) -> bool {
+fn route(vk: u16, up: bool, st: &settings::Settings) -> bool {
     if RECORDING.load(Ordering::Relaxed) || SWALLOWED.with_borrow(|keys| keys[vk as usize & 0xFF]) {
         return recorder(vk, up);
     }
-    shortcut(vk, up)
+    shortcut(vk, up, st)
 }
 
 /// One key event; `extra` is MAGIC for des-k's own input, 0 for a combo the hook should see.
@@ -254,7 +276,7 @@ fn digit(vk: u16) -> Option<usize> {
 /// list holding one of a set's digits keeps it (spec 0012 AC-8). Modifiers must match exactly.
 fn decide(st: &settings::Settings, combo: Combo) -> Option<(u32, isize, isize)> {
     // (list, message, wparam direction, lparam follow)
-    let all: [(&[Combo], u32, isize, isize); 11] = [
+    let all: [(&[Combo], u32, isize, isize); 12] = [
         (&st.previous, WM_APP, -1, 0),
         (&st.next, WM_APP, 1, 0),
         (&st.back, WM_BACK, 0, 0),
@@ -266,6 +288,7 @@ fn decide(st: &settings::Settings, combo: Combo) -> Option<(u32, isize, isize)> 
         (&st.overview, WM_OVERVIEW, 0, 0),
         (&st.pin, WM_PIN, 0, 0),
         (&st.hints, WM_HINTS, 0, 0),
+        (&st.pause, WM_PAUSE, 0, 0),
     ];
     let sets = [(st.jump, WM_JUMP, 0), (st.send_to, WM_SEND_TO, 1), (st.send_to_stay, WM_SEND_TO, 0)];
     all.iter().find(|(list, ..)| list.contains(&combo)).map(|&(_, msg, dir, follow)| (msg, dir, follow)).or_else(|| {
@@ -275,7 +298,7 @@ fn decide(st: &settings::Settings, combo: Combo) -> Option<(u32, isize, isize)> 
 }
 
 /// A switch or send shortcut: act on key down, and swallow its down, repeats and up.
-fn shortcut(vk: u16, up: bool) -> bool {
+fn shortcut(vk: u16, up: bool, st: &settings::Settings) -> bool {
     // A held send acts once, even if a modifier is let go meanwhile: otherwise a held
     // Win+Ctrl+Shift+Left would turn into Win+Ctrl+Left switches.
     match SEND_HELD.get() {
@@ -289,7 +312,6 @@ fn shortcut(vk: u16, up: bool) -> bool {
         Some(_) if !up => SEND_HELD.set(None),
         _ => {}
     }
-    let st = settings::get();
     if digit(vk).is_none() && !settings::LISTS.iter().any(|l| st.list(l).iter().any(|c| c.vk == vk)) {
         return false; // most keys: skip the modifier lookups
     }
@@ -297,14 +319,17 @@ fn shortcut(vk: u16, up: bool) -> bool {
     let Some((msg, wparam, follow)) = decide(st, combo) else {
         return false;
     };
+    if !taken(msg, PAUSED.load(Ordering::Relaxed)) {
+        return false;
+    }
     if !up {
         // Releasing Win alone opens Start, Alt alone opens an app's menu bar.
         if combo.mods & (WIN | ALT) != 0 {
             send(&[(VK_MASK, false), (VK_MASK, true)]);
         }
-        // A held finder, overview, pin or hints key would toggle it over and over, and a held back
-        // key would flicker the screen between two workspaces (spec 0024 AC-5).
-        if matches!(msg, WM_SEND | WM_SEND_TO | WM_FINDER | WM_OVERVIEW | WM_PIN | WM_HINTS | WM_BACK) {
+        // A held finder, overview, pin, hints or pause key would toggle it over and over, and a
+        // held back key would flicker the screen between two workspaces (spec 0024 AC-5).
+        if matches!(msg, WM_SEND | WM_SEND_TO | WM_FINDER | WM_OVERVIEW | WM_PIN | WM_HINTS | WM_BACK | WM_PAUSE) {
             SEND_HELD.set(Some(vk));
         }
         unsafe {
@@ -314,10 +339,18 @@ fn shortcut(vk: u16, up: bool) -> bool {
     true
 }
 
+/// Whether des-k takes a shortcut that decided on `msg`: always, but while paused only the pause
+/// key, so Windows gets its own shortcuts back (spec 0039 AC-3).
+fn taken(msg: u32, paused: bool) -> bool {
+    !paused || msg == WM_PAUSE
+}
+
 /// true = swallow the event.
 fn handle(vk: u16, up: bool) -> bool {
-    if !settings::get().copilot_as_right_ctrl {
-        return route(vk, up);
+    // One read per key event: a save in between can never mix two versions (spec 0032 AC-3).
+    let st = settings::get();
+    if !st.copilot_as_right_ctrl {
+        return route(vk, up, &st);
     }
     STATE.with_borrow_mut(|s| {
         // Copilot key in progress: its own LWin/LShift repeats and ups must not reach anyone.
@@ -335,7 +368,7 @@ fn handle(vk: u16, up: bool) -> bool {
                     s.copilot = false;
                     return true;
                 }
-                _ => return route(vk, up), // e.g. Copilot as Ctrl, with Win+Left
+                _ => return route(vk, up, &st), // e.g. Copilot as Ctrl, with Win+Left
             }
         }
 
@@ -381,7 +414,7 @@ fn handle(vk: u16, up: bool) -> bool {
             _ => {}
         }
 
-        route(vk, up)
+        route(vk, up, &st)
     })
 }
 
@@ -390,11 +423,36 @@ unsafe extern "system" fn hook(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     if code == HC_ACTION as i32 {
         let k = unsafe { &*(lp.0 as *const KBDLLHOOKSTRUCT) };
         let up = matches!(wp.0 as u32, WM_KEYUP | WM_SYSKEYUP);
-        if k.dwExtraInfo != MAGIC && handle(k.vkCode as u16, up) {
-            return LRESULT(1);
+        if k.dwExtraInfo != MAGIC {
+            let swallow = handle(k.vkCode as u16, up);
+            probe(k.vkCode as u16, up, swallow, k.time);
+            if swallow {
+                return LRESULT(1);
+            }
         }
     }
     unsafe { CallNextHookEx(None, code, wp, lp) }
+}
+
+/// The probe (spec 0038 AC-15): remembers a Win down the hook let through, and on another key's
+/// down checks Windows' key state has it too. Not at the Win down itself: Windows updates its key
+/// state only after the hooks. Only flags it; the watch's timer writes the line, once per run.
+fn probe(vk: u16, up: bool, swallowed: bool, time: u32) {
+    if PROBE.get() != 0 {
+        return;
+    }
+    if vk == VK_LWIN.0 || vk == VK_RWIN.0 {
+        // A Win des-k swallowed (the Copilot key's) never reaches Windows' key state.
+        WIN_HEARD.set((!up && !swallowed).then_some(time));
+    } else if !up && win_unheard(WIN_HEARD.get(), time, || held(VK_LWIN) || held(VK_RWIN)) {
+        PROBE.set(1);
+    }
+}
+
+/// Whether a Win down heard at `win_at`, less than `PROBE_MS` before `now`, is missing from
+/// Windows' key state (`win_held`): another app's hook took it after des-k's let it through.
+fn win_unheard(win_at: Option<u32>, now: u32, win_held: impl FnOnce() -> bool) -> bool {
+    win_at.is_some_and(|t| now.wrapping_sub(t) < PROBE_MS) && !win_held()
 }
 
 /// Whether the hook looks removed: since the last check raw input saw a few key events and
@@ -411,6 +469,10 @@ unsafe extern "system" fn watch(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRES
     match m {
         WM_INPUT => RAW_KEYS.set(RAW_KEYS.get().wrapping_add(1)),
         WM_TIMER if wp.0 == WATCH_TIMER => {
+            if PROBE.get() == 1 {
+                PROBE.set(2);
+                info!("keys: the hook heard Win held, Windows' key state did not (another app's keyboard hook?)");
+            }
             if hook_gone(HOOK_CALLS.take(), RAW_KEYS.take()) {
                 if let Some(old) = HOOK.take() {
                     unsafe { let _ = UnhookWindowsHookEx(old); }
@@ -553,6 +615,20 @@ mod tests {
         assert_eq!(decide(&s, c(WIN | CTRL, b'H' as u16)), Some((WM_HINTS, 0, 0)));
     }
 
+    // Spec 0039 AC-3, AC-13: the pause key is des-k's only once you set it, and it is the one
+    // shortcut the hook still takes while paused, so it can resume.
+    #[test]
+    fn the_pause_key_fires_only_once_set() {
+        assert_eq!(decide(&Settings::default(), c(WIN | CTRL, b'P' as u16)), None);
+        let s = Settings { pause: vec![c(WIN | CTRL, b'P' as u16)], ..Settings::default() };
+        assert_eq!(decide(&s, c(WIN | CTRL, b'P' as u16)), Some((WM_PAUSE, 0, 0)));
+        assert!(taken(WM_PAUSE, true), "it resumes");
+        for msg in [WM_APP, WM_SEND, WM_JUMP, WM_SEND_TO, WM_FINDER, WM_OVERVIEW, WM_PIN, WM_HINTS, WM_BACK] {
+            assert!(!taken(msg, true), "{msg:#x} reaches Windows while paused");
+            assert!(taken(msg, false), "{msg:#x} is des-k's while running");
+        }
+    }
+
     // Two windows record keys: a key pressed for one must never land in the other, and the
     // window that lost recording to the other must not switch it off by stopping late.
     #[test]
@@ -575,6 +651,18 @@ mod tests {
         assert!(!hook_gone(0, 0), "nobody typed");
         assert!(!hook_gone(0, 2), "a key or two can fall between two checks");
         assert!(!hook_gone(1, 40), "the hook heard some");
+    }
+
+    // Spec 0038 AC-15: the probe decides between fixing dead keys under remote control apps and
+    // explaining them, so it must flag only a Win that des-k heard and Windows lost, never an old
+    // Win whose up the hook missed (Win L), and never a Win Windows has.
+    #[test]
+    fn the_probe_flags_only_a_recent_win_windows_lost() {
+        assert!(win_unheard(Some(1_000), 1_200, || false));
+        assert!(!win_unheard(Some(1_000), 1_200, || true), "Windows has it too");
+        assert!(!win_unheard(None, 1_200, || false), "no Win heard");
+        assert!(!win_unheard(Some(1_000), 1_000 + PROBE_MS, || false), "too old to trust");
+        assert!(win_unheard(Some(u32::MAX - 100), 100, || false), "the tick count wrapped");
     }
 
     // A set turned off ("" in the file) gives its digits back to Windows (Win+1 opens a taskbar app).

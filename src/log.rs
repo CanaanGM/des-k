@@ -117,7 +117,7 @@ impl Sink for Std {
         let log = dir.join("des-k.log");
         let was = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
         let _ = std::fs::rename(&log, dir.join("des-k.old.log"));
-        let Ok(f) = crate::ws::create_fresh(&log) else { return false };
+        let Ok(f) = crate::ws::store::create_fresh(&log) else { return false };
         point_std_at(f);
         if let Ok(h) = was
             && !h.is_invalid()
@@ -142,14 +142,14 @@ fn point_std_at(f: std::fs::File) {
 /// `quit`: a `--quit` with nothing running, which adds to the log instead of starting a new one.
 pub fn open(quit: bool) {
     let header = header(quit);
-    let file = unsafe { GetConsoleWindow() }.is_invalid().then(crate::ws::data_dir).and_then(|dir| {
+    let file = unsafe { GetConsoleWindow() }.is_invalid().then(crate::ws::store::data_dir).and_then(|dir| {
         let log = dir.join("des-k.log");
         let f = if quit {
-            crate::ws::append_to(&log)
+            crate::ws::store::append_to(&log)
         } else {
             // The last run's log survives one restart: after a crash it still says why.
             let _ = std::fs::rename(&log, dir.join("des-k.old.log"));
-            crate::ws::create_fresh(&log)
+            crate::ws::store::create_fresh(&log)
         };
         let f = f.ok()?;
         let size = f.metadata().map_or(0, |m| m.len());
@@ -245,7 +245,7 @@ fn header(quit: bool) -> String {
 }
 
 /// `Windows 25H2 build 26200.7019`. ProductName still says Windows 10 on 11, so it is not read.
-fn windows_build() -> String {
+pub(crate) fn windows_build() -> String {
     const KEY: PCWSTR = w!(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion");
     let text = |name: PCWSTR| {
         let mut buf = [0u16; 64];
