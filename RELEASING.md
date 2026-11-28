@@ -2,9 +2,23 @@
 
 How a des-k release is made, signed and checked. Everything in this file is public; no secret is in it.
 
+## Checklist
+
+1. Set the version, the changelog, the news cards and the guide's builds list, then run
+   `pwsh -File site.ps1 build` ([release steps](#release-steps), step 1).
+2. Commit, push `main`, and wait for CI to pass.
+3. Run the [recovery drill](#recovery-drill) on that commit. Every fault must pass.
+4. For a minor release (`x.y.0`), run the [stress run](#stress-run) too, and update its row.
+5. Tag that commit and push the tag. CI makes a draft release ([release steps](#release-steps), step 5).
+6. Sign and publish: `pwsh -File sign-release.ps1 X.Y.Z` ([release steps](#release-steps), step 6).
+7. [Check the published release by hand](https://canaangm.github.io/des-k/#check-a-download), and
+   install it from the tray on a copy that has the previous release.
+
+The parts below hold the details of each step.
+
 ## Why releases are signed
 
-The installed des-k runs as admin and can install an update from the tray with one click. It runs that update only when the release's `SHA256SUMS.txt` carries a minisign signature from one of the two keys below, made for exactly that version, and the setup matches its line in that file. CI builds each release but cannot sign it. Signing happens on the publisher's own PC, so someone who takes over the GitHub account still cannot make your des-k run their program.
+The installed des-k runs as admin and can install an update from the tray with one click. It runs that update only when the release's `SHA256SUMS.txt` carries a minisign signature from one of the two keys below, made for exactly that version. The setup must also match its line in that file. CI builds each release but cannot sign it. Signing happens on the publisher's own PC, so someone who takes over the GitHub account still cannot make your des-k run their program.
 
 ## What you need to publish
 
@@ -15,7 +29,7 @@ The installed des-k runs as admin and can install an update from the tray with o
 
 ## Release steps
 
-1. Set the new version in `Cargo.toml` and run `cargo build`, so `Cargo.lock` follows. Add the release to `CHANGELOG.md`, and add its cards to `NEWS` in `src/whats_new.rs` if it has news. Add it to the Windows builds list in `README.md` and in the guide (`site/guide-content.html`, copied into `site/index.html`): in the row of the build you run the drill on, or in a new row for a build not listed yet.
+1. Set the new version in `Cargo.toml` and run `cargo build`, so `Cargo.lock` follows. Add the release to `CHANGELOG.md`, and add its cards to `NEWS` in `src/whats_new.rs` if it has news. Add it to the Windows builds list in the guide: in the row of the build you run the drill on, or in a new row for a build not listed yet. The guide's source is `site-src/guide.html`; run `pwsh -File site.ps1 build` after editing it, since CI fails when the built pages differ.
 2. Commit, push `main`, and wait for CI to pass.
 3. Run the **recovery drill** (below) on that commit. Tag only when every fault passes.
 4. For a minor release (`x.y.0`), also run the **stress run** (below) on that commit, and tag only on `PASS`. Patches skip it.
@@ -26,8 +40,8 @@ The installed des-k runs as admin and can install an update from the tray with o
    pwsh -File sign-release.ps1 X.Y.Z
    ```
 
-   It stops unless `Cargo.toml`'s version, the tag `vX.Y.Z`, your `HEAD`, `origin/main` and the CI run that made the draft all name the same commit, and unless every file in the draft matches its line in `SHA256SUMS.txt`. It shows the commit, the CI run and each file's size, and waits for you to type the version. minisign then asks for the key's password. The script checks the new signature with the key in `src/install.rs`, uploads `SHA256SUMS.txt.minisig`, and publishes the release.
-7. Recommended: check the published release by hand (below), and install it from the tray on a copy that has the previous release.
+   It stops unless `Cargo.toml`'s version, the tag `vX.Y.Z`, your `HEAD`, `origin/main` and the CI run that made the draft all name the same commit. It also stops unless every file in the draft matches its line in `SHA256SUMS.txt`. It shows the commit, the CI run and each file's size, and waits for you to type the version. minisign then asks for the key's password. The script checks the new signature with the key in `src/install.rs`, uploads `SHA256SUMS.txt.minisig`, and publishes the release.
+7. Recommended: [check the published release by hand](https://canaangm.github.io/des-k/#check-a-download), and install it from the tray on a copy that has the previous release.
 
 If the script stops, the release stays a draft. Fix what it names and run it again. If a draft's files are wrong, delete the draft and the tag on GitHub, then tag and push again.
 
@@ -41,7 +55,7 @@ It uses a **drill build**, which can stop itself hard at an exact moment. It is 
 cargo build --features drill    # from a normal terminal; target\debug\des-k.exe is the drill build
 ```
 
-`drill.ps1` judges the result from outside: `snap` records the windows you can see, and `check` prints `PASS` or `FAIL` and names any still hidden by app and handle, never by title. Open at least three windows on each screen first.
+`drill.ps1` judges the result from outside. `snap` records the windows you can see. `check` prints `PASS` or `FAIL`, and names any window still hidden by app and handle, never by title. Open at least three windows on each screen first.
 
 Each fault starts the same way:
 
@@ -61,7 +75,7 @@ Each fault ends with Quit (or `des-k.exe --quit`) and `drill.ps1 check` printing
 8. **Failed save** (no stop point): run `drill.ps1 fail-saves`, then press a switch. Nothing hides, the indicator says `Layout can't be saved`, the tray shows `des-k can't save your layout` once, and the log has `state.txt not saved, nothing hidden`. End des-k in Task Manager, run `--quit` (it shows the windows but can't write its file, which is expected), then `drill.ps1 unfail-saves`.
 9. **Killed update**: build the setup (`cargo build --release`, then `iscc /DAppVersion=X.Y.Z des-k.iss`). In an admin terminal run `powershell -File drill.ps1 kill-setup target\setup\<setup exe>`: it starts the setup, waits until des-k has stopped, then kills the setup. Recover with the installed `des-k.exe --quit`, or start des-k from the Start menu and Quit. Write down whether `des-k.exe` survived.
 
-Write each run down on your PC, never in the repo, since it names your apps and screens: the commit (`git rev-parse --short HEAD`), the Windows build and the number of screens, then for each fault pass or fail, the way you recovered, the `check` output and the log lines from the fault (des-k's log never holds a window title). A fault that fails blocks the release until it is fixed.
+Write each run down on your PC, never in the repo, since it names your apps and screens. Note the commit (`git rev-parse --short HEAD`), the Windows build and the number of screens. Then, for each fault: pass or fail, the way you recovered, the `check` output and the log lines from the fault (des-k's log never holds a window title). A fault that fails blocks the release until it is fixed.
 
 ## Stress run
 
@@ -85,7 +99,9 @@ The result is one of three:
 
 Ctrl+C stops it early. It puts `twice_ms` back to 300, closes its windows and leaves des-k running.
 
-Keep each full result block on your PC, never in the repo. Only its summary is published: replace that PC's row in **How fast is it?** on the how it works page (`site/how-it-works-content.html`, copied into `site/how-it-works.html`) with the date and short commit, the Windows build, the CPU, the RAM in whole GB, the screens and windows, the switch p50, p95 and max, the idle CPU, and handles and private memory from warm to end. Never a serial number, a PC name or a user name. If the newest p95, rounded to 10 ms, changes, change the README's "about 40 ms" line too. Compare it with the last minor release's block from the same PC: a p95 more than 1.5 times the last one is worth looking into before you tag, but doesn't block, because timing on one PC moves with whatever else Windows is doing. A new PC starts a new comparison.
+Keep each full result block on your PC, never in the repo. Only its summary is published, in that PC's row in **How fast is it?** on the how it works page (`site-src/how-it-works.html`, then `pwsh -File site.ps1 build`). The row holds the date and short commit, the Windows build, the CPU, the RAM in whole GB, and the screens and windows. It also holds the switch p50, p95 and max, the idle CPU, and handles and private memory from warm to end. Never a serial number, a PC name or a user name.
+
+If the newest p95, rounded to 10 ms, changes, change the README's "about 40 ms" line too. Compare it with the last minor release's block from the same PC. A p95 more than 1.5 times the last one is worth looking into before you tag. It doesn't block, because timing on one PC moves with whatever else Windows is doing. A new PC starts a new comparison.
 
 After changing the script, `drill.ps1 stress -Steps 40` checks it in about 7 minutes.
 
@@ -106,36 +122,20 @@ des-k carries both keys (`KEYS` in `src/install.rs`) and accepts a release signe
 
 ## Check a download by hand
 
-Releases after 0.9.0 carry `SHA256SUMS.txt.minisig`; 0.9.0 and older have no signature. To check one yourself:
-
-1. Download the setup (or the zip), `SHA256SUMS.txt` and `SHA256SUMS.txt.minisig` from the same release into one folder.
-2. Check the signature with the main key:
-
-   ```powershell
-   minisign -Vm SHA256SUMS.txt -P RWThunwqMhrF8Ty7LmKeLKoczPJyRjIQoPDPAYyEyLpGhgPnHDr8nBkJ
-   ```
-
-   If it says the key ids differ, run it again with the backup key. It must print `Signature and comment signature verified` and `Trusted comment: des-k X.Y.Z`, with the version of the release you downloaded.
-3. Hash the file and compare it with its line in `SHA256SUMS.txt`:
-
-   ```powershell
-   Get-FileHash des-k-vX.Y.Z-setup.exe
-   ```
-
-If any step fails, do not run the file, and please open an issue.
+The guide's [Check a download](https://canaangm.github.io/des-k/#check-a-download) has the steps. It prints the same two keys as the table above.
 
 ## When a key is lost or leaks
 
 Every installed copy keeps trusting both of its keys until it installs a release that carries new ones. So you replace one key with a release signed by the other.
 
-After you put a new key in `KEYS`, make its test fixture too, or `cargo test` fails: sign the text `des-k test` plus one newline with the trusted comment `des-k 0.0.1`, and put the whole signature file in `MAIN_SIG` or `BACKUP_SIG` in the tests of `src/install.rs`.
+After you put a new key in `KEYS`, make its test fixture too, or `cargo test` fails. Sign the text `des-k test` plus one newline with the trusted comment `des-k 0.0.1`. Then put the whole signature file in `MAIN_SIG` or `BACKUP_SIG` in the tests of `src/install.rs`.
 
 ```powershell
 [IO.File]::WriteAllText("$PWD\msg.txt", "des-k test`n")
 minisign -S -s <new key file> -m msg.txt -t "des-k 0.0.1" -x msg.minisig
 ```
 
-- **Main key lost** (gone, but nobody else has it): make a new main key (`minisign -G`) and store it like the old one. Put its public key in `KEYS` and in the table above, then sign that release with the backup: `sign-release.ps1 X.Y.Z -Key backup`. Sign with the new main key from then on.
+- **Main key lost** (gone, but nobody else has it): make a new main key (`minisign -G`) and store it like the old one. Put its public key in `KEYS`, in the table above and in the guide's key table, then sign that release with the backup: `sign-release.ps1 X.Y.Z -Key backup`. Sign with the new main key from then on.
 - **Main key leaks** (someone else may have it): do the same, as soon as you can, and say in the release notes why people should update. A copy keeps trusting the leaked key until it installs that release. The key alone cannot publish a release, which also needs your GitHub account, so if you think both are exposed, secure the account first.
 - **Backup key lost or leaks**: make a new backup key, store it offline, put it in `KEYS` and the table, and sign that release with the main key.
 - **Both keys lost or leaked**: no installed copy can be told to trust a new key. Make two new keys, put them in `KEYS` and the table, and sign the release with the new main key. Every installed copy refuses it with "des-k refused X.Y.Z", so each person installs that one release by hand, after checking it with the new keys as above. Announce the new keys somewhere besides this repo too, so people can tell your change from an attacker's. After that, updates from the tray work again.

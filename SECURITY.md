@@ -22,10 +22,11 @@ Only the newest release gets fixes. Update from the tray (**Check for updates**)
 ## What des-k promises
 
 - Network only when you click **Check for updates** or **Install X.Y.Z** in the tray. It
-  downloads only the release's `SHA256SUMS.txt`, its signature and the setup, from URLs built
-  from version numbers, into the admin only `Program Files\des-k\update\`, and runs the setup
-  only if the publisher's key signed `SHA256SUMS.txt` for that version and the setup's SHA-256
-  matches its line ([Check a download](README.md#check-a-download) shows how to check one yourself).
+  downloads only three files: the release's `SHA256SUMS.txt`, its signature and the setup. The
+  URLs are built from version numbers, and the files land in the admin only
+  `Program Files\des-k\update\`. des-k runs the setup only if the publisher's key signed
+  `SHA256SUMS.txt` for that version and the setup's SHA-256 matches its line. The guide shows how
+  to [check a download](https://canaangm.github.io/des-k/#check-a-download) yourself.
 - Nothing in `%LOCALAPPDATA%\des-k` (settings, layout, log) can name a program to run or code to
   load, since anything running as you can write there. des-k never writes through a link there.
 - des-k only shows again the windows it hid itself.
@@ -52,16 +53,17 @@ treats each file as input to check, never as instructions:
 | File | What des-k takes from it |
 |---|---|
 | `settings.toml` | Numbers, true or false, colors, key combos and action names, names and the attention text (only ever drawn on screen), app rules, and wallpaper picks. |
-| `state.txt` | Which windows des-k tracks, by window handle, process id, program file name (never its folder), window class, place and screen, plus the title only while Restore is on, to recognize them after a restart or a reboot. A window counts only if it still has the same process and is still hidden. The README says how to clear it. |
+| `state.txt` | Which windows des-k tracks, by window handle, process id, program file name (never its folder), window class, place and screen, plus the title only while Restore is on, to recognize them after a restart or a reboot. A window counts only if it still has the same process and is still hidden. The guide says [how to clear it](https://canaangm.github.io/des-k/#what-des-k-keeps). |
 | `touchpad.txt` | Your own 13 Windows touchpad gesture numbers (each 0 to 65535), written back to your own registry key when des-k quits. Any other name or number is skipped. |
 | `wallpapers\` | Pictures to draw behind your desktop icons, read with Windows' own image decoder (GDI+). |
 
 des-k writes `des-k.log` there too, but never reads it back.
 
 Who can read the folder: des-k sets no access rules of its own, so the folder takes whatever your
-profile folder passes down. On a normal profile that is you, SYSTEM and Administrators. If you have
-given another local account read access to your `AppData` (a sandbox account for an AI coding
-tool, for example), it can read `state.txt`, the log and your settings too, though not change them.
+profile folder passes down. On a normal profile that is you, SYSTEM and Administrators. You may
+have given another local account read access to your `AppData`, like a sandbox account for an AI
+coding tool. That account can read `state.txt`, the log and your settings too, though not change
+them.
 `icacls "%LOCALAPPDATA%\des-k"` shows who can.
 
 No setting can name a program or a path:
@@ -75,7 +77,7 @@ No setting can name a program or a path:
 
 A refused value is logged by its key and skipped, and the rest of the file still loads. A unit
 test in `src/settings.rs` (`no_setting_names_a_program_or_a_path`) gives every one of these a
-program and a path, and fails if any is kept, or if any warning in the log repeats the path.
+program and a path. It fails if any is kept, or if any warning in the log repeats the path.
 
 ## Known and accepted
 
