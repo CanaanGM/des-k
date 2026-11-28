@@ -20,12 +20,18 @@ How it works inside, for developers: <https://canaangm.github.io/des-k/how-it-wo
 
 ## Install
 
-1. Download the newest `des-k-…-setup.exe` from
+1. Close any extra Windows desktops. des-k replaces them, and it can't see or bring back a
+   window on another Windows desktop. Press `Win+Tab`, point at each extra desktop at the top,
+   and click its **X**. Its windows move to the next desktop, so none of them close.
+2. Download the newest `des-k-…-setup.exe` from
    [Releases](https://github.com/CanaanGM/des-k/releases/latest) and run it.
-2. Windows may say "Windows protected your PC", since the setup has no Windows code signature
+3. Windows may say "Windows protected your PC", since the setup has no Windows code signature
    yet. Click **More info**, then **Run anyway**. To be sure the file is des-k's,
    [check the download](#check-a-download) first.
-3. Say **Yes** to the admin prompt. A des-k icon shows up in the tray.
+4. Say **Yes** to the admin prompt. A des-k icon shows up in the tray.
+
+Keep to one Windows desktop while des-k runs. If des-k is already running, quit it from the
+tray before you press `Win+Tab`, since des-k takes that key over.
 
 To update, click **Check for updates** in the tray menu, then **Install X.Y.Z**. Your workspaces
 are kept.
