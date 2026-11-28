@@ -1,12 +1,16 @@
-title: How des-k Works
 eyebrow: des-k · how it works inside
 headline: How des-k <em>hides</em> windows on one screen only
 lede: des-k uses the same Windows feature as Windows' own virtual desktops, but for one screen at a time. This page shows each part and where it lives in the code.
 pills: For <b>developers</b> | Written in <b>Rust</b> | Plain <b>Win32</b>, no framework | Checked against <b>0.10.0</b>
 status: draft
-updated: 2026-11-27
+updated: 2026-11-28
 related: <a href="https://canaangm.github.io/des-k/">The user guide</a> | <a href="https://github.com/CanaanGM/des-k">The code on GitHub</a> | <a href="https://github.com/CanaanGM/des-k/blob/main/SECURITY.md">SECURITY.md</a> | <a href="https://github.com/CanaanGM/des-k/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a>
 link: https://canaangm.github.io/des-k/how-it-works.html
+seo_title: How des-k works: per monitor virtual desktops on Windows 11, inside
+description: How des-k gives each monitor its own virtual desktops on Windows 11: the keyboard hook, cloaking windows through the shell, the lists per screen, the threads and the saved layout.
+og_type: article
+og_title: How des-k works inside
+og_description: The keyboard hook, cloaking windows through the Windows shell, the lists per screen, the threads and the saved layout.
 footnote: des-k is free software by CanaanGM, under the <a href="https://github.com/CanaanGM/des-k/blob/main/LICENSE">GNU GPL 3.0 or later</a>. Copyright (C) 2026 CanaanGM.
 ---
 <section class="card">
@@ -405,6 +409,8 @@ footnote: des-k is free software by CanaanGM, under the <a href="https://github.
       <tr><td>Finder and overview</td><td>They read the lists and ask the main code to go to a window or bring it. They never cloak anything themselves. Windows draws the live previews in the overview.</td></tr>
       <tr><td>A picture for each workspace</td><td>The backdrop thread shows a window of its own behind your desktop icons. Your Windows wallpaper is never changed, so a quit or a crash needs no cleanup.</td></tr>
       <tr><td>A hidden window wants you</td><td>Windows tells des-k when a window flashes for attention. If the window is hidden, des-k shows a note on its screen and keeps a dot on its workspace in the indicator.</td></tr>
+      <tr><td>Pause</td><td>Every place that hides a window asks first whether hiding is allowed, and a pause says no. The hidden windows move to a held list, are saved to <code>state.txt</code> as held, and are shown. So a restart while paused starts paused. Resume hides them again.</td></tr>
+      <tr><td>Apps left alone</td><td>The check that decides which windows a switch hides answers no for them, so no list ever holds their windows. Windows des-k already tracked are shown and dropped within a second.</td></tr>
     </tbody>
   </table></div>
 </section>
@@ -479,7 +485,7 @@ footnote: des-k is free software by CanaanGM, under the <a href="https://github.
       <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/drill.rs"><code>drill.rs</code></a></td><td>The drill and stress build's stop points and timing. Never in a release build.</td></tr>
     </tbody>
   </table></div>
-  <p>To build and run it, see <a href="https://canaangm.github.io/des-k/#build-and-run-from-the-code">Build and run from the code</a> in the guide. <a href="https://github.com/CanaanGM/des-k/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a> has the rules for a change.</p>
+  <p>To build, run and test it, and for the rules every change keeps, see <a href="https://github.com/CanaanGM/des-k/blob/main/CONTRIBUTING.md#building-and-testing">CONTRIBUTING.md</a>.</p>
 </section>
 
 <section class="card">

@@ -1,0 +1,3 @@
+# The site pages are built by site.ps1 and checked byte for byte in CI, so they keep LF everywhere.
+site/*.html text eol=lf
+site-src/* text eol=lf
