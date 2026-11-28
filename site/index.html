@@ -592,11 +592,13 @@ footer .footnote:empty { display: none; }
   <h2>How do I install it?</h2>
   <p>You need only Windows 11.</p>
   <ol class="steps">
+    <li>Close any extra Windows desktops. des-k replaces them, and it can't see or bring back a window on another Windows desktop. Press <code>Win+Tab</code>, point at each extra desktop at the top, and click its <strong>X</strong>. Its windows move to the next desktop, so none of them close.</li>
     <li>Download the newest <code>des-k-…-setup.exe</code> from <a href="https://github.com/CanaanGM/des-k/releases/latest">Releases</a> and run it. To be sure it is really des-k's file, <a href="#check-a-download">check the download</a> first.</li>
     <li>Windows may say "Windows protected your PC". This is SmartScreen: the setup has no Windows code signature yet. Click <strong>More info</strong>, then <strong>Run anyway</strong>.</li>
     <li>Say <strong>Yes</strong> to the UAC prompt. When the des-k icon shows in the tray, des-k is running.</li>
   </ol>
   <p>To update, click <strong>Check for updates</strong> in the tray menu. If a newer des-k is out, click the balloon or <strong>Install X.Y.Z</strong> in the menu. des-k downloads the new setup and runs it, but only when the publisher's signature checks out for that version (the same check as below). des-k stops, updates and comes back with your layout. If anything fails, a balloon says why and des-k carries on.</p>
+  <p>Keep to one Windows desktop while des-k runs. If des-k is already running, quit it from the tray before you press <code>Win+Tab</code>, since des-k takes that key over.</p>
   <div class="callout note"><strong>Why does it need admin?</strong> When an admin window (like Task Manager) is in front, Windows stops normal apps from hearing the keyboard. As admin, des-k hears its shortcuts everywhere.</div>
   <h3 id="check-a-download">Check a download</h3>
   <p>Three different questions, and what answers each:</p>
@@ -905,6 +907,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1</code></pre></li>
       <tr><td>The shortcuts do nothing</td><td>Check the des-k icon is in the tray. If it is not, open <strong>des-k</strong> from the Start menu. If the icon is gray, des-k is <a href="#pause-des-k">paused</a>.</td></tr>
       <tr><td>The shortcuts do nothing while a remote control app is in front (TeamViewer, AnyDesk, Remote Desktop)</td><td>The app takes the keys before des-k hears them, and may send them to the other PC. Click another window first, and they work again.</td></tr>
       <tr><td>des-k stopped (no tray icon) and windows are still hidden</td><td>Run <code>&amp; "$env:ProgramFiles\des-k\des-k.exe" --quit</code> in a terminal. It shows every window des-k hid. Then open <strong>des-k</strong> from the Start menu. If you chose Install for me only, the exe is in <code>%LOCALAPPDATA%\Programs\des-k</code>.</td></tr>
+      <tr><td>Windows are missing, and you have more than one Windows desktop</td><td>des-k sees only the Windows desktop you are on. Click <strong>Quit des-k</strong> in the tray, press <code>Win+Tab</code>, and close every extra desktop (its windows move over). Then open <strong>des-k</strong> from the Start menu.</td></tr>
       <tr><td>An app breaks when hidden, or keeps grabbing focus</td><td><a href="#leave-an-app-alone">Leave it alone</a>.</td></tr>
       <tr><td><code>install.ps1</code> says scripts are blocked</td><td>Use the full command with <code>-ExecutionPolicy Bypass</code>, as in the install steps.</td></tr>
       <tr><td>Everything looks wrong</td><td>Click <strong>Quit des-k</strong> in the tray. Every window comes back. Then open <strong>des-k</strong> from the Start menu.</td></tr>
