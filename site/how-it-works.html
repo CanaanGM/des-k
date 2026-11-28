@@ -322,6 +322,13 @@ td code { white-space: nowrap; }
 .pic { margin: 0; overflow-x: auto; border: 1px solid var(--line); border-radius: 10px;
   background: linear-gradient(var(--ground), var(--ground)) right / 28px 100% no-repeat local, var(--more) right / 28px 100% no-repeat scroll, var(--ground); }
 .pic svg { display: block; width: 100%; min-width: 560px; height: auto; }
+/* Real des-k windows, from its render tests: a light and a dark copy of each, and only the one that
+   matches the page shows (dark unless the reader picks light, as everywhere on the page). */
+.shot { margin: 0; padding: 16px 16px 0; border: 1px solid var(--line); border-radius: 10px; background: var(--ground); text-align: center; }
+.shot img { max-width: 100%; height: auto; vertical-align: middle; }
+.shot .light, :root[data-theme="light"] .shot .dark { display: none; }
+:root[data-theme="light"] .shot .light { display: inline; }
+.shot figcaption { margin: 16px -16px 0; padding: 10px 16px 12px; border-top: 1px solid var(--line); text-align: left; font-size: 14.5px; line-height: 1.5; color: var(--muted); }
 .pic figcaption { position: sticky; left: 0; padding: 10px 16px 12px; border-top: 1px solid var(--line); font-size: 14.5px; line-height: 1.5; color: var(--muted); }
 .pic .t { fill: var(--ink); font: 400 17px var(--font); }
 .pic .ts { fill: var(--muted); font: 400 15px var(--font); }
@@ -395,6 +402,9 @@ td code { white-space: nowrap; }
 .toc { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 14px 16px; }
 .toc-title { font: 700 12.5px/1.4 var(--font); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
 .toc ol { list-style: none; padding: 0; gap: 1px; max-width: none; }
+/* A part's name in the list, before the card that opens it (data-part); set like the list's title. */
+.toc .toc-part { font: 700 11.5px/1.4 var(--font); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); padding: 12px 10px 2px; break-after: avoid; }
+.toc .toc-part:first-child { padding-top: 2px; }
 @media (min-width: 641px) and (max-width: 1399px) { .toc ol { display: block; columns: 2; column-gap: 24px; } .toc li { break-inside: avoid; } }
 .toc a { display: block; padding: 3px 10px; border-left: 2px solid transparent; color: var(--muted); text-decoration: none; font-size: 14.5px; line-height: 1.5; }
 .toc a:hover { color: var(--ink); background: var(--code-ground); }
@@ -522,7 +532,7 @@ footer .footnote:empty { display: none; }
     <h1>How des-k <em>hides</em> windows on one screen only</h1>
     <p>des-k uses the same Windows feature as Windows' own virtual desktops, but for one screen at a time. This page shows each part and where it lives in the code.</p>
     <div class="pills"><span class="pill">For <b>developers</b></span><span class="pill">Written in <b>Rust</b></span><span class="pill">Plain <b>Win32</b>, no framework</span><span class="pill">Checked against <b>0.10.0</b></span></div>
-    <p class="meta"><span class="chip amber">Draft</span><span>Updated <time datetime="2026-11-27">27 Nov 2026</time></span><span>16 min read</span></p>
+    <p class="meta"><span class="chip amber">Draft</span><span>Updated <time datetime="2026-11-28">28 Nov 2026</time></span><span>17 min read</span></p>
   </header>
   <aside class="related" aria-label="Related"><p class="toc-title">Related</p><ul><li><a href="https://canaangm.github.io/des-k/">The user guide</a></li><li><a href="https://github.com/CanaanGM/des-k">The code on GitHub</a></li><li><a href="https://github.com/CanaanGM/des-k/blob/main/SECURITY.md">SECURITY.md</a></li><li><a href="https://github.com/CanaanGM/des-k/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a></li></ul></aside>
   <main class="sections">
@@ -922,6 +932,8 @@ footer .footnote:empty { display: none; }
       <tr><td>Finder and overview</td><td>They read the lists and ask the main code to go to a window or bring it. They never cloak anything themselves. Windows draws the live previews in the overview.</td></tr>
       <tr><td>A picture for each workspace</td><td>The backdrop thread shows a window of its own behind your desktop icons. Your Windows wallpaper is never changed, so a quit or a crash needs no cleanup.</td></tr>
       <tr><td>A hidden window wants you</td><td>Windows tells des-k when a window flashes for attention. If the window is hidden, des-k shows a note on its screen and keeps a dot on its workspace in the indicator.</td></tr>
+      <tr><td>Pause</td><td>Every place that hides a window asks first whether hiding is allowed, and a pause says no. The hidden windows move to a held list, are saved to <code>state.txt</code> as held, and are shown. So a restart while paused starts paused. Resume hides them again.</td></tr>
+      <tr><td>Apps left alone</td><td>The check that decides which windows a switch hides answers no for them, so no list ever holds their windows. Windows des-k already tracked are shown and dropped within a second.</td></tr>
     </tbody>
   </table></div>
 </section>
@@ -996,7 +1008,7 @@ footer .footnote:empty { display: none; }
       <tr><td><a href="https://github.com/CanaanGM/des-k/blob/main/src/drill.rs"><code>drill.rs</code></a></td><td>The drill and stress build's stop points and timing. Never in a release build.</td></tr>
     </tbody>
   </table></div>
-  <p>To build and run it, see <a href="https://canaangm.github.io/des-k/#build-and-run-from-the-code">Build and run from the code</a> in the guide. <a href="https://github.com/CanaanGM/des-k/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a> has the rules for a change.</p>
+  <p>To build, run and test it, and for the rules every change keeps, see <a href="https://github.com/CanaanGM/des-k/blob/main/CONTRIBUTING.md#building-and-testing">CONTRIBUTING.md</a>.</p>
 </section>
 
 <section class="card">
@@ -1121,7 +1133,7 @@ footer .footnote:empty { display: none; }
     const nav = document.createElement("nav");
     nav.className = "toc"; nav.setAttribute("aria-label", "On this page");
     nav.innerHTML = `<p class="toc-title">On this page</p><ol>${sections.map(card =>
-      `<li><a href="#${card.id}">${esc(card.querySelector(":scope > h2").textContent.trim())}</a></li>`).join("")}</ol>`;
+      `${card.dataset.part ? `<li class="toc-part">${esc(card.dataset.part)}</li>` : ""}<li><a href="#${card.id}">${esc(card.querySelector(":scope > h2").textContent.trim())}</a></li>`).join("")}</ol>`;
     document.querySelector(".sections").before(nav);
     const links = [...nav.querySelectorAll("a")];
     // The current section is the last one whose top has passed a third of the way down; at the very bottom, the last one.

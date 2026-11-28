@@ -1,4 +1,4 @@
-# Publishes site/ (the guide page built from site/guide-content.html) to GitHub Pages.
+# Publishes site/ to GitHub Pages: the pages site.ps1 builds from site-src/, and their pictures.
 name: pages
 
 on:

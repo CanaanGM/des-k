@@ -1,4 +1,4 @@
-# Lints and tests every push. A pushed tag like v0.1.0 also builds the release exe and
+# Checks the docs, lints and tests every push. A pushed tag like v0.1.0 also builds the release exe and
 # creates a draft GitHub Release with the setup exe (des-k.iss), a zip (des-k.exe, install.ps1,
 # README.md, LICENSE) and their checksums. It goes public only through sign-release.ps1 on the
 # publisher's PC (RELEASING.md, spec 0031), and des-k refuses a release that skipped it.
@@ -20,6 +20,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Docs built from site-src and readable
+        run: pwsh -File site.ps1 check
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           toolchain: stable
@@ -71,7 +73,7 @@ jobs:
           prefer a script. The guide: https://canaangm.github.io/des-k/
 
           ``SHA256SUMS.txt.minisig`` is the publisher's signature over the checksums in
-          ``SHA256SUMS.txt``. The README shows how to check both:
-          https://github.com/CanaanGM/des-k#check-a-download
+          ``SHA256SUMS.txt``. The guide shows how to check both:
+          https://canaangm.github.io/des-k/#check-a-download
           "@
           gh release create $tag (Get-ChildItem dist).FullName --title "des-k $tag" --notes $notes --generate-notes --draft
